@@ -1,0 +1,79 @@
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+cmd/api/api
+cmd/worker/worker
+cmd/ti_sync/ti_sync
+bin/
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool
+*.out
+coverage.html
+
+# Go workspace file
+go.work
+
+# Dependencies
+vendor/
+
+# Environment variables
+.env
+*.env
+!.env.example
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.project
+.classpath
+.settings/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ML models (too large for git)
+*.pkl
+*.h5
+*.pt
+*.pth
+*.onnx
+ml/nlp_model/model/
+ml/url_model/model.pkl
+ml/datasets/*.csv
+ml/datasets/*.json
+!ml/datasets/README.md
+
+# Logs
+*.log
+logs/
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+postgres-data/
+
+# Node modules
+node_modules/
+web/dist/
+web/build/
+.cache/
+
+# Docker
+*.pid
+docker-data/
+
+# Temporary files
+tmp/
+temp/
