@@ -25,16 +25,16 @@ PhishGuard/
 │   │   ├── url/
 │   │   │   ├── ti_checker.go              # [TI] Check if URL in TI database
 │   │   │   ├── enricher.go                # [TI] SSL/WHOIS/redirects
-│   │   │   ├── feature_extractor.go       # [LEAD] Extract 30 URL features
+│   │   │   ├── feature_extractor.go       # [LEAD] Extract URL features for model
 │   │   │   └── model.go                   # [LEAD] XGBoost inference wrapper
 │   │   │
 │   │   ├── nlp/
-│   │   │   ├── preprocessor.go            # [NLP] Clean email text
+│   │   │   ├── preprocessor.go            # [NLP] Clean email text for model
 │   │   │   └── classifier.go              # [NLP] Call NLP model
 │   │   │
 │   │   ├── domain/
-│   │   │   ├── typosquatting.go           # [LEAD] Check domain similarity
-│   │   │   └── reputation.go              # [LEAD] Domain age checks
+│   │   │   ├── typosquatting.go           # [LEAD] Check domain similarity (computing distance metric)
+│   │   │   └── reputation.go              # [LEAD] Domain age checks?
 │   │   │
 │   │   └── aggregator.go                  # [LEAD] Combine all risk scores
 │   │
@@ -97,28 +97,3 @@ PhishGuard/
     └── seed_ti.sh                          # [TI] Initial TI feed sync
 ```
 
----
-
-## Start Order
-
-**Week 1-2:**
-- Lead: `migrations/001_*.sql`, `pkg/*`, `internal/storage/*`
-- TI: `internal/ti/feeds.go` (define feed structs)
-- NLP: Find datasets on Kaggle
-
-**Week 3-4:**
-- Lead: `internal/detection/url/feature_extractor.go`, `internal/api/routes.go`
-- TI: `internal/ti/sync.go`, `internal/detection/url/enricher.go`
-- NLP: `ml/nlp_model/train.py`
-
-**Week 5-6:**
-- Lead: `ml/url_model/train.py`, `internal/detection/url/model.go`
-- TI: Finish enrichment + caching
-- NLP: `ml/nlp_model/inference.py`, `internal/detection/nlp/classifier.go`
-
-**Week 7-8:**
-- Lead: `internal/worker/orchestrator.go`, `internal/detection/aggregator.go`
-- All: Integration testing
-
-**Week 9-12:**
-- All: Bug fixes, dashboard, docs, demo prep
