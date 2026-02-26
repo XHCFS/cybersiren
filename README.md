@@ -1,4 +1,4 @@
-# PhishGaurd-v7.0-AI-TI
+# CyberSiren
 The hybrid detection engine that integrates 4+ TI feeds, and an ensemble ML model. Part of a of a commercial-grade, full-cycle Phishing Defense and Resiliance Platform
 
 **ASER [TI]:** Threat intel feeds + URL enrichment  
