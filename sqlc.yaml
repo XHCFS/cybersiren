@@ -1,0 +1,19 @@
+version: "2"
+sql:
+  - engine: "postgresql"
+    queries: "internal/storage/repository/queries/"
+    schema: "migrations/"
+    gen:
+      go:
+        package: "db"
+        out: "internal/storage/db"
+        sql_package: "pgx/v5"
+        emit_json_tags: true
+        emit_db_tags: true
+        emit_pointers_for_null_types: false
+        overrides:
+          - column: "organisations.slug"
+            go_type:
+              type: "string"
+            go_struct_tag: 'db:"slug" json:"slug" validate:"required,min=1,max=100,regexp=^[a-z0-9-]+$"'
+
