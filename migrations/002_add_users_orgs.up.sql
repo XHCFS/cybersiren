@@ -17,7 +17,6 @@ CREATE TABLE IF NOT EXISTS organisations (
 
     -- Soft cap on monthly email ingestion. NULL = unlimited.
     -- TODO: once all rows are backfilled, enforce NOT NULL on org_id.
-    -- See migrations/README.md for backfill status.
     monthly_ingestion_limit INT,
 
     deleted_at TIMESTAMPTZ,
