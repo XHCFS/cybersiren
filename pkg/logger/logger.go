@@ -61,19 +61,22 @@ func New(level string, pretty bool) zerolog.Logger {
 // and sets the global log level. After calling this, any library using
 // zerolog's global will inherit the same configuration.
 // This also ensures global field name settings are initialized.
+//
+// IMPORTANT: Call SetGlobal once during application startup, before
+// spawning goroutines that read log.Logger. The write is not synchronised.
 func SetGlobal(logger zerolog.Logger) {
 	// Ensure global settings are initialized before setting global logger
 	once.Do(initGlobalSettings)
 	log.Logger = logger
 }
 
-// ── Convenience constructors for common pipeline scopes ──────────────────────
+// -- Convenience constructors for common pipeline scopes ----------------------
 // These use zerolog's built-in context support (zerolog.Ctx) so they work
 // with any third-party library that also uses zerolog's native context integration.
 
 func loggerFromContext(ctx context.Context) *zerolog.Logger {
 	l := zerolog.Ctx(ctx)
-	if l == nil || l.GetLevel() == zerolog.Disabled {
+	if l.GetLevel() == zerolog.Disabled {
 		// Fall back to the global logger if none is attached to the context.
 		return &log.Logger
 	}

@@ -7,11 +7,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/knadh/koanf/v2"
 	koanfyaml "github.com/knadh/koanf/parsers/yaml"
 	enpv2 "github.com/knadh/koanf/providers/env/v2"
 	"github.com/knadh/koanf/providers/file"
 	"github.com/knadh/koanf/providers/structs"
+	"github.com/knadh/koanf/v2"
 )
 
 // Config is the root configuration object. All sub-configs are loaded
@@ -23,10 +23,10 @@ type Config struct {
 	Auth   AuthConfig   `koanf:"auth"`
 	Log    LogConfig    `koanf:"log"`
 
-	Redis   RedisConfig   `koanf:"redis"`
-	Worker  WorkerConfig  `koanf:"worker"`
-	CORS    CORSConfig    `koanf:"cors"`
-	ML      MLConfig      `koanf:"ml"`
+	Redis      RedisConfig      `koanf:"redis"`
+	Worker     WorkerConfig     `koanf:"worker"`
+	CORS       CORSConfig       `koanf:"cors"`
+	ML         MLConfig         `koanf:"ml"`
 	Enrichment EnrichmentConfig `koanf:"enrichment"`
 	Storage    StorageConfig    `koanf:"storage"`
 	Embedding  EmbeddingConfig  `koanf:"embedding"`
@@ -60,13 +60,14 @@ func (c DBConfig) DSN() string {
 	// special characters in usernames or passwords.
 	//
 	// Example: postgres://user:pass@host:port/dbname?sslmode=disable
-	user := url.QueryEscape(c.User)
-	password := url.QueryEscape(c.Password)
+	//
+	// NOTE: Do NOT call url.QueryEscape on user/password here —
+	// url.UserPassword already percent-encodes special characters.
 	hostPort := fmt.Sprintf("%s:%d", c.Host, c.Port)
 
 	dsn := &url.URL{
 		Scheme: "postgres",
-		User:   url.UserPassword(user, password),
+		User:   url.UserPassword(c.User, c.Password),
 		Host:   hostPort,
 		Path:   c.Name,
 	}
@@ -179,7 +180,8 @@ type EmbeddingConfig struct {
 // Load reads configuration from:
 //  1. config.yaml (or the path in CYBERSIREN_CONFIG_PATH)
 //  2. Environment variables prefixed with CYBERSIREN_
-//     (e.g. CYBERSIREN_DB_PASSWORD overrides db.password)
+//     Double underscores delimit hierarchy levels:
+//     e.g. CYBERSIREN_DB__PASSWORD overrides db.password
 //
 // Env vars always take precedence over the YAML file.
 func Load() (*Config, error) {
@@ -195,13 +197,13 @@ func Load() (*Config, error) {
 			IdleTimeout:  60 * time.Second,
 		},
 		DB: DBConfig{
-			Host:             "localhost",
-			Port:             5432,
-			SSLMode:          "disable",
-			MaxConns:         20,
-			MinConns:         2,
-			MaxConnLifetime:  time.Hour,
-			MaxConnIdleTime:  30 * time.Minute,
+			Host:              "localhost",
+			Port:              5432,
+			SSLMode:           "disable",
+			MaxConns:          20,
+			MinConns:          2,
+			MaxConnLifetime:   time.Hour,
+			MaxConnIdleTime:   30 * time.Minute,
 			HealthCheckPeriod: time.Minute,
 		},
 		Auth: AuthConfig{
@@ -314,16 +316,16 @@ func validate(cfg *Config) error {
 	var missing []string
 
 	if cfg.DB.Name == "" {
-		missing = append(missing, "db.name (CYBERSIREN_DB_NAME)")
+		missing = append(missing, "db.name (CYBERSIREN_DB__NAME)")
 	}
 	if cfg.DB.User == "" {
-		missing = append(missing, "db.user (CYBERSIREN_DB_USER)")
+		missing = append(missing, "db.user (CYBERSIREN_DB__USER)")
 	}
 	if cfg.DB.Password == "" {
-		missing = append(missing, "db.password (CYBERSIREN_DB_PASSWORD)")
+		missing = append(missing, "db.password (CYBERSIREN_DB__PASSWORD)")
 	}
 	if cfg.Auth.JWTSecret == "" {
-		missing = append(missing, "auth.jwt_secret (CYBERSIREN_AUTH_JWT_SECRET)")
+		missing = append(missing, "auth.jwt_secret (CYBERSIREN_AUTH__JWT_SECRET)")
 	}
 
 	if len(missing) > 0 {

@@ -1,6 +1,6 @@
 module github.com/saif/cybersiren
 
-go 1.25.0
+go 1.24.0
 
 require (
 	github.com/knadh/koanf/parsers/yaml v1.1.0
