@@ -3,6 +3,7 @@ module github.com/saif/cybersiren
 go 1.24.0
 
 require (
+	github.com/jackc/pgx/v5 v5.5.0
 	github.com/knadh/koanf/parsers/yaml v1.1.0
 	github.com/knadh/koanf/providers/env/v2 v2.0.0
 	github.com/knadh/koanf/providers/file v1.2.1
