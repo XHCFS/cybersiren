@@ -8,11 +8,103 @@
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html, body { width: 1189mm; height: 841mm; overflow: hidden; background: #fff; }
   body { font-family: Arial, Helvetica, sans-serif; }
-  svg { display: block; }
+     .diagram-app, .diagram-viewport { width: 100%; height: 100%; }
+     .diagram-toolbar { display: none; }
+     svg { display: block; width: 1189mm; height: 841mm; background: #fff; }
+
+     @media screen {
+          html, body {
+               width: 100%;
+               height: 100%;
+               min-height: 100%;
+               overflow: hidden;
+               background: #d9d9d9;
+          }
+
+          .diagram-app {
+               display: grid;
+               grid-template-rows: auto 1fr;
+               width: 100%;
+               height: 100%;
+          }
+
+          .diagram-toolbar {
+               display: flex;
+               align-items: center;
+               gap: 8px;
+               padding: 8px 12px;
+               border-bottom: 1px solid #b8b8b8;
+               background: #f4f4f4;
+               font-size: 11px;
+               line-height: 1.2;
+          }
+
+          .diagram-toolbar button {
+               appearance: none;
+               border: 1px solid #333;
+               background: #fff;
+               color: #111;
+               padding: 4px 10px;
+               font: inherit;
+               font-weight: 700;
+               cursor: pointer;
+               min-width: 34px;
+          }
+
+          .diagram-toolbar button:hover {
+               background: #e8e8e8;
+          }
+
+          .diagram-toolbar button:focus-visible {
+               outline: 2px solid #333;
+               outline-offset: 1px;
+          }
+
+          .diagram-hint {
+               color: #555;
+          }
+
+          .zoom-status {
+               margin-left: auto;
+               min-width: 52px;
+               text-align: right;
+               font-weight: 700;
+               color: #333;
+          }
+
+          .diagram-viewport {
+               width: 100%;
+               height: 100%;
+               overflow: hidden;
+               background: #d9d9d9;
+               touch-action: none;
+               user-select: none;
+               cursor: grab;
+          }
+
+          .diagram-viewport.is-dragging {
+               cursor: grabbing;
+          }
+
+          svg {
+               width: 100%;
+               height: 100%;
+               max-width: none;
+          }
+     }
 </style>
 </head>
 <body>
-<svg width="1189mm" height="841mm" viewBox="0 0 3400 2400" xmlns="http://www.w3.org/2000/svg">
+<div class="diagram-app">
+     <div class="diagram-toolbar" aria-label="Diagram controls">
+          <button type="button" id="zoomOutButton" aria-label="Zoom out">−</button>
+          <button type="button" id="zoomInButton" aria-label="Zoom in">+</button>
+          <button type="button" id="resetZoomButton">Reset</button>
+          <span class="diagram-hint">Wheel to zoom · drag to pan</span>
+          <span class="zoom-status" id="zoomStatus">100%</span>
+     </div>
+     <div class="diagram-viewport" id="diagramViewport">
+<svg id="architectureDiagram" width="1189mm" height="841mm" viewBox="0 0 3400 2400" xmlns="http://www.w3.org/2000/svg">
   <defs>
     <marker id="ah" markerWidth="12" markerHeight="10" refX="12" refY="5" orient="auto">
       <polygon points="0 0, 12 5, 0 10" fill="#333"></polygon>
@@ -365,5 +457,190 @@
 
 </svg>
 
+     </div>
+</div>
 
-</body><style type="text/css"></style></html>
+<script>
+     (function () {
+          const svg = document.getElementById('architectureDiagram');
+          const viewport = document.getElementById('diagramViewport');
+          const zoomInButton = document.getElementById('zoomInButton');
+          const zoomOutButton = document.getElementById('zoomOutButton');
+          const resetZoomButton = document.getElementById('resetZoomButton');
+          const zoomStatus = document.getElementById('zoomStatus');
+
+          if (!svg || !viewport || !zoomInButton || !zoomOutButton || !resetZoomButton || !zoomStatus) {
+               return;
+          }
+
+          const originalViewBox = [0, 0, 3400, 2400];
+          const [originX, originY, originWidth, originHeight] = originalViewBox;
+          const minZoom = 1;
+          const maxZoom = 8;
+          const zoomStep = 1.2;
+          let viewBox = originalViewBox.slice();
+          let dragState = null;
+
+          function clamp(value, min, max) {
+               return Math.min(max, Math.max(min, value));
+          }
+
+          function getCurrentZoom() {
+               return originWidth / viewBox[2];
+          }
+
+          function applyViewBox() {
+               svg.setAttribute('viewBox', viewBox.join(' '));
+               zoomStatus.textContent = `${Math.round(getCurrentZoom() * 100)}%`;
+          }
+
+          function setViewBox(nextX, nextY, nextWidth) {
+               const clampedWidth = clamp(nextWidth, originWidth / maxZoom, originWidth / minZoom);
+               const nextHeight = clampedWidth * (originHeight / originWidth);
+               const maxX = originX + originWidth - clampedWidth;
+               const maxY = originY + originHeight - nextHeight;
+
+               viewBox = [
+                    clamp(nextX, originX, maxX),
+                    clamp(nextY, originY, maxY),
+                    clampedWidth,
+                    nextHeight
+               ];
+
+               applyViewBox();
+          }
+
+          function getAnchorPoint(clientX, clientY) {
+               if (typeof clientX !== 'number' || typeof clientY !== 'number') {
+                    return {
+                         x: viewBox[0] + (viewBox[2] / 2),
+                         y: viewBox[1] + (viewBox[3] / 2)
+                    };
+               }
+
+               const ctm = svg.getScreenCTM();
+               if (!ctm) {
+                    return {
+                         x: viewBox[0] + (viewBox[2] / 2),
+                         y: viewBox[1] + (viewBox[3] / 2)
+                    };
+               }
+
+               const point = svg.createSVGPoint();
+               point.x = clientX;
+               point.y = clientY;
+               return point.matrixTransform(ctm.inverse());
+          }
+
+          function zoom(factor, clientX, clientY) {
+               const currentZoom = getCurrentZoom();
+               const nextZoom = clamp(currentZoom * factor, minZoom, maxZoom);
+
+               if (nextZoom === currentZoom) {
+                    return;
+               }
+
+               const anchor = getAnchorPoint(clientX, clientY);
+               const relX = (anchor.x - viewBox[0]) / viewBox[2];
+               const relY = (anchor.y - viewBox[1]) / viewBox[3];
+               const nextWidth = originWidth / nextZoom;
+               const nextHeight = originHeight / nextZoom;
+               const nextX = anchor.x - (relX * nextWidth);
+               const nextY = anchor.y - (relY * nextHeight);
+
+               setViewBox(nextX, nextY, nextWidth);
+          }
+
+          function pan(deltaX, deltaY) {
+               const rect = svg.getBoundingClientRect();
+               if (!rect.width || !rect.height) {
+                    return;
+               }
+
+               const nextX = viewBox[0] - (deltaX * (viewBox[2] / rect.width));
+               const nextY = viewBox[1] - (deltaY * (viewBox[3] / rect.height));
+               setViewBox(nextX, nextY, viewBox[2]);
+          }
+
+          function resetZoom() {
+               viewBox = originalViewBox.slice();
+               applyViewBox();
+          }
+
+          function stopDragging(event) {
+               if (!dragState || dragState.pointerId !== event.pointerId) {
+                    return;
+               }
+
+               dragState = null;
+               viewport.classList.remove('is-dragging');
+
+               if (viewport.hasPointerCapture(event.pointerId)) {
+                    viewport.releasePointerCapture(event.pointerId);
+               }
+          }
+
+          zoomInButton.addEventListener('click', () => zoom(zoomStep));
+          zoomOutButton.addEventListener('click', () => zoom(1 / zoomStep));
+          resetZoomButton.addEventListener('click', resetZoom);
+
+          viewport.addEventListener('wheel', (event) => {
+               event.preventDefault();
+               zoom(event.deltaY < 0 ? zoomStep : 1 / zoomStep, event.clientX, event.clientY);
+          }, { passive: false });
+
+          viewport.addEventListener('pointerdown', (event) => {
+               if (event.pointerType === 'mouse' && event.button !== 0) {
+                    return;
+               }
+
+               dragState = {
+                    pointerId: event.pointerId,
+                    x: event.clientX,
+                    y: event.clientY
+               };
+
+               viewport.classList.add('is-dragging');
+               viewport.setPointerCapture(event.pointerId);
+          });
+
+          viewport.addEventListener('pointermove', (event) => {
+               if (!dragState || dragState.pointerId !== event.pointerId) {
+                    return;
+               }
+
+               pan(event.clientX - dragState.x, event.clientY - dragState.y);
+               dragState = {
+                    pointerId: dragState.pointerId,
+                    x: event.clientX,
+                    y: event.clientY
+               };
+          });
+
+          viewport.addEventListener('pointerup', stopDragging);
+          viewport.addEventListener('pointercancel', stopDragging);
+
+          viewport.addEventListener('pointerleave', (event) => {
+               if (event.pointerType === 'mouse' && dragState && dragState.pointerId === event.pointerId && !(event.buttons & 1)) {
+                    stopDragging(event);
+               }
+          });
+
+          window.addEventListener('keydown', (event) => {
+               if (event.key === '+' || event.key === '=') {
+                    zoom(zoomStep);
+               } else if (event.key === '-') {
+                    zoom(1 / zoomStep);
+               } else if (event.key === '0') {
+                    resetZoom();
+               } else {
+                    return;
+               }
+
+               event.preventDefault();
+          });
+
+          applyViewBox();
+     }());
+</script>
+</body></html>
