@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta http-equiv="content-type" content="text/html; charset=UTF-8">
+<meta charset="UTF-8">
+<title>CyberSiren — System Architecture Diagram</title>
+<style>
+  @page { size: 1189mm 841mm landscape; margin: 0; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 1189mm; height: 841mm; overflow: hidden; background: #fff; }
+  body { font-family: Arial, Helvetica, sans-serif; }
+  svg { display: block; }
+</style>
+</head>
+<body>
+<svg width="1189mm" height="841mm" viewBox="0 0 3400 2400" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <marker id="ah" markerWidth="12" markerHeight="10" refX="12" refY="5" orient="auto">
+      <polygon points="0 0, 12 5, 0 10" fill="#333"></polygon>
+    </marker>
+    <marker id="ahs" markerWidth="10" markerHeight="8" refX="10" refY="4" orient="auto">
+      <polygon points="0 0, 10 4, 0 8" fill="#888"></polygon>
+    </marker>
+  </defs>
+
+  <!-- ═══ TITLE ═══ -->
+  <text x="1700" y="52" text-anchor="middle" font-size="28" font-weight="700" fill="#111" letter-spacing="2">CYBERSIREN — SYSTEM ARCHITECTURE</text>
+  <text x="1700" y="84" text-anchor="middle" font-size="16" fill="#666">Event-Driven Microservices over Apache Kafka  ·  11 Services  ·  12 Kafka Topics  ·  PostgreSQL + Redis  ·  v2.1</text>
+
+
+  <!-- ═══════════════════════════════════════════
+       PANEL 1: TI FEED LAYER (x 30–550, y 110–880)
+       ═══════════════════════════════════════════ -->
+  <rect x="30" y="110" width="520" height="770" rx="12" fill="#fafafa" stroke="#ddd" stroke-width="1.5"></rect>
+  <text x="290" y="150" text-anchor="middle" font-size="15" font-weight="700" fill="#888" letter-spacing="2">TI FEED LAYER</text>
+
+  <rect x="70" y="172" width="440" height="46" rx="8" fill="#fff" stroke="#333" stroke-width="1.8" stroke-dasharray="7,3"></rect>
+  <text x="290" y="201" text-anchor="middle" font-size="15" font-weight="700">PhishTank</text>
+  <rect x="70" y="230" width="440" height="46" rx="8" fill="#fff" stroke="#333" stroke-width="1.8" stroke-dasharray="7,3"></rect>
+  <text x="290" y="259" text-anchor="middle" font-size="15" font-weight="700">OpenPhish</text>
+  <rect x="70" y="288" width="440" height="46" rx="8" fill="#fff" stroke="#333" stroke-width="1.8" stroke-dasharray="7,3"></rect>
+  <text x="290" y="317" text-anchor="middle" font-size="15" font-weight="700">URLhaus</text>
+  <rect x="70" y="346" width="440" height="46" rx="8" fill="#fff" stroke="#333" stroke-width="1.8" stroke-dasharray="7,3"></rect>
+  <text x="290" y="375" text-anchor="middle" font-size="15" font-weight="700">MalwareBazaar (hashes)</text>
+  <rect x="70" y="404" width="440" height="46" rx="8" fill="#fff" stroke="#333" stroke-width="1.8" stroke-dasharray="7,3"></rect>
+  <text x="290" y="433" text-anchor="middle" font-size="15" font-weight="700">Abuse.ch ThreatFox</text>
+  <rect x="70" y="462" width="440" height="46" rx="8" fill="#fff" stroke="#333" stroke-width="1.8" stroke-dasharray="7,3"></rect>
+  <text x="290" y="491" text-anchor="middle" font-size="15" font-weight="700">Custom Feeds</text>
+
+  <line x1="290" y1="508" x2="290" y2="548" stroke="#333" stroke-width="2" marker-end="url(#ah)"></line>
+
+  <rect x="70" y="548" width="440" height="130" rx="10" fill="#fff" stroke="#333" stroke-width="2.5"></rect>
+  <text x="290" y="588" text-anchor="middle" font-size="17" font-weight="700">TI Feed Sync</text>
+  <text x="290" y="614" text-anchor="middle" font-size="13" font-family="Courier New, monospace" fill="#555">SVC-11  ·  Go  ·  every 6h</text>
+  <text x="290" y="638" text-anchor="middle" font-size="13" fill="#666">fetch  ·  parse  ·  dedup  ·  UPSERT</text>
+  <text x="290" y="662" text-anchor="middle" font-size="12" font-family="Courier New, monospace" fill="#888">W: enriched_threats, attachment_library</text>
+
+  <line x1="510" y1="610" x2="600" y2="610" stroke="#333" stroke-width="2.5" marker-end="url(#ah)"></line>
+
+
+  <!-- ═══════════════════════════════════════════
+       PANEL 2: DATA STORES (x 580–1100, y 110–880)
+       ═══════════════════════════════════════════ -->
+  <rect x="580" y="110" width="520" height="770" rx="12" fill="#fafafa" stroke="#ddd" stroke-width="1.5"></rect>
+  <text x="840" y="150" text-anchor="middle" font-size="15" font-weight="700" fill="#888" letter-spacing="2">DATA STORES</text>
+
+  <!-- PostgreSQL cylinder — proper 3D look with taller ellipses, no double-stroke -->
+  <!-- Body fill (no stroke — sides drawn separately) -->
+  <rect x="660" y="200" width="360" height="140" fill="#ebebeb" stroke="none"></rect>
+  <!-- Side lines (left and right edges of cylinder body) -->
+  <line x1="660" y1="200" x2="660" y2="340" stroke="#444" stroke-width="2"></line>
+  <line x1="1020" y1="200" x2="1020" y2="340" stroke="#444" stroke-width="2"></line>
+  <!-- Bottom ellipse (behind body fill, so draw first conceptually — but SVG layering: 
+       we draw it after the rect so it shows the front curve) -->
+  <ellipse cx="840" cy="340" rx="180" ry="40" fill="#ddd" stroke="#444" stroke-width="2"></ellipse>
+  <!-- Body fill again on top to hide the back half of bottom ellipse -->
+  <rect x="661" y="200" width="358" height="140" fill="#ebebeb" stroke="none" style="fill: rgb(221, 221, 221);"></rect>
+  <!-- Top ellipse (drawn last = on top of everything) -->
+  <ellipse cx="840" cy="200" rx="180" ry="40" fill="#ebebeb" stroke="#444" stroke-width="2"></ellipse>
+  <!-- Side lines re-drawn on top for clean edges -->
+  <line x1="660" y1="200" x2="660" y2="340" stroke="#444" stroke-width="2"></line>
+  <line x1="1020" y1="200" x2="1020" y2="340" stroke="#444" stroke-width="2"></line>
+  <!-- Text inside cylinder body -->
+  <text text-anchor="middle" font-size="18" font-weight="700" x="840" y="270">PostgreSQL 15</text>
+  <text x="840" text-anchor="middle" font-size="12" fill="#555" y="290">emails, verdicts, campaigns, rules, rule_hits,</text>
+  <text x="840" text-anchor="middle" font-size="12" fill="#555" y="310">enriched_threats, attachment_library</text>
+  <text x="840" text-anchor="middle" font-size="12" fill="#555" y="330">current_verdicts VIEW + 5 materialized views</text>
+
+  <!-- MV refresh arrow — label offset to the right -->
+  <line x1="840" y1="382" x2="840" y2="418" stroke="#888" stroke-width="1.5" stroke-dasharray="5,4" marker-end="url(#ahs)"></line>
+  <text x="916" y="408" font-size="10" fill="#999">MV refresh</text>
+
+  <!-- Redis -->
+  <rect x="660" y="426" width="360" height="104" rx="14" fill="#ebebeb" stroke="#444" stroke-width="2"></rect>
+  <text x="840" y="468" text-anchor="middle" font-size="18" font-weight="700">Redis 7</text>
+  <text x="840" y="492" text-anchor="middle" font-size="13" fill="#555">dedup  ·  TI cache  ·  aggregator state</text>
+  <text x="840" y="514" text-anchor="middle" font-size="13" fill="#555">rate limiting  ·  SimHash storage</text>
+
+  <!-- Kafka -->
+  <rect x="644" y="558" width="392" height="140" rx="14" fill="#e0e0e0" stroke="#444" stroke-width="2"></rect>
+  <text x="840" y="602" text-anchor="middle" font-size="18" font-weight="700">Apache Kafka</text>
+  <text x="840" y="626" text-anchor="middle" font-size="13" fill="#555">12 topics  ·  partition key: email_id</text>
+  <text x="840" y="648" text-anchor="middle" font-size="13" fill="#555">consumer groups per service</text>
+  <text x="840" y="670" text-anchor="middle" font-size="13" fill="#555">retention: 24h–7d</text>
+
+  <!-- Object Storage -->
+  <rect x="660" y="728" width="360" height="72" rx="14" fill="#ebebeb" stroke="#444" stroke-width="2"></rect>
+  <text x="840" y="760" text-anchor="middle" font-size="16" font-weight="700">Object Storage</text>
+  <text x="840" y="782" text-anchor="middle" font-size="12" fill="#555">S3 / MinIO  ·  attachment binaries  ·  90d TTL</text>
+
+  <!-- 
+    NO bidirectional arrows between panels. 
+    DB/Redis access is annotated inside each service box.
+    Legend explains this convention.
+  -->
+
+
+  <!-- ═══════════════════════════════════════════
+       PANEL 3: EMAIL PIPELINE (x 1140–3370)
+       ═══════════════════════════════════════════ -->
+  <rect x="1140" y="110" width="2230" height="2050" rx="12" fill="#fafafa" stroke="#ddd" stroke-width="1.5"></rect>
+  <text x="2255" y="150" text-anchor="middle" font-size="15" font-weight="700" fill="#888" letter-spacing="2">EMAIL PIPELINE (KAFKA-CENTRIC)</text>
+
+  <!-- EMAIL SOURCES band -->
+  <rect x="1200" y="172" width="2110" height="110" rx="10" fill="#f0f0f0" stroke="#ccc" stroke-width="1.2"></rect>
+  <text x="2255" y="206" text-anchor="middle" font-size="14" font-weight="700" fill="#777" letter-spacing="1.5">EMAIL SOURCES</text>
+
+  <rect x="1260" y="222" width="216" height="44" rx="8" fill="#fff" stroke="#333" stroke-width="1.8" stroke-dasharray="7,3"></rect>
+  <text x="1368" y="250" text-anchor="middle" font-size="14" fill="#444">Gmail API</text>
+  <rect x="1510" y="222" width="216" height="44" rx="8" fill="#fff" stroke="#333" stroke-width="1.8" stroke-dasharray="7,3"></rect>
+  <text x="1618" y="250" text-anchor="middle" font-size="14" fill="#444">Outlook API</text>
+  <rect x="1760" y="222" width="176" height="44" rx="8" fill="#fff" stroke="#333" stroke-width="1.8" stroke-dasharray="7,3"></rect>
+  <text x="1848" y="250" text-anchor="middle" font-size="14" fill="#444">IMAP</text>
+  <rect x="1970" y="222" width="276" height="44" rx="8" fill="#fff" stroke="#333" stroke-width="1.8" stroke-dasharray="7,3"></rect>
+  <text x="2108" y="250" text-anchor="middle" font-size="14" fill="#444">REST API Upload</text>
+  <rect x="2280" y="222" width="276" height="44" rx="8" fill="#fff" stroke="#333" stroke-width="1.8" stroke-dasharray="7,3"></rect>
+  <text x="2418" y="250" text-anchor="middle" font-size="14" fill="#444">Custom Adapter</text>
+
+  <!-- Sources → Ingestion elbows (y: 302, 312, 322, 332, 342 — 10px gaps) -->
+  <path d="M 1368 266 L 1368 302 L 1990 302 L 1990 362" stroke="#333" stroke-width="1.5" fill="none" marker-end="url(#ah)"></path>
+  <path d="M 1618 266 L 1618 312 L 2070 312 L 2070 362" stroke="#333" stroke-width="1.5" fill="none" marker-end="url(#ah)"></path>
+  <path d="M 1848 266 L 1848 322 L 2170 322 L 2170 362" stroke="#333" stroke-width="1.5" fill="none" marker-end="url(#ah)"></path>
+  <path d="M 2108 266 L 2108 332 L 2290 332 L 2290 362" stroke="#333" stroke-width="1.5" fill="none" marker-end="url(#ah)"></path>
+  <path d="M 2418 266 L 2418 342 L 2410 342 L 2410 362" stroke="#333" stroke-width="1.5" fill="none" marker-end="url(#ah)"></path>
+
+
+  <!-- ═══ STEP 1: INGESTION ═══ -->
+  <rect x="1910" y="362" width="690" height="110" rx="12" fill="#fff" stroke="#333" stroke-width="3"></rect>
+  <text x="2255" y="400" text-anchor="middle" font-size="19" font-weight="700">Email Ingestion Service</text>
+  <text x="2255" y="426" text-anchor="middle" font-size="14" font-family="Courier New, monospace" fill="#555">SVC-01  ·  Go  ·  normalize  ·  dedup  ·  publish</text>
+  <text x="2255" y="452" text-anchor="middle" font-size="13" fill="#666">Redis: dedup:{org_id}:{message_id}  ·  DB: api_keys (R)</text>
+
+  <line x1="2255" y1="472" x2="2255" y2="510" stroke="#333" stroke-width="2.5" marker-end="url(#ah)"></line>
+
+  <rect x="2087" y="510" width="336" height="40" rx="18" fill="#e0e0e0" stroke="#444" stroke-width="1.5"></rect>
+  <text x="2255" y="535" text-anchor="middle" font-size="14" font-weight="700" font-family="Courier New, monospace" fill="#333">emails.raw</text>
+
+  <line x1="2255" y1="550" x2="2255" y2="588" stroke="#333" stroke-width="2.5" marker-end="url(#ah)"></line>
+
+
+  <!-- ═══ STEP 2: PARSER ═══ -->
+  <rect x="1910" y="588" width="690" height="130" rx="12" fill="#fff" stroke="#333" stroke-width="3"></rect>
+  <text x="2255" y="624" text-anchor="middle" font-size="19" font-weight="700">Email Parser Service</text>
+  <text x="2255" y="650" text-anchor="middle" font-size="14" font-family="Courier New, monospace" fill="#555">SVC-02  ·  Go  ·  MIME parse  ·  extract  ·  fan-out</text>
+  <text x="2255" y="676" text-anchor="middle" font-size="13" fill="#666">DB W: emails, email_urls, enriched_threats (bare),</text>
+  <text x="2255" y="696" text-anchor="middle" font-size="13" fill="#666">attachment_library, email_attachments, email_recipients</text>
+
+  <!-- Fan-out elbows (y: 738, 748, straight, 758, 768 — 10px gaps) -->
+  <path d="M 1970 718 L 1970 738 L 1460 738 L 1460 786" stroke="#333" stroke-width="1.5" fill="none" marker-end="url(#ah)"></path>
+  <path d="M 2030 718 L 2030 748 L 1860 748 L 1860 786" stroke="#333" stroke-width="1.5" fill="none" marker-end="url(#ah)"></path>
+  <line x1="2255" y1="718" x2="2255" y2="786" stroke="#333" stroke-width="1.5" marker-end="url(#ah)"></line>
+  <path d="M 2440 718 L 2440 758 L 2640 758 L 2640 786" stroke="#333" stroke-width="1.5" fill="none" marker-end="url(#ah)"></path>
+  <path d="M 2510 718 L 2510 768 L 2980 768 L 2980 786" stroke="#333" stroke-width="1.5" fill="none" marker-end="url(#ah)"></path>
+
+
+  <!-- ═══ ANALYSIS TOPIC PILLS (row) ═══ -->
+  <rect x="1300" y="786" width="320" height="38" rx="16" fill="#e0e0e0" stroke="#444" stroke-width="1.5"></rect>
+  <text x="1460" y="810" text-anchor="middle" font-size="13" font-weight="700" font-family="Courier New, monospace" fill="#333">analysis.urls</text>
+
+  <rect x="1700" y="786" width="320" height="38" rx="16" fill="#e0e0e0" stroke="#444" stroke-width="1.5"></rect>
+  <text x="1860" y="810" text-anchor="middle" font-size="13" font-weight="700" font-family="Courier New, monospace" fill="#333">analysis.headers</text>
+
+  <rect x="2095" y="786" width="320" height="38" rx="16" fill="#e0e0e0" stroke="#444" stroke-width="1.5"></rect>
+  <text x="2255" y="810" text-anchor="middle" font-size="13" font-weight="700" font-family="Courier New, monospace" fill="#333">analysis.attachments</text>
+
+  <rect x="2480" y="786" width="320" height="38" rx="16" fill="#e0e0e0" stroke="#444" stroke-width="1.5"></rect>
+  <text x="2640" y="810" text-anchor="middle" font-size="13" font-weight="700" font-family="Courier New, monospace" fill="#333">analysis.text</text>
+
+  <rect x="2840" y="786" width="280" height="38" rx="16" fill="#e0e0e0" stroke="#444" stroke-width="1.5"></rect>
+  <text x="2980" y="810" text-anchor="middle" font-size="13" font-weight="700" font-family="Courier New, monospace" fill="#333">analysis.plans</text>
+
+
+  <!-- ═══ STEP 3: PARALLEL ANALYSIS (SCATTER) ═══
+       SVG layering: band rect → arrows → title background → title text
+       This ensures arrows don't visually cross through the title. -->
+  <rect x="1200" y="868" width="2110" height="430" rx="10" fill="#f0f0f0" stroke="#ccc" stroke-width="1.2"></rect>
+
+  <!-- Arrows drawn FIRST (underneath title overlay) -->
+  <line x1="1460" y1="824" x2="1460" y2="952" stroke="#333" stroke-width="1.5" marker-end="url(#ah)"></line>
+  <line x1="1860" y1="824" x2="1860" y2="952" stroke="#333" stroke-width="1.5" marker-end="url(#ah)"></line>
+  <line x1="2255" y1="824" x2="2255" y2="952" stroke="#333" stroke-width="1.5" marker-end="url(#ah)"></line>
+  <line x1="2640" y1="824" x2="2640" y2="952" stroke="#333" stroke-width="1.5" marker-end="url(#ah)"></line>
+
+  <!-- Title background rect — covers arrows behind the text area -->
+  <rect x="1204" y="876" width="520" height="50" rx="6" fill="#f0f0f0" stroke="none"></rect>
+  <!-- Title text rendered ON TOP of the background rect -->
+  <text x="1230" y="900" font-size="14" font-weight="700" fill="#777" letter-spacing="1.5">PARALLEL ANALYSIS (SCATTER)</text>
+  <text x="1230" y="918" font-size="12" fill="#999">Each service consumes analysis.* and emits scores.* (key = email_id)</text>
+
+  <!-- URL Analysis -->
+  <rect x="1300" y="952" width="320" height="156" rx="10" fill="#fff" stroke="#333" stroke-width="2"></rect>
+  <text x="1460" y="986" text-anchor="middle" font-size="17" font-weight="700">URL Analysis</text>
+  <text x="1460" y="1010" text-anchor="middle" font-size="13" font-family="Courier New, monospace" fill="#555">SVC-03  ·  Go + Python</text>
+  <text x="1460" y="1034" text-anchor="middle" font-size="12" fill="#666">TI blocklist  ·  enrich  ·  ML</text>
+  <text x="1460" y="1056" text-anchor="middle" font-size="12" fill="#666">WHOIS / SSL / DNS / XGBoost</text>
+  <text x="1460" y="1088" text-anchor="middle" font-size="11" font-family="Courier New, monospace" fill="#888">R/W: enriched_threats</text>
+
+  <!-- Header Analysis -->
+  <rect x="1700" y="952" width="320" height="156" rx="10" fill="#fff" stroke="#333" stroke-width="2"></rect>
+  <text x="1860" y="986" text-anchor="middle" font-size="17" font-weight="700">Header Analysis</text>
+  <text x="1860" y="1010" text-anchor="middle" font-size="13" font-family="Courier New, monospace" fill="#555">SVC-04  ·  Go</text>
+  <text x="1860" y="1034" text-anchor="middle" font-size="12" fill="#666">auth / reputation / structural</text>
+  <text x="1860" y="1056" text-anchor="middle" font-size="12" fill="#999" font-style="italic">weights: research pending</text>
+  <text x="1860" y="1088" text-anchor="middle" font-size="11" font-family="Courier New, monospace" fill="#888">R: rules  ·  W: rule_hits</text>
+
+  <!-- Attachment Scorer -->
+  <rect x="2095" y="952" width="320" height="156" rx="10" fill="#fff" stroke="#333" stroke-width="2"></rect>
+  <text x="2255" y="986" text-anchor="middle" font-size="17" font-weight="700">Attachment Scorer</text>
+  <text x="2255" y="1010" text-anchor="middle" font-size="13" font-family="Courier New, monospace" fill="#555">SVC-05  ·  Go</text>
+  <text x="2255" y="1034" text-anchor="middle" font-size="12" fill="#666">SHA256 TI hash lookup</text>
+  <text x="2255" y="1056" text-anchor="middle" font-size="12" fill="#666">entropy + MIME + VirusTotal</text>
+  <text x="2255" y="1088" text-anchor="middle" font-size="11" font-family="Courier New, monospace" fill="#888">R/W: attachment_library</text>
+
+  <!-- NLP Service -->
+  <rect x="2480" y="952" width="320" height="156" rx="10" fill="#fff" stroke="#333" stroke-width="2"></rect>
+  <text x="2640" y="986" text-anchor="middle" font-size="17" font-weight="700">NLP Service</text>
+  <text x="2640" y="1010" text-anchor="middle" font-size="13" font-family="Courier New, monospace" fill="#555">SVC-06  ·  Python</text>
+  <text x="2640" y="1034" text-anchor="middle" font-size="12" fill="#666">urgency / intent / impersonation</text>
+  <text x="2640" y="1056" text-anchor="middle" font-size="12" fill="#999" font-style="italic">models: research pending</text>
+  <text x="2640" y="1088" text-anchor="middle" font-size="11" font-family="Courier New, monospace" fill="#888">DB: none (stateless)</text>
+
+
+  <!-- ═══ SCORES TOPIC PILLS ═══ -->
+  <line x1="1460" y1="1108" x2="1460" y2="1150" stroke="#333" stroke-width="1.5" marker-end="url(#ah)"></line>
+  <rect x="1320" y="1150" width="280" height="36" rx="14" fill="#e0e0e0" stroke="#444" stroke-width="1.5"></rect>
+  <text x="1460" y="1173" text-anchor="middle" font-size="13" font-weight="700" font-family="Courier New, monospace" fill="#333">scores.url</text>
+
+  <line x1="1860" y1="1108" x2="1860" y2="1150" stroke="#333" stroke-width="1.5" marker-end="url(#ah)"></line>
+  <rect x="1720" y="1150" width="280" height="36" rx="14" fill="#e0e0e0" stroke="#444" stroke-width="1.5"></rect>
+  <text x="1860" y="1173" text-anchor="middle" font-size="13" font-weight="700" font-family="Courier New, monospace" fill="#333">scores.header</text>
+
+  <line x1="2255" y1="1108" x2="2255" y2="1150" stroke="#333" stroke-width="1.5" marker-end="url(#ah)"></line>
+  <rect x="2095" y="1150" width="320" height="36" rx="14" fill="#e0e0e0" stroke="#444" stroke-width="1.5"></rect>
+  <text x="2255" y="1173" text-anchor="middle" font-size="13" font-weight="700" font-family="Courier New, monospace" fill="#333">scores.attachment</text>
+
+  <line x1="2640" y1="1108" x2="2640" y2="1150" stroke="#333" stroke-width="1.5" marker-end="url(#ah)"></line>
+  <rect x="2500" y="1150" width="280" height="36" rx="14" fill="#e0e0e0" stroke="#444" stroke-width="1.5"></rect>
+  <text x="2640" y="1173" text-anchor="middle" font-size="13" font-weight="700" font-family="Courier New, monospace" fill="#333">scores.nlp</text>
+
+
+  <!-- ═══ STEP 4: SCORE AGGREGATOR ═══ -->
+  <!-- scores → Aggregator elbows (y: 1240, 1258, straight, 1276 — 18px gaps for clarity) -->
+  <path d="M 1460 1186 L 1460 1240 L 1990 1240 L 1990 1348" stroke="#333" stroke-width="1.5" fill="none" marker-end="url(#ah)"></path>
+  <path d="M 1860 1186 L 1860 1258 L 2070 1258 L 2070 1348" stroke="#333" stroke-width="1.5" fill="none" marker-end="url(#ah)"></path>
+  <line x1="2255" y1="1186" x2="2255" y2="1348" stroke="#333" stroke-width="1.5" marker-end="url(#ah)"></line>
+  <path d="M 2640 1186 L 2640 1276 L 2450 1276 L 2450 1348" stroke="#333" stroke-width="1.5" fill="none" marker-end="url(#ah)"></path>
+
+  <!-- analysis.plans → Aggregator: right margin route
+       Path BROKEN into two segments with a gap for the label -->
+  <!-- Segment 1: pill → down to label gap -->
+  <path d="M 2980 824 L 2980 854 L 3200 854 L 3200 1064" stroke="#333" stroke-width="1.5" fill="none"></path>
+  <!-- Label in the gap (no line behind it) -->
+  <text x="3200" y="1088" font-size="13" fill="#555" text-anchor="middle" font-weight="600">analysis.plans</text>
+  <!-- Segment 2: resume after label → into aggregator -->
+  <path d="M 3200 1104 L 3200 1300 L 2570 1300 L 2570 1348" stroke="#333" stroke-width="1.5" fill="none" marker-end="url(#ah)"></path>
+
+  <!-- Aggregator box (wider: 740px to fill more of the pipeline width) -->
+  <rect x="1885" y="1348" width="740" height="118" rx="12" fill="#fff" stroke="#333" stroke-width="3"></rect>
+  <text x="2255" y="1386" text-anchor="middle" font-size="19" font-weight="700">Score Aggregator (gather only)</text>
+  <text x="2255" y="1412" text-anchor="middle" font-size="14" font-family="Courier New, monospace" fill="#555">SVC-07  ·  Go  ·  stateless workers + Redis state</text>
+  <text x="2255" y="1438" text-anchor="middle" font-size="13" fill="#666">Collects component scores into single payload  ·  Does NOT compute final score  ·  timeout: 30s</text>
+
+  <line x1="2255" y1="1466" x2="2255" y2="1504" stroke="#333" stroke-width="2.5" marker-end="url(#ah)"></line>
+
+  <rect x="2087" y="1504" width="336" height="38" rx="14" fill="#e0e0e0" stroke="#444" stroke-width="1.5"></rect>
+  <text x="2255" y="1528" text-anchor="middle" font-size="13" font-weight="700" font-family="Courier New, monospace" fill="#333">emails.scored</text>
+
+  <line x1="2255" y1="1542" x2="2255" y2="1582" stroke="#333" stroke-width="2.5" marker-end="url(#ah)"></line>
+
+
+  <!-- ═══ STEP 5: DECISION ENGINE (wider: 740px to match aggregator) ═══ -->
+  <rect x="1885" y="1582" width="740" height="196" rx="12" fill="#fff" stroke="#333" stroke-width="3"></rect>
+  <text x="2255" y="1618" text-anchor="middle" font-size="19" font-weight="700">Decision Engine</text>
+  <text x="2255" y="1644" text-anchor="middle" font-size="14" font-family="Courier New, monospace" fill="#555">SVC-08  ·  Go  ·  score  ·  verdict  ·  campaign</text>
+  <text x="2255" y="1672" text-anchor="middle" font-size="13" fill="#666">1. Combine component scores (method: research pending)</text>
+  <text x="2255" y="1694" text-anchor="middle" font-size="13" fill="#666">2. Rule engine adjustments + verdict determination</text>
+  <text x="2255" y="1716" text-anchor="middle" font-size="13" fill="#666">3. Campaign fingerprint + SimHash (per-org scoped)</text>
+  <text x="2255" y="1738" text-anchor="middle" font-size="13" fill="#666">4. Campaign history informs future scoring</text>
+  <text x="2255" y="1762" text-anchor="middle" font-size="12" fill="#777">DB W: emails, verdicts, rule_hits, campaigns (single tx)</text>
+
+  <line x1="2255" y1="1778" x2="2255" y2="1818" stroke="#333" stroke-width="2.5" marker-end="url(#ah)"></line>
+
+  <rect x="2087" y="1818" width="336" height="38" rx="14" fill="#e0e0e0" stroke="#444" stroke-width="1.5"></rect>
+  <text x="2255" y="1842" text-anchor="middle" font-size="13" font-weight="700" font-family="Courier New, monospace" fill="#333">emails.verdict</text>
+
+
+  <!-- ═══ STEP 6: OUTPUT LAYER ═══ -->
+  <rect x="1420" y="1910" width="1670" height="224" rx="10" fill="#f0f0f0" stroke="#ccc" stroke-width="1.2"></rect>
+  <text x="2255" y="1946" text-anchor="middle" font-size="14" font-weight="700" fill="#777" letter-spacing="1.5">OUTPUT LAYER</text>
+
+  <!-- Verdict → output elbows (y: 1876, 1890 — 14px gap) -->
+  <path d="M 2255 1856 L 2255 1876 L 1740 1876 L 1740 1972" stroke="#333" stroke-width="2" fill="none" marker-end="url(#ah)"></path>
+  <path d="M 2255 1856 L 2255 1890 L 2530 1890 L 2530 1972" stroke="#333" stroke-width="2" fill="none" marker-end="url(#ah)"></path>
+
+  <!-- Notification Service (height 130 for bottom padding) -->
+  <rect x="1510" y="1972" width="460" height="130" rx="10" fill="#fff" stroke="#333" stroke-width="2"></rect>
+  <text x="1740" y="2010" text-anchor="middle" font-size="17" font-weight="700">Notification Service</text>
+  <text x="1740" y="2036" text-anchor="middle" font-size="13" font-family="Courier New, monospace" fill="#555">SVC-09  ·  Go  ·  emails.verdict consumer</text>
+  <text x="1740" y="2062" text-anchor="middle" font-size="13" fill="#666">email / webhook / Slack / Teams</text>
+  <text x="1740" y="2084" text-anchor="middle" font-size="12" fill="#777">rate limit: 1/campaign/org/hr via Redis</text>
+
+  <!-- API / Dashboard (height 130 for bottom padding) -->
+  <rect x="2300" y="1972" width="460" height="130" rx="10" fill="#fff" stroke="#333" stroke-width="2"></rect>
+  <text x="2530" y="2010" text-anchor="middle" font-size="17" font-weight="700">API / Dashboard</text>
+  <text x="2530" y="2036" text-anchor="middle" font-size="13" font-family="Courier New, monospace" fill="#555">SVC-10  ·  Go REST + React + WebSocket</text>
+  <text x="2530" y="2062" text-anchor="middle" font-size="13" fill="#666">R: all tables + MVs</text>
+  <text x="2530" y="2084" text-anchor="middle" font-size="12" fill="#777">W: analyst verdicts, rules, audit_log</text>
+
+
+  <!-- ═══════════════════════════════════════════
+       LEGEND + KEY PROPERTIES (bottom-left)
+       ═══════════════════════════════════════════ -->
+  <rect x="30" y="930" width="1070" height="540" rx="12" fill="#fafafa" stroke="#ddd" stroke-width="1.5"></rect>
+
+  <text x="68" y="976" font-size="17" font-weight="700" fill="#333">LEGEND</text>
+
+  <rect x="68" y="998" width="76" height="28" rx="8" fill="#fff" stroke="#333" stroke-width="2"></rect>
+  <text x="160" y="1018" font-size="13" fill="#555">Service (microservice)</text>
+
+  <rect x="68" y="1042" width="76" height="28" rx="18" fill="#e0e0e0" stroke="#444" stroke-width="1.5"></rect>
+  <text x="160" y="1062" font-size="13" fill="#555">Kafka Topic</text>
+
+  <rect x="68" y="1086" width="76" height="28" rx="8" fill="#fff" stroke="#333" stroke-width="2" stroke-dasharray="7,3"></rect>
+  <text x="160" y="1106" font-size="13" fill="#555">External Source</text>
+
+  <line x1="540" y1="1014" x2="660" y2="1014" stroke="#333" stroke-width="2" marker-end="url(#ah)"></line>
+  <text x="678" y="1019" font-size="13" fill="#555">Data flow (Kafka / direct)</text>
+
+  <text x="540" y="1062" font-size="13" fill="#555">DB/Redis access annotated inside each service box</text>
+
+  <text x="68" y="1160" font-size="17" font-weight="700" fill="#333">KEY PROPERTIES</text>
+  <text x="68" y="1192" font-size="13" fill="#555">- All topics keyed by email_id: ordering within each topic, NO cross-topic co-location</text>
+  <text x="68" y="1218" font-size="13" fill="#555">- Steps 3a–3d run concurrently; Aggregator gathers scores only (no scoring logic)</text>
+  <text x="68" y="1244" font-size="13" fill="#555">- Decision Engine: final scoring + verdict + campaign management (method: research pending)</text>
+  <text x="68" y="1270" font-size="13" fill="#555">- Campaign history feeds back into scoring of future emails matching same campaign</text>
+  <text x="68" y="1296" font-size="13" fill="#555">- Verdicts are append-only (verdicts table + current_verdicts VIEW)</text>
+  <text x="68" y="1322" font-size="13" fill="#555">- TI Sync is independent (6h schedule), refreshes all 5 materialized views</text>
+  <text x="68" y="1348" font-size="13" fill="#555">- Privacy: email bodies purged after retention; Kafka bounded (24h–7d)</text>
+  <text x="68" y="1374" font-size="13" fill="#555">- All services connect to PostgreSQL / Redis / Kafka as shown in Data Stores panel</text>
+
+  <text x="68" y="1416" font-size="13" font-weight="700" fill="#333">VERDICT MAPPING (preliminary thresholds, subject to calibration)</text>
+  <text x="68" y="1444" font-size="13" fill="#555">0–25 benign    26–50 suspicious    51–75 phishing    76–100 phishing (high) / malware</text>
+
+  <!-- Version footer -->
+  <text x="1700" y="2388" text-anchor="middle" font-size="12" fill="#aaa">CyberSiren System Architecture Diagram  —  ARCH-DIAG-v2.1  —  2026-03-11</text>
+
+</svg>
+
+
+</body><style type="text/css"></style></html>

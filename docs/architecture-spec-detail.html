@@ -1,0 +1,1599 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>CyberSiren — System Architecture Specification</title>
+<style>
+  @page { size: A1 landscape; margin: 12mm; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Courier New', 'Consolas', monospace;
+    background: #ffffff;
+    color: #111111;
+    padding: 28px 36px;
+    font-size: 11px;
+    line-height: 1.45;
+  }
+
+  h1 { font-size: 20px; font-weight: 700; border-bottom: 3px solid #111; padding-bottom: 6px; margin-bottom: 2px; letter-spacing: -0.3px; }
+  .doc-meta { font-size: 10px; color: #555; margin-bottom: 20px; border-bottom: 1px solid #999; padding-bottom: 8px; }
+  .doc-meta span { margin-right: 24px; }
+
+  h2 { font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: 1.5px; border-bottom: 2px solid #333; padding-bottom: 3px; margin: 22px 0 10px 0; }
+  h3 { font-size: 11.5px; font-weight: 700; margin: 12px 0 4px 0; }
+
+  table { border-collapse: collapse; width: 100%; margin: 6px 0 14px 0; font-size: 10.5px; }
+  th, td { border: 1px solid #888; padding: 4px 7px; text-align: left; vertical-align: top; }
+  th { background: #e8e8e8; font-weight: 700; white-space: nowrap; }
+  td { background: #fff; }
+  tr:nth-child(even) td { background: #f8f8f8; }
+  td.svc { font-weight: 700; }
+  td code, th code { font-family: inherit; background: #f0f0f0; padding: 1px 3px; font-size: 10px; }
+
+  .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .three-col { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; }
+
+  .svc-block {
+    border: 2px solid #333;
+    padding: 10px 12px;
+    margin-bottom: 12px;
+    page-break-inside: avoid;
+  }
+  .svc-block.primary { border-width: 3px; }
+
+  .svc-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    border-bottom: 1px solid #aaa;
+    padding-bottom: 4px;
+    margin-bottom: 6px;
+  }
+  .svc-name { font-size: 12.5px; font-weight: 700; }
+  .svc-tech { font-size: 10px; color: #555; }
+  .svc-id { font-size: 9px; font-weight: 700; background: #ddd; padding: 1px 5px; border: 1px solid #999; }
+
+  .field-list { margin: 4px 0; padding-left: 14px; }
+  .field-list li { margin-bottom: 2px; }
+  .field-list li::marker { color: #555; }
+
+  .kafka-topic-inline {
+    font-weight: 700;
+    border: 1px solid #333;
+    padding: 1px 5px;
+    background: #f4f4f4;
+    font-size: 10px;
+    white-space: nowrap;
+  }
+
+  .arrow-label { font-size: 9.5px; color: #444; font-style: italic; }
+
+  .flow-table td:first-child { white-space: nowrap; font-weight: 700; width: 50px; }
+
+  .note {
+    border: 1px solid #aaa;
+    background: #f9f9f9;
+    padding: 6px 10px;
+    margin: 6px 0;
+    font-size: 10px;
+  }
+  .note strong { font-size: 10px; }
+
+  .schema-box {
+    border: 1px solid #666;
+    padding: 8px 10px;
+    margin-bottom: 10px;
+    font-size: 10px;
+  }
+  .schema-box .tbl-name { font-weight: 700; font-size: 11px; border-bottom: 1px dashed #aaa; padding-bottom: 3px; margin-bottom: 4px; }
+
+  .pipeline-step {
+    border: 2px solid #333;
+    margin-bottom: 10px;
+    page-break-inside: avoid;
+  }
+  .pipeline-step .step-header {
+    display: flex;
+    align-items: stretch;
+  }
+  .pipeline-step .step-num {
+    background: #333;
+    color: #fff;
+    font-weight: 700;
+    padding: 8px 12px;
+    min-width: 36px;
+    text-align: center;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 13px;
+  }
+  .pipeline-step .step-content {
+    padding: 8px 12px;
+    flex: 1;
+  }
+  .pipeline-step .step-footer {
+    display: flex;
+    border-top: 1px solid #333;
+  }
+  .pipeline-step .step-kafka {
+    padding: 8px 12px;
+    background: #f0f0f0;
+    font-weight: 700;
+    font-size: 10.5px;
+    width: 200px;
+    min-width: 200px;
+    border-right: 1px solid #333;
+  }
+  .pipeline-step .step-kafka .topic-label {
+    font-size: 11px;
+    margin-bottom: 3px;
+  }
+  .pipeline-step .step-kafka .topic-meta {
+    font-weight: 400;
+    font-size: 9.5px;
+    color: #444;
+  }
+  .pipeline-step .step-db {
+    padding: 8px 12px;
+    background: #e8e8e8;
+    font-size: 10.5px;
+    flex: 1;
+    line-height: 1.55;
+  }
+
+  hr { border: none; border-top: 1px solid #ccc; margin: 14px 0; }
+  .page-break { page-break-before: always; }
+
+  .compact-table td, .compact-table th { padding: 3px 6px; font-size: 10px; }
+
+  .legend {
+    display: flex;
+    gap: 20px;
+    font-size: 10px;
+    margin: 8px 0;
+    padding: 6px 10px;
+    border: 1px solid #aaa;
+    background: #fafafa;
+  }
+  .legend-item { display: flex; align-items: center; gap: 5px; }
+  .legend-swatch { width: 14px; height: 14px; border: 1px solid #333; }
+</style>
+</head>
+<body>
+
+<h1>CYBERSIREN — SYSTEM ARCHITECTURE SPECIFICATION</h1>
+<div class="doc-meta">
+  <span><strong>Document:</strong> ARCH-SPEC-v2.1</span>
+  <span><strong>Date:</strong> 2026-03-11</span>
+  <span><strong>Status:</strong> Implementation Baseline — Approved Architecture with Tracked Deltas</span>
+  <span><strong>Classification:</strong> Internal / Graduation Project</span>
+</div>
+
+<div class="legend">
+  <div class="legend-item"><div class="legend-swatch" style="background:#fff; border-width:3px;"></div> Service (thick border = entry point)</div>
+  <div class="legend-item"><div class="legend-swatch" style="background:#f0f0f0;"></div> Kafka Topic</div>
+  <div class="legend-item"><div class="legend-swatch" style="background:#e8e8e8;"></div> Database Operation</div>
+  <div class="legend-item"><strong>R</strong> = Read &nbsp; <strong>W</strong> = Write &nbsp; <strong>R/W</strong> = Both</div>
+  <div class="legend-item">All scores: integer 0–100 &nbsp; All confidence: float 0.0–1.0</div>
+</div>
+
+<!-- ============================================================ -->
+<h2>1. Complete Pipeline — Step-by-Step Data Flow</h2>
+
+<div class="note">
+  <strong>Canonical Identifier Strategy:</strong><br/>
+  <code>email_id</code> (UUIDv7) = logical identifier. Assigned by SVC-01, carried in all Kafka messages and Redis keys, used as partition key.<br/>
+  <code>internal_id</code> (BIGSERIAL) = physical DB primary key. Auto-generated on INSERT. Part of composite PK <code>(internal_id, fetched_at)</code> required by partitioning.<br/>
+  <code>fetched_at</code> = partition key for the <code>emails</code> table. Part of composite PK. Not part of logical identity.<br/>
+  <code>message_id</code> (RFC 5322) = deduplication key scoped per org <code>(org_id, message_id)</code>. Not globally unique.<br/>
+  <strong>Mapping:</strong> <code>emails.scored</code> message includes both <code>email_id</code> and <code>(internal_id, fetched_at)</code> so SVC-08 can write to DB without an extra lookup.
+</div>
+
+<div class="note">
+  <strong>Data Role Taxonomy:</strong>
+  <strong>PostgreSQL</strong> = source of record (authoritative state).
+  <strong>Redis</strong> = ephemeral coordination/cache (lossy, rebuildable from DB).
+  <strong>Kafka</strong> = transport/replay (bounded retention 24h–7d).
+  <strong>Materialized Views</strong> = read optimization (never the source of truth).
+  <strong>Object Storage (S3/MinIO)</strong> = binary retention (attachment files, 90-day TTL).
+</div>
+
+<p style="margin-bottom:8px;">Each numbered step shows: the service performing work, the Kafka topic it produces to (if any), and the database operations (if any). Every field in every message is listed.</p>
+
+<!-- Step 1 -->
+<div class="pipeline-step">
+  <div class="step-header">
+    <div class="step-num">1</div>
+    <div class="step-content">
+      <strong>EMAIL INGESTION SERVICE</strong> (Go) — <em>SVC-01</em><br/>
+      Receives raw email from one of 5 adapters (see §2.1). Normalizes to internal <code>ParsedEmail</code> envelope.
+      Assigns <code>email_id</code> (UUIDv7), <code>org_id</code> (from API key auth), <code>fetched_at</code> (now).
+      Performs idempotent dedup: checks <code>(org_id, message_id)</code> in Redis set (TTL 7d) → if present, discard.
+      On cache miss, falls back to DB unique constraint <code>uq_emails_org_message_id</code>.
+    </div>
+  </div>
+  <div class="step-footer">
+    <div class="step-kafka">
+      <div class="topic-label">→ emails.raw</div>
+      <div class="topic-meta">Key: email_id · 6 partitions · 48h retention</div>
+    </div>
+    <div class="step-db">
+      <strong>R</strong> Redis: <code>dedup:{org_id}:{message_id}</code><br/>
+      No PostgreSQL writes at this stage.
+    </div>
+  </div>
+</div>
+
+<div class="note">
+  <strong>Message schema — <code>emails.raw</code>:</strong><br/>
+  <code>{ email_id, org_id, fetched_at, raw_rfc822: &lt;full email bytes base64&gt;, source_adapter: "gmail"|"outlook"|"imap"|"api"|"custom", api_key_id }</code>
+</div>
+
+<!-- Step 2 -->
+<div class="pipeline-step">
+  <div class="step-header">
+    <div class="step-num">2</div>
+    <div class="step-content">
+      <strong>EMAIL PARSER SERVICE</strong> (Go) — <em>SVC-02</em><br/>
+      Consumes <code>emails.raw</code>. Parses MIME structure. Produces 5 output topics (fan-out).
+      Extracts: all URLs from HTML (href/src/action/meta-refresh) + plain text (regex).
+      Hashes each attachment (SHA256 + MD5 + SHA1), computes Shannon entropy, detects actual file type via magic bytes.
+      Extracts all header authentication results. Strips HTML → clean plain text for NLP.
+      Builds Analysis Plan listing which downstream scores to expect based on email contents.
+      <strong>Writes initial email record + junction tables to PostgreSQL.</strong>
+    </div>
+  </div>
+  <div class="step-footer">
+    <div class="step-kafka">
+      <div class="topic-label">→ 5 topics:</div>
+      <div class="topic-meta">analysis.urls · analysis.headers · analysis.attachments · analysis.text · analysis.plans</div>
+    </div>
+    <div class="step-db">
+      <strong>W</strong> <code>emails</code> (INSERT: 26 metadata cols from 001+002)<br/>
+      <strong>U</strong> <code>enriched_threats</code> (UPSERT bare: url, domain, tld — for email_urls FK)<br/>
+      <strong>W</strong> <code>email_urls</code> (INSERT: email_id, threat_id→enriched_threats.id, visible_text)<br/>
+      <strong>U</strong> <code>attachment_library</code> (UPSERT by sha256: sha256, md5, sha1, size_bytes, entropy)<br/>
+      <strong>W</strong> <code>email_attachments</code> (INSERT: email_id, attachment_id, filename, content_type)<br/>
+      <strong>W</strong> <code>email_recipients</code> (INSERT: email_id, org_id, address, recipient_type)
+    </div>
+  </div>
+</div>
+
+<div class="note">
+  <strong>Output message schemas from Email Parser:</strong><br/><br/>
+
+  <strong><code>analysis.urls</code></strong> (6 partitions · 24h · Key: email_id):<br/>
+  <code>{ email_id, org_id, urls: [{ url: string, visible_text: string, position: "body"|"header", html_context: "href"|"src"|"action"|"plain_text" }] }</code><br/><br/>
+
+  <strong><code>analysis.headers</code></strong> (6 partitions · 24h · Key: email_id):<br/>
+  <code>{ email_id, org_id, sender_email, sender_domain, sender_name, reply_to_email, return_path, originating_ip, x_originating_ip, auth_spf: "pass"|"fail"|"softfail"|"none", auth_dkim: "pass"|"fail"|"none", auth_dmarc: "pass"|"fail"|"none", auth_arc, mailer_agent, in_reply_to, references_list: string[], sent_timestamp: int64, content_charset, precedence, list_id, hop_count: int, received_chain: [{from, by, timestamp}], vendor_security_tags: json, headers_json: json }</code><br/><br/>
+
+  <strong><code>analysis.attachments</code></strong> (3 partitions · 24h · Key: email_id):<br/>
+  <code>{ email_id, org_id, attachments: [{ sha256, md5, sha1, filename, content_type, content_id, disposition: "inline"|"attachment", size_bytes: int64, entropy: float64, detected_type: string (magic-byte) }] }</code><br/><br/>
+
+  <strong><code>analysis.text</code></strong> (6 partitions · 24h · Key: email_id):<br/>
+  <code>{ email_id, org_id, subject, sender_name, sender_domain, plain_text: string (HTML-stripped body), body_language: string (detected), word_count: int }</code><br/><br/>
+
+  <strong><code>analysis.plans</code></strong> (6 partitions · 24h · Key: email_id):<br/>
+  <code>{ email_id, org_id, expected_scores: ["url","header","attachment","nlp"] (subset based on email contents), url_count: int, attachment_count: int, has_body: bool, created_at: timestamp }</code>
+</div>
+
+<!-- Step 3a -->
+<div class="pipeline-step">
+  <div class="step-header">
+    <div class="step-num">3a</div>
+    <div class="step-content">
+      <strong>URL ANALYSIS SERVICE</strong> (Go + Python subprocess) — <em>SVC-03</em><br/>
+      Consumes <code>analysis.urls</code>. For each URL in the message:<br/>
+      <strong>(i)</strong> Redis cache check: key <code>url_score:{sha256(url)}</code> TTL 6h → if hit, reuse score, skip remaining steps.<br/>
+      <strong>(ii)</strong> TI blocklist: lookup URL domain against <code>enriched_threats</code> table (indexed on <code>url</code>, <code>domain</code>). If exact match with <code>risk_score ≥ 80</code> → emit score 95, <code>ti_matched=true</code>, skip ML.<br/>
+      <strong>(iii)</strong> Enrichment (concurrency limit: 5 goroutines): WHOIS (registrar, creation_date, expiry_date, name_servers), SSL cert (issuer, subject, valid_from, valid_to, self-signed check), DNS (A/MX/NS/CNAME), HTTP probe (status_code, redirect_count, final_url, response_time_ms), IP geo (country, asn, asn_name, isp, city).<br/>
+      <strong>(iv)</strong> ML inference: Enriched features → XGBoost model via Python subprocess (JSON stdin/stdout). Timeout: 5s. On timeout: score=50.<br/>
+      <strong>Per-email URL score = max(individual URL scores).</strong> Each URL gets its own entry in enrichment tables.
+    </div>
+  </div>
+  <div class="step-footer">
+    <div class="step-kafka">
+      <div class="topic-label">→ scores.url</div>
+      <div class="topic-meta">Key: email_id · 6 partitions · 24h retention</div>
+    </div>
+    <div class="step-db">
+      <strong>R</strong> <code>enriched_threats</code> (TI lookup)<br/>
+      <strong>R</strong> Redis: <code>url_score:{hash}</code><br/>
+      <strong>W</strong> <code>enriched_threats</code> (new URLs)<br/>
+      <strong>W</strong> <code>enrichment_results</code> (raw responses)<br/>
+      <strong>W</strong> <code>enrichment_jobs</code> (job tracking)<br/>
+      <strong>W</strong> Redis: <code>url_score:{hash}</code>
+    </div>
+  </div>
+</div>
+
+<div class="note">
+  <strong>Message schema — <code>scores.url</code>:</strong><br/>
+  <code>{ email_id, org_id, component: "url", score: int 0-100, url_count: int, ti_blocked_count: int, ml_scored_count: int, cache_hit_count: int, riskiest_url: string, url_details: [{ url, domain, ti_matched: bool, ti_source: string|null, domain_age_days: int|null, has_ssl: bool, ssl_issuer: string|null, redirect_count: int, ml_score: int|null, is_shortened: bool, enrichment_available: bool }], processing_time_ms: int }</code>
+</div>
+
+<!-- Step 3b -->
+<div class="pipeline-step">
+  <div class="step-header">
+    <div class="step-num">3b</div>
+    <div class="step-content">
+      <strong>HEADER ANALYSIS SERVICE</strong> (Go) — <em>SVC-04</em><br/>
+      Consumes <code>analysis.headers</code>. Produces <code>header_risk_score</code> (0–100) from three analysis dimensions:<br/>
+      <strong>(i) Authentication verification:</strong> SPF, DKIM, DMARC, ARC result evaluation. From/Reply-To/Return-Path mismatch detection.<br/>
+      <strong>(ii) Sender reputation:</strong> Domain age analysis (via WHOIS), TI matches on sender domain and originating IP, typosquatting detection (Damerau-Levenshtein distance to known brands), free-provider contextual signals.<br/>
+      <strong>(iii) Structural anomaly detection:</strong> HTML-only messages, hidden text elements, embedded forms, encoding anomalies, excessive received hops, timestamp drift.<br/>
+      <em>Note: Signal categories are architecturally defined. Specific scoring weights and thresholds are preliminary heuristics subject to empirical calibration.</em><br/>
+      All signals implemented as configurable <code>rules</code> in the <code>rules</code> table. Each signal that fires creates a <code>rule_hits</code> row for auditability.
+    </div>
+  </div>
+  <div class="step-footer">
+    <div class="step-kafka">
+      <div class="topic-label">→ scores.header</div>
+      <div class="topic-meta">Key: email_id · 6 partitions · 24h retention</div>
+    </div>
+    <div class="step-db">
+      <strong>R</strong> <code>rules</code> (active header rules)<br/>
+      <strong>R</strong> <code>enriched_threats</code> (domain/IP rep.)<br/>
+      <strong>W</strong> <code>rule_hits</code> (one per fired rule)
+    </div>
+  </div>
+</div>
+
+<div class="note">
+  <strong>Message schema — <code>scores.header</code>:</strong><br/>
+  <code>{ email_id, org_id, component: "header", score: int 0-100, auth_sub_score: int, reputation_sub_score: int, structural_sub_score: int, fired_rules: [{ rule_id, rule_name, rule_version, score_impact: int, match_detail: json }], signals: { spf_result, dkim_result, dmarc_result, from_reply_to_match: bool, from_return_path_match: bool, domain_age_days: int|null, typosquat_target: string|null, typosquat_distance: int|null, is_free_provider: bool, hop_count: int, time_drift_hours: float }, processing_time_ms: int }</code>
+</div>
+
+<!-- Step 3c -->
+<div class="pipeline-step">
+  <div class="step-header">
+    <div class="step-num">3c</div>
+    <div class="step-content">
+      <strong>ATTACHMENT ANALYSIS SERVICE</strong> (Go) — <em>SVC-05</em><br/>
+      Consumes <code>analysis.attachments</code>. For each attachment:<br/>
+      <strong>(i)</strong> Hash lookup: <code>attachment_library.sha256</code> → if <code>is_malicious=true</code>, score=90.<br/>
+      <strong>(ii)</strong> External TI check (if VirusTotal API key configured): query hash → cache in <code>enrichment_results</code> provider="virustotal". TTL: 24h.<br/>
+      <strong>(iii)</strong> Heuristics: entropy &gt;7.5=+20. Extension vs MIME mismatch (e.g. .pdf with application/x-msdownload)=+30. Dangerous extensions (.exe,.scr,.bat,.ps1,.vbs,.js,.wsf,.hta,.cmd)=+25. Macro-enabled Office (.docm,.xlsm,.pptm)=+20. Double extension (.pdf.exe)=+35.<br/>
+      Per-email attachment score = max(individual attachment scores).
+    </div>
+  </div>
+  <div class="step-footer">
+    <div class="step-kafka">
+      <div class="topic-label">→ scores.attachment</div>
+      <div class="topic-meta">Key: email_id · 3 partitions · 24h retention</div>
+    </div>
+    <div class="step-db">
+      <strong>R</strong> <code>attachment_library</code> (hash lookup)<br/>
+      <strong>R/W</strong> <code>enrichment_results</code> (VT cache)<br/>
+      <strong>W</strong> <code>attachment_library</code> (update is_malicious, risk_score, threat_tags)
+    </div>
+  </div>
+</div>
+
+<div class="note">
+  <strong>Message schema — <code>scores.attachment</code>:</strong><br/>
+  <code>{ email_id, org_id, component: "attachment", score: int 0-100, attachment_count: int, malicious_count: int, attachment_details: [{ sha256, filename, content_type, size_bytes, entropy: float, is_malicious: bool, ti_source: string|null, extension_mismatch: bool, has_macros: bool, is_dangerous_extension: bool, individual_score: int }], processing_time_ms: int }</code>
+</div>
+
+<!-- Step 3d -->
+<div class="pipeline-step">
+  <div class="step-header">
+    <div class="step-num">3d</div>
+    <div class="step-content">
+      <strong>NLP ANALYSIS SERVICE</strong> (Python FastAPI + ONNX Runtime) — <em>SVC-06</em><br/>
+      Consumes <code>analysis.text</code>. Produces <code>content_risk_score</code> (0–100) and structured facet outputs from 4 analysis dimensions:<br/>
+      <strong>(i) Urgency detection:</strong> Identifies false-urgency language patterns. Output: urgency_score 0.0–1.0.<br/>
+      <strong>(ii) Intent classification:</strong> Classifies email goal. Multi-class: credential_harvesting, malware_delivery, bec, scam, legitimate. Output: intent_label + confidence.<br/>
+      <strong>(iii) Brand impersonation:</strong> Detects brand impersonation through NER + sender identity analysis. Output: impersonation_score 0.0–1.0.<br/>
+      <strong>(iv) Deception language:</strong> Identifies manipulative linguistic patterns. Output: deception_score 0.0–1.0.<br/>
+      <em>Note: Analysis facets are architecturally defined. Model architectures (candidate: DistilBERT, TinyBERT), training methodology, and score composition method are under active research.</em><br/>
+      Individual facet scores are always preserved alongside any composite score for transparency.<br/>
+      <strong>Timeout: 10s. On timeout: score=50.</strong> Stateless — no DB access.
+    </div>
+  </div>
+  <div class="step-footer">
+    <div class="step-kafka">
+      <div class="topic-label">→ scores.nlp</div>
+      <div class="topic-meta">Key: email_id · 6 partitions · 24h retention</div>
+    </div>
+    <div class="step-db">
+      No database access.<br/>
+      Stateless inference service.
+    </div>
+  </div>
+</div>
+
+<div class="note">
+  <strong>Message schema — <code>scores.nlp</code>:</strong><br/>
+  <code>{ email_id, org_id, component: "nlp", score: int 0-100, facets: { urgency_score: float, intent_label: "credential_harvesting"|"malware_delivery"|"bec"|"scam"|"legitimate", intent_confidence: float, impersonation_score: float, impersonated_brand: string|null, deception_score: float }, model_versions: { urgency: string, intent: string, impersonation: string, deception: string }, processing_time_ms: int }</code>
+</div>
+
+<!-- Step 4 -->
+<div class="pipeline-step">
+  <div class="step-header">
+    <div class="step-num">4</div>
+    <div class="step-content">
+      <strong>SCORE AGGREGATOR SERVICE</strong> (Go + Redis state) — <em>SVC-07</em><br/>
+      Consumes 5 topics: <code>analysis.plans</code> + <code>scores.url</code> + <code>scores.header</code> + <code>scores.attachment</code> + <code>scores.nlp</code>.<br/>
+      Maintains per-email state in Redis: Key: <code>aggregator:{email_id}</code> — TTL 120s.<br/>
+      <strong>Design: Stateless workers with shared Redis state.</strong> Events for the same email may be processed by different instances. Redis is the single source of truth for aggregation state, not instance-local memory.<br/>
+      <strong>Function: Gather/synchronization barrier only — does NOT perform scoring.</strong> Collects all component scores and packages them into a single payload for the Decision Engine.<br/>
+      <strong>Completion check:</strong> After each score received, compare received keys to expected list. All present → package and publish to <code>emails.scored</code>. Not all → wait.<br/>
+      <strong>Timeout:</strong> 30s → emit partial result with <code>partial_analysis: true</code> and list of missing components.
+    </div>
+  </div>
+  <div class="step-footer">
+    <div class="step-kafka">
+      <div class="topic-label">→ emails.scored</div>
+      <div class="topic-meta">Key: email_id · 6 partitions · 48h retention</div>
+    </div>
+    <div class="step-db">
+      <strong>R/W</strong> Redis only: <code>aggregator:{email_id}</code><br/>
+      No PostgreSQL access.
+    </div>
+  </div>
+</div>
+
+<div class="note">
+  <strong>Message schema — <code>emails.scored</code>:</strong><br/>
+  <code>{ email_id, org_id, internal_id: bigint, fetched_at: timestamp, url_score: int|null, header_score: int, attachment_score: int|null, nlp_score: int|null, partial_analysis: bool, missing_components: string[], component_details: { url: &lt;full scores.url message&gt;, header: &lt;full scores.header message&gt;, attachment: &lt;full scores.attachment message&gt;|null, nlp: &lt;full scores.nlp message&gt;|null }, aggregation_latency_ms: int, timeout_triggered: bool }</code>
+</div>
+
+<!-- Step 5 -->
+<div class="pipeline-step">
+  <div class="step-header">
+    <div class="step-num">5</div>
+    <div class="step-content">
+      <strong>DECISION ENGINE / VERDICT SERVICE</strong> (Go) — <em>SVC-08</em><br/>
+      Consumes <code>emails.scored</code>. Terminal processing block — responsible for final scoring, verdict, campaign management, and persistence:<br/>
+      <strong>(i) Final score computation:</strong> Receives individual component scores (url, header, attachment, nlp) from Aggregator. Combines into a single <code>risk_score</code> (0–100). <em>Combination method is under research — must be explainable; individual component scores always preserved.</em><br/>
+      <strong>(ii) Rule engine:</strong> Load active rules from <code>rules</code> table (60s cache). Each firing rule adjusts score by <code>score_impact</code> (-100 to +100).<br/>
+      <strong>(iii) Verdict:</strong> Map final score to label. Preliminary thresholds (subject to calibration): 0–25 → benign | 26–50 → suspicious | 51–75 → phishing | 76–100 → phishing (high) or malware. Confidence computed separately from risk score — reflects label certainty, not severity.<br/>
+      <strong>(iv) Campaign management:</strong> <code>fingerprint = SHA256(sender_domain|url_domain|subject_template|intent)</code>. UPSERT into campaigns. SimHash near-duplicate detection (per-org scoped via Redis).<br/>
+      <strong>(v) Campaign-informed scoring:</strong> Campaign history (avg risk_score, email count, analyst verdicts) serves as an additional signal for future emails matching the same campaign. <em>Specific mechanism under research.</em><br/>
+      <strong>(vi)</strong> All DB writes within a single PostgreSQL transaction.
+    </div>
+  </div>
+  <div class="step-footer">
+    <div class="step-kafka">
+      <div class="topic-label">→ emails.verdict</div>
+      <div class="topic-meta">Key: email_id · 6 partitions · 7d retention</div>
+    </div>
+    <div class="step-db">
+      <strong>R</strong> <code>rules</code> (003+008) · <strong>R</strong> <code>campaigns</code> (001+002) · <strong>R</strong> <code>verdicts</code> (campaign history) · <strong>R</strong> Redis: simhash:{org_id}:*<br/>
+      <strong>W</strong> <code>emails</code> UPDATE: risk_score, header_risk_score, content_risk_score, url_risk_score, attachment_risk_score, campaign_id, analysis_metadata<br/>
+      <strong>W</strong> <code>verdicts</code> INSERT: entity_type, entity_id, label, confidence, source, model_version<br/>
+      <strong>W</strong> <code>rule_hits</code>: rule_id, entity_id, score_impact, match_detail<br/>
+      <strong>U</strong> <code>campaigns</code>: fingerprint, org_id, threat_type, target_brand, risk_score<br/>
+      <strong>W</strong> Redis: simhash:{org_id}:{campaign_id}
+    </div>
+  </div>
+</div>
+
+<div class="note">
+  <strong>Message schema — <code>emails.verdict</code>:</strong><br/>
+  <code>{ email_id, org_id, verdict_label: "benign"|"suspicious"|"phishing"|"malware"|"spam"|"unknown", confidence: float 0-1, risk_score: int 0-100, header_risk_score: int, content_risk_score: int, url_risk_score: int, attachment_risk_score: int, campaign_id: int|null, campaign_fingerprint: string|null, is_new_campaign: bool, fired_rules: [{ rule_id, rule_name, score_impact }], verdict_source: "model"|"rule", model_version: string, partial_analysis: bool, processing_time_total_ms: int }</code>
+</div>
+
+<!-- Step 6a -->
+<div class="pipeline-step">
+  <div class="step-header">
+    <div class="step-num">6a</div>
+    <div class="step-content">
+      <strong>NOTIFICATION SERVICE</strong> (Go) — <em>SVC-09</em><br/>
+      Consumes <code>emails.verdict</code>. If <code>risk_score ≥ threshold</code> OR <code>verdict_label ∈ {phishing, malware}</code> → send alerts.<br/>
+      Channels: email to org admins, webhook POST (SIEM/SOAR), Slack/Teams.<br/>
+      <strong>Rate limit:</strong> max 1 alert per campaign_id per org per hour (Redis counter: <code>notif:{org_id}:{campaign_id}</code> TTL 3600s).
+    </div>
+  </div>
+  <div class="step-footer">
+    <div class="step-kafka">
+      <div class="topic-label">Terminal consumer</div>
+      <div class="topic-meta">No output topic.</div>
+    </div>
+    <div class="step-db">
+      <strong>R</strong> <code>organisations</code> (thresholds, prefs) · <strong>R</strong> <code>users</code> (admin contacts)<br/>
+      <strong>R/W</strong> Redis: rate limit counters
+    </div>
+  </div>
+</div>
+
+<!-- Step 6b -->
+<div class="pipeline-step">
+  <div class="step-header">
+    <div class="step-num">6b</div>
+    <div class="step-content">
+      <strong>API / DASHBOARD SERVICE</strong> (Go REST + React SPA + WebSocket) — <em>SVC-10</em><br/>
+      Consumes <code>emails.verdict</code> internally for WebSocket live feed.<br/>
+      REST API: /api/v1/emails, /campaigns, /rules (CRUD), /api-keys (CRUD), /stats (MVs), /feeds, /verdicts (analyst POST).<br/>
+      Auth: JWT + API keys. Scoped per org via <code>org_id</code>.
+    </div>
+  </div>
+  <div class="step-footer">
+    <div class="step-kafka">
+      <div class="topic-label">Terminal consumer</div>
+      <div class="topic-meta">No output topic.</div>
+    </div>
+    <div class="step-db">
+      <strong>R</strong> all 17 tables + 5 MVs + 1 view<br/>
+      <strong>W</strong> <code>users</code>, <code>organisations</code>, <code>api_keys</code>, <code>rules</code>, <code>verdicts</code> (analyst), <code>audit_log</code>
+    </div>
+  </div>
+</div>
+
+<!-- Independent service -->
+<div class="pipeline-step">
+  <div class="step-header">
+    <div class="step-num">BG</div>
+    <div class="step-content">
+      <strong>TI FEED SYNC SERVICE</strong> (Go) — <em>SVC-11</em> — <strong>Independent background service, not in main pipeline.</strong><br/>
+      Runs on schedule (default: every 6h, configurable per feed). For each enabled feed: fetch → parse (CSV/JSON/STIX) → deduplicate → bulk UPSERT into <code>enriched_threats</code>.<br/>
+      After all feeds: <code>REFRESH MATERIALIZED VIEW CONCURRENTLY</code> for all 5 views. Update Redis TI cache.<br/>
+      <strong>Feeds:</strong> PhishTank, OpenPhish, URLhaus, MalwareBazaar (hashes → <code>attachment_library</code>), Abuse.ch ThreatFox, custom feeds.
+    </div>
+  </div>
+  <div class="step-footer">
+    <div class="step-kafka">
+      <div class="topic-label">No Kafka</div>
+      <div class="topic-meta">DB-driven schedule.</div>
+    </div>
+    <div class="step-db">
+      <strong>R/W</strong> <code>feeds</code> · <strong>W</strong> <code>enriched_threats</code> (bulk UPSERT) · <strong>W</strong> <code>attachment_library</code> (malware hashes)<br/>
+      <strong>W</strong> Redis: TI cache refresh · Triggers MV refresh
+    </div>
+  </div>
+</div>
+
+
+<!-- ============================================================ -->
+<h2 class="page-break">2. Service Detail Sheets</h2>
+
+<h3>2.1 Email Ingestion Service (SVC-01) — Adapter Specifications</h3>
+
+<table>
+  <tr>
+    <th>Adapter</th>
+    <th>Protocol</th>
+    <th>Authentication</th>
+    <th>Delivery Mechanism</th>
+    <th>Polling Interval / Trigger</th>
+    <th>Notes</th>
+  </tr>
+  <tr>
+    <td class="svc">Gmail</td>
+    <td>HTTPS (Gmail API v1)</td>
+    <td>OAuth2 (offline access, scope: gmail.readonly)</td>
+    <td>Google Pub/Sub push notification → poll messages.get</td>
+    <td>Event-driven (Pub/Sub) + 5-min fallback poll</td>
+    <td>Requires GCP project. Watch request expires every 7 days — auto-renew.</td>
+  </tr>
+  <tr>
+    <td class="svc">Outlook</td>
+    <td>HTTPS (Microsoft Graph API v1.0)</td>
+    <td>OAuth2 (app-level or delegated, scope: Mail.Read)</td>
+    <td>Change notification subscription (webhook)</td>
+    <td>Event-driven (webhook) + 5-min fallback poll (delta query)</td>
+    <td>Subscription max lifetime 3 days — auto-renew. Supports shared mailboxes.</td>
+  </tr>
+  <tr>
+    <td class="svc">IMAP</td>
+    <td>IMAP4rev1 (TLS)</td>
+    <td>Username/password or OAuth2 XOAUTH2</td>
+    <td>IDLE command (push) or poll INBOX</td>
+    <td>IDLE (instant) + 29-min IDLE timeout reconnect</td>
+    <td>Generic — works with any IMAP provider. Least metadata available.</td>
+  </tr>
+  <tr>
+    <td class="svc">API Upload</td>
+    <td>HTTPS (REST)</td>
+    <td>API key (header: X-API-Key)</td>
+    <td>POST /api/v1/scan — multipart/form-data or raw EML body</td>
+    <td>On-demand (user-initiated)</td>
+    <td>Primary interface for testing and SIEM forwarding. Rate limit: 100 req/min/org.</td>
+  </tr>
+  <tr>
+    <td class="svc">Custom</td>
+    <td>Implements <code>EmailSource</code> interface</td>
+    <td>User-defined</td>
+    <td>User-defined</td>
+    <td>User-defined</td>
+    <td>Interface contract: <code>Fetch() → []RawEmail</code>, <code>Acknowledge(id)</code>, <code>HealthCheck() → error</code></td>
+  </tr>
+</table>
+
+<div class="note">
+  <strong>EmailSource interface (Go):</strong><br/>
+  <code>type EmailSource interface {</code><br/>
+  <code>&nbsp;&nbsp;Name() string</code><br/>
+  <code>&nbsp;&nbsp;Fetch(ctx context.Context, since time.Time) ([]RawEmail, error)</code><br/>
+  <code>&nbsp;&nbsp;Acknowledge(ctx context.Context, ids []string) error</code><br/>
+  <code>&nbsp;&nbsp;HealthCheck(ctx context.Context) error</code><br/>
+  <code>}</code><br/>
+  <code>type RawEmail struct { MessageID string; RFC822 []byte; ReceivedAt time.Time; SourceMetadata json.RawMessage }</code>
+</div>
+
+<!-- ============================================================ -->
+<h2>3. Kafka Topic Registry</h2>
+
+<table>
+  <tr>
+    <th>Topic</th>
+    <th>Partitions</th>
+    <th>Retention</th>
+    <th>Key</th>
+    <th>Producer(s)</th>
+    <th>Consumer Group(s)</th>
+    <th>Message Avg Size</th>
+    <th>Expected Throughput</th>
+  </tr>
+  <tr><td><code>emails.raw</code></td><td>6</td><td>48h</td><td>email_id</td><td>SVC-01 (Ingestion)</td><td>cg-parser</td><td>50–500 KB</td><td>~1 msg/s (steady), burst to 50/s</td></tr>
+  <tr><td><code>analysis.urls</code></td><td>6</td><td>24h</td><td>email_id</td><td>SVC-02 (Parser)</td><td>cg-url-analysis</td><td>1–10 KB</td><td>= emails.raw rate</td></tr>
+  <tr><td><code>analysis.headers</code></td><td>6</td><td>24h</td><td>email_id</td><td>SVC-02 (Parser)</td><td>cg-header-analysis</td><td>2–5 KB</td><td>= emails.raw rate</td></tr>
+  <tr><td><code>analysis.attachments</code></td><td>3</td><td>24h</td><td>email_id</td><td>SVC-02 (Parser)</td><td>cg-attachment-analysis</td><td>0.5–2 KB</td><td>~60% of emails.raw (not all emails have attachments)</td></tr>
+  <tr><td><code>analysis.text</code></td><td>6</td><td>24h</td><td>email_id</td><td>SVC-02 (Parser)</td><td>cg-nlp-analysis</td><td>1–20 KB</td><td>~95% of emails.raw (nearly all have body text)</td></tr>
+  <tr><td><code>analysis.plans</code></td><td>6</td><td>24h</td><td>email_id</td><td>SVC-02 (Parser)</td><td>cg-aggregator</td><td>0.2 KB</td><td>= emails.raw rate</td></tr>
+  <tr><td><code>scores.url</code></td><td>6</td><td>24h</td><td>email_id</td><td>SVC-03 (URL Analysis)</td><td>cg-aggregator</td><td>1–5 KB</td><td>= analysis.urls rate</td></tr>
+  <tr><td><code>scores.header</code></td><td>6</td><td>24h</td><td>email_id</td><td>SVC-04 (Header Analysis)</td><td>cg-aggregator</td><td>1–3 KB</td><td>= analysis.headers rate</td></tr>
+  <tr><td><code>scores.attachment</code></td><td>3</td><td>24h</td><td>email_id</td><td>SVC-05 (Attachment Analysis)</td><td>cg-aggregator</td><td>0.5–2 KB</td><td>= analysis.attachments rate</td></tr>
+  <tr><td><code>scores.nlp</code></td><td>6</td><td>24h</td><td>email_id</td><td>SVC-06 (NLP Analysis)</td><td>cg-aggregator</td><td>0.5–1 KB</td><td>= analysis.text rate</td></tr>
+  <tr><td><code>emails.scored</code></td><td>6</td><td>48h</td><td>email_id</td><td>SVC-07 (Aggregator)</td><td>cg-decision-engine</td><td>5–30 KB (contains all component details)</td><td>= emails.raw rate</td></tr>
+  <tr><td><code>emails.verdict</code></td><td>6</td><td>7d</td><td>email_id</td><td>SVC-08 (Decision Engine)</td><td>cg-notification, cg-dashboard</td><td>1–3 KB</td><td>= emails.raw rate</td></tr>
+</table>
+
+<div class="note">
+  <strong>Partition key invariant:</strong> All topics use <code>email_id</code> as the partition key. This guarantees that all messages related to the same email land on the same partition <em>within each topic</em>, enabling ordered processing per email within each consumer. Consumer group <code>cg-aggregator</code> consumes 5 topics — however, cross-topic co-location is NOT guaranteed (topics have different partition counts). This is by design: aggregator instances are stateless workers with shared Redis state. Any instance can process any score event for any email.
+</div>
+
+
+<!-- ============================================================ -->
+<h2>4. Database Access Matrix — Complete</h2>
+<p style="margin-bottom:6px;"><strong>R</strong> = Read. <strong>W</strong> = Write (INSERT or UPDATE). <strong>U</strong> = UPSERT. <strong>—</strong> = No access.</p>
+
+<table class="compact-table">
+  <tr>
+    <th>Table</th>
+    <th>SVC-01<br/>Ingestion</th>
+    <th>SVC-02<br/>Parser</th>
+    <th>SVC-03<br/>URL Analysis</th>
+    <th>SVC-04<br/>Header</th>
+    <th>SVC-05<br/>Attachment</th>
+    <th>SVC-06<br/>NLP</th>
+    <th>SVC-07<br/>Aggregator</th>
+    <th>SVC-08<br/>Decision</th>
+    <th>SVC-09<br/>Notif.</th>
+    <th>SVC-10<br/>API/Dash</th>
+    <th>SVC-11<br/>TI Sync</th>
+  </tr>
+  <tr><td><code>emails</code></td><td>—</td><td><strong>W</strong></td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td><strong>W</strong> (UPDATE)</td><td>—</td><td>R</td><td>—</td></tr>
+  <tr><td><code>email_urls</code></td><td>—</td><td><strong>W</strong></td><td>R</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>R</td><td>—</td></tr>
+  <tr><td><code>email_attachments</code></td><td>—</td><td><strong>W</strong></td><td>—</td><td>—</td><td>R</td><td>—</td><td>—</td><td>—</td><td>—</td><td>R</td><td>—</td></tr>
+  <tr><td><code>email_recipients</code></td><td>—</td><td><strong>W</strong></td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>R</td><td>—</td></tr>
+  <tr><td><code>attachment_library</code></td><td>—</td><td><strong>U</strong></td><td>—</td><td>—</td><td>R/<strong>W</strong></td><td>—</td><td>—</td><td>—</td><td>—</td><td>R</td><td><strong>W</strong></td></tr>
+  <tr><td><code>enriched_threats</code></td><td>—</td><td>—</td><td>R/<strong>W</strong></td><td>R</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>R</td><td><strong>U</strong></td></tr>
+  <tr><td><code>enrichment_results</code></td><td>—</td><td>—</td><td><strong>U</strong></td><td>—</td><td>R/<strong>U</strong></td><td>—</td><td>—</td><td>—</td><td>—</td><td>R</td><td>—</td></tr>
+  <tr><td><code>enrichment_jobs</code></td><td>—</td><td>—</td><td><strong>W</strong></td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>R</td><td>—</td></tr>
+  <tr><td><code>verdicts</code></td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>R/<strong>W</strong></td><td>—</td><td>R/<strong>W</strong></td><td>—</td></tr>
+  <tr><td><code>campaigns</code></td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>R/<strong>U</strong></td><td>—</td><td>R</td><td>—</td></tr>
+  <tr><td><code>rules</code></td><td>—</td><td>—</td><td>—</td><td>R</td><td>—</td><td>—</td><td>—</td><td>R</td><td>—</td><td>R/<strong>W</strong></td><td>—</td></tr>
+  <tr><td><code>rule_hits</code></td><td>—</td><td>—</td><td>—</td><td><strong>W</strong></td><td>—</td><td>—</td><td>—</td><td><strong>W</strong></td><td>—</td><td>R</td><td>—</td></tr>
+  <tr><td><code>feeds</code></td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>R/<strong>W</strong></td><td>R/<strong>W</strong></td></tr>
+  <tr><td><code>organisations</code></td><td>R</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>R</td><td>R/<strong>W</strong></td><td>—</td></tr>
+  <tr><td><code>users</code></td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>R</td><td>R/<strong>W</strong></td><td>—</td></tr>
+  <tr><td><code>api_keys</code></td><td>R</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>R/<strong>W</strong></td><td>—</td></tr>
+  <tr><td><code>audit_log</code></td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td><strong>W</strong></td><td>—</td></tr>
+  <tr><td style="border-top:2px solid #333"><em>mv_threat_summary</em></td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>R</td><td>REFRESH</td></tr>
+  <tr><td><em>mv_campaign_summary</em></td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>R</td><td>REFRESH</td></tr>
+  <tr><td><em>mv_feed_health</em></td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>R</td><td>REFRESH</td></tr>
+  <tr><td><em>mv_rule_performance</em></td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>R</td><td>REFRESH</td></tr>
+  <tr><td><em>mv_org_ingestion_summary</em></td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>R</td><td>REFRESH</td></tr>
+</table>
+
+
+<!-- ============================================================ -->
+<h2>5. Redis Key Registry</h2>
+
+<table>
+  <tr>
+    <th>Key Pattern</th>
+    <th>Type</th>
+    <th>TTL</th>
+    <th>Set By</th>
+    <th>Read By</th>
+    <th>Purpose</th>
+  </tr>
+  <tr><td><code>dedup:{org_id}:{message_id}</code></td><td>STRING (1)</td><td>7 days</td><td>SVC-01</td><td>SVC-01</td><td>Email ingestion deduplication. Value: "1". Existence check only.</td></tr>
+  <tr><td><code>url_score:{sha256(url)}</code></td><td>HASH</td><td>6 hours</td><td>SVC-03</td><td>SVC-03</td><td>URL score cache. Fields: score, ti_matched, domain, cached_at. Avoids re-enrichment.</td></tr>
+  <tr><td><code>ti_domain:{domain}</code></td><td>HASH</td><td>1 hour</td><td>SVC-11</td><td>SVC-03, SVC-04</td><td>TI domain cache. Fields: threat_id, risk_score, threat_type. Avoids DB query per URL.</td></tr>
+  <tr><td><code>ti_hash:{sha256}</code></td><td>HASH</td><td>1 hour</td><td>SVC-11</td><td>SVC-05</td><td>TI attachment hash cache. Fields: is_malicious, risk_score, source.</td></tr>
+  <tr><td><code>aggregator:{email_id}</code></td><td>HASH</td><td>120 seconds</td><td>SVC-07</td><td>SVC-07</td><td>Score aggregation state. Fields: expected (JSON), received (JSON), created_at.</td></tr>
+  <tr><td><code>simhash:{org_id}:{campaign_id}</code></td><td>STRING</td><td>30 days</td><td>SVC-08</td><td>SVC-08</td><td>64-bit SimHash for campaign near-duplicate detection. Per-org scoped to prevent cross-tenant matching.</td></tr>
+  <tr><td><code>notif:{org_id}:{campaign_id}</code></td><td>STRING (counter)</td><td>3600 seconds</td><td>SVC-09</td><td>SVC-09</td><td>Notification rate limiter. INCR on each alert. Block if &gt; 1.</td></tr>
+  <tr><td><code>rules_cache:{org_id}</code></td><td>STRING (JSON)</td><td>60 seconds</td><td>SVC-04, SVC-08</td><td>SVC-04, SVC-08</td><td>In-memory rule cache. Full rule set serialized. Avoids DB poll per email.</td></tr>
+</table>
+
+
+<!-- ============================================================ -->
+<h2>6. Error Handling &amp; Timeout Policy</h2>
+
+<table>
+  <tr>
+    <th>Service</th>
+    <th>Failure Scenario</th>
+    <th>Behavior</th>
+    <th>Retry Policy</th>
+    <th>Fallback Score</th>
+  </tr>
+  <tr><td>SVC-01</td><td>Adapter fetch failure</td><td>Log error, retry on next poll cycle</td><td>Exponential backoff, max 3 retries per cycle</td><td>N/A (no score)</td></tr>
+  <tr><td>SVC-01</td><td>Kafka publish failure</td><td>Retry with backoff, dead-letter after 5 attempts</td><td>1s, 2s, 4s, 8s, 16s</td><td>N/A</td></tr>
+  <tr><td>SVC-02</td><td>MIME parse failure</td><td>Log error, publish with empty URLs/attachments, body_plain = raw text extraction attempt</td><td>No retry (deterministic failure)</td><td>N/A</td></tr>
+  <tr><td>SVC-03</td><td>WHOIS/SSL/DNS timeout (per URL)</td><td>Skip enrichment for that URL, use cached data or empty enrichment</td><td>3 retries, 2s timeout each</td><td>score = 50</td></tr>
+  <tr><td>SVC-03</td><td>XGBoost subprocess timeout (5s)</td><td>Return neutral score, log model timeout</td><td>No retry (latency-critical)</td><td>score = 50</td></tr>
+  <tr><td>SVC-03</td><td>XGBoost subprocess crash</td><td>Respawn process from pool, retry once</td><td>1 retry, then score = 50</td><td>score = 50</td></tr>
+  <tr><td>SVC-04</td><td>Rule evaluation error</td><td>Skip malformed rule, log, continue with remaining rules</td><td>No retry (skip rule)</td><td>Rule impact = 0</td></tr>
+  <tr><td>SVC-05</td><td>VirusTotal API rate limit (429)</td><td>Use local hash lookup only, skip VT enrichment</td><td>Backoff until next rate window</td><td>Use local-only score</td></tr>
+  <tr><td>SVC-06</td><td>NLP inference timeout (10s)</td><td>Return neutral score, flag partial_analysis</td><td>No retry (latency-critical)</td><td>score = 50</td></tr>
+  <tr><td>SVC-06</td><td>Model loading failure (OOM)</td><td>Service returns 503, consumer pauses</td><td>Kubernetes restart + health check</td><td>score = 50 (via aggregator timeout)</td></tr>
+  <tr><td>SVC-07</td><td>Score never arrives (component down)</td><td>30s timeout → emit partial result with missing = 50</td><td>No retry (timeout-based)</td><td>missing = 50</td></tr>
+  <tr><td>SVC-07</td><td>Redis connection failure</td><td>In-memory fallback (non-durable), log critical</td><td>Reconnect with backoff</td><td>Functions degraded</td></tr>
+  <tr><td>SVC-08</td><td>DB write failure (tx rollback)</td><td>Retry entire transaction</td><td>3 retries, exponential backoff</td><td>Kafka offset not committed → reprocessed</td></tr>
+  <tr><td>SVC-11</td><td>Feed fetch failure (HTTP error)</td><td>Log error, skip feed, continue with others</td><td>Will retry next 6h cycle</td><td>Stale data (last successful sync)</td></tr>
+</table>
+
+
+<!-- ============================================================ -->
+<h2>7. Deduplication Strategy — Complete</h2>
+
+<table>
+  <tr>
+    <th>Stage</th>
+    <th>What Is Deduped</th>
+    <th>Method</th>
+    <th>Storage</th>
+    <th>Scope</th>
+  </tr>
+  <tr>
+    <td>Email Ingestion (SVC-01)</td>
+    <td>Duplicate email deliveries</td>
+    <td>Check <code>(org_id, message_id)</code> existence</td>
+    <td>Redis set (fast path) → DB unique constraint (authoritative)</td>
+    <td>Per-org (Message-IDs not globally unique)</td>
+  </tr>
+  <tr>
+    <td>URL Analysis (SVC-03)</td>
+    <td>Recently-analyzed URLs</td>
+    <td>SHA256 of full URL → Redis cache lookup</td>
+    <td>Redis: <code>url_score:{hash}</code> TTL 6h</td>
+    <td>Global (same URL across all orgs)</td>
+  </tr>
+  <tr>
+    <td>Attachment Library</td>
+    <td>Identical file binaries</td>
+    <td>SHA256 unique constraint on <code>attachment_library</code></td>
+    <td>PostgreSQL unique index</td>
+    <td>Global (cross-tenant — intentional for threat signal)</td>
+  </tr>
+  <tr>
+    <td>TI Feed Sync (SVC-11)</td>
+    <td>Duplicate threat indicators</td>
+    <td>URL unique constraint on <code>enriched_threats</code></td>
+    <td>PostgreSQL unique index</td>
+    <td>Global</td>
+  </tr>
+  <tr>
+    <td>Campaign Detection (SVC-08)</td>
+    <td>Near-duplicate emails (same campaign)</td>
+    <td>SimHash of body text, Hamming distance ≤ 3</td>
+    <td>Redis: <code>simhash:{org_id}:{campaign_id}</code> TTL 30d</td>
+    <td>Per-org</td>
+  </tr>
+  <tr>
+    <td>Campaign Fingerprinting (SVC-08)</td>
+    <td>Exact-match campaign grouping</td>
+    <td>SHA256 of normalized (sender_domain + url_domain + subject_template + intent)</td>
+    <td>PostgreSQL: <code>campaigns.fingerprint</code> UNIQUE</td>
+    <td>Per-org (after org_id addition)</td>
+  </tr>
+  <tr>
+    <td>Notification (SVC-09)</td>
+    <td>Alert fatigue — repeated alerts for same campaign</td>
+    <td>Redis counter per (org_id, campaign_id) with 1h TTL</td>
+    <td>Redis: <code>notif:{org_id}:{campaign_id}</code></td>
+    <td>Per-org per-campaign</td>
+  </tr>
+</table>
+
+
+<!-- ============================================================ -->
+<h2>8. Campaign Detection Algorithm</h2>
+
+<div class="svc-block">
+  <h3>8.1 Campaign Fingerprint Computation (Exact Match)</h3>
+  <pre style="font-size:10px; line-height:1.4; margin:6px 0;">
+INPUT: scored email with verdict
+
+  sender_domain  = lower(email.sender_domain)                           // e.g. "paypa1.com"
+  url_domain     = lower(domain_of(email.riskiest_url))                 // e.g. "secure-login.paypa1.com"
+                   OR "" if no URLs
+  subject_tpl    = template(email.subject)                              // replace names/nums with placeholders
+                   e.g. "Your {BRAND} account #{NUM} needs verification"
+  intent         = nlp_facets.intent_label                              // e.g. "credential_harvesting"
+
+  fingerprint    = SHA256( sender_domain + "|" + url_domain + "|" + SHA256(subject_tpl) + "|" + intent )
+
+DB OPERATION:
+  INSERT INTO campaigns (fingerprint, org_id, threat_type, target_brand, first_seen, last_seen, risk_score)
+  VALUES ($fingerprint, $org_id, $threat_type, $target_brand, NOW(), NOW(), $risk_score)
+  ON CONFLICT (fingerprint) DO UPDATE SET
+      last_seen = NOW(),
+      risk_score = (campaigns.risk_score + $risk_score) / 2;   -- rolling average
+
+  UPDATE emails SET campaign_id = &lt;returned campaign_id&gt; WHERE internal_id = $email_id AND fetched_at = $fetched_at;
+  </pre>
+
+  <h3>8.2 SimHash Near-Duplicate Detection (Fuzzy Match)</h3>
+  <pre style="font-size:10px; line-height:1.4; margin:6px 0;">
+INPUT: email plain_text body
+
+  simhash = compute_simhash_64bit(tokenize(plain_text))       // 64-bit SimHash
+  
+  FOR each campaign_id in Redis keys matching simhash:{org_id}:*:
+      stored_hash = GET simhash:{org_id}:{campaign_id}
+      distance = hamming_distance(simhash, stored_hash)
+      IF distance <= 3:                                        // threshold: 3 bits out of 64
+          → associate email with this campaign (even if fingerprint differs)
+          → BREAK (take first match; campaigns ordered by last_seen DESC)
+  
+  IF no match found AND email.risk_score >= 50:
+      → new campaign was already created by fingerprint logic above
+      → SET simhash:{org_id}:{campaign_id} = simhash (TTL 30d)
+  </pre>
+</div>
+
+
+<!-- ============================================================ -->
+<h2>9. Data Privacy &amp; Retention Policy</h2>
+
+<table>
+  <tr>
+    <th>Data Category</th>
+    <th>Storage Location</th>
+    <th>Retention</th>
+    <th>Purge Method</th>
+    <th>Justification</th>
+  </tr>
+  <tr>
+    <td>Raw email body (body_plain, body_html)</td>
+    <td>PostgreSQL <code>emails</code></td>
+    <td>Configurable per org (default: 30 days)</td>
+    <td>Scheduled job: <code>UPDATE emails SET body_plain=NULL, body_html=NULL WHERE fetched_at &lt; NOW() - retention_interval AND org_id = $org</code></td>
+    <td>Contains user content / PII. Not needed after analysis.</td>
+  </tr>
+  <tr>
+    <td>Email metadata (sender, subject, headers, scores)</td>
+    <td>PostgreSQL <code>emails</code></td>
+    <td>Indefinite</td>
+    <td>Soft delete via <code>deleted_at</code> (user request)</td>
+    <td>Required for campaign tracking, trend analysis, dashboards.</td>
+  </tr>
+  <tr>
+    <td>Raw email bytes</td>
+    <td>Kafka <code>emails.raw</code></td>
+    <td>48 hours</td>
+    <td>Kafka topic retention policy (automatic)</td>
+    <td>Needed only for replay/reprocessing. Auto-expires.</td>
+  </tr>
+  <tr>
+    <td>Analysis intermediate messages</td>
+    <td>Kafka <code>analysis.*</code>, <code>scores.*</code></td>
+    <td>24 hours</td>
+    <td>Kafka topic retention policy (automatic)</td>
+    <td>Transient pipeline data. Not needed after verdict.</td>
+  </tr>
+  <tr>
+    <td>Verdict messages</td>
+    <td>Kafka <code>emails.verdict</code></td>
+    <td>7 days</td>
+    <td>Kafka topic retention policy (automatic)</td>
+    <td>Longer retention for notification retry / dashboard catch-up.</td>
+  </tr>
+  <tr>
+    <td>Verdicts (DB)</td>
+    <td>PostgreSQL <code>verdicts</code></td>
+    <td>Indefinite (append-only)</td>
+    <td>Never deleted — compliance audit trail</td>
+    <td>Immutable record of all classification decisions.</td>
+  </tr>
+  <tr>
+    <td>Attachment binaries</td>
+    <td>Object store (S3 / MinIO via <code>storage_uri</code>)</td>
+    <td>90 days</td>
+    <td>S3 lifecycle policy</td>
+    <td>Useful for forensic analysis. Hash + metadata persist indefinitely.</td>
+  </tr>
+  <tr>
+    <td>Attachment hashes &amp; metadata</td>
+    <td>PostgreSQL <code>attachment_library</code></td>
+    <td>Indefinite</td>
+    <td>N/A</td>
+    <td>Hash-only — no PII. Cross-tenant malware signal.</td>
+  </tr>
+  <tr>
+    <td>Threat intelligence</td>
+    <td>PostgreSQL <code>enriched_threats</code></td>
+    <td>Indefinite (soft-delete stale)</td>
+    <td><code>deleted_at</code> set for entries not seen in 90 days</td>
+    <td>TI data is valuable for historical correlation.</td>
+  </tr>
+  <tr>
+    <td>Enrichment API responses</td>
+    <td>PostgreSQL <code>enrichment_results</code></td>
+    <td>TTL-based (<code>expires_at</code>)</td>
+    <td>Staleness sweep re-fetches expired entries</td>
+    <td>Cacheable external API responses. Re-fetch when stale.</td>
+  </tr>
+  <tr>
+    <td>Audit log</td>
+    <td>PostgreSQL <code>audit_log</code></td>
+    <td>Indefinite (append-only)</td>
+    <td>Never deleted — compliance</td>
+    <td>Regulatory / compliance requirement.</td>
+  </tr>
+</table>
+
+
+<!-- ============================================================ -->
+<h2>10. Infrastructure Requirements</h2>
+
+<div class="three-col">
+  <div class="svc-block">
+    <h3>PostgreSQL 15+</h3>
+    <ul class="field-list">
+      <li>16 tables, 5 materialized views, 1 view</li>
+      <li>Monthly range partitioning on <code>emails</code></li>
+      <li>Row-level security per <code>org_id</code> (migration 018)</li>
+      <li>JSONB + GIN indexes for headers, tags</li>
+      <li>Append-only verdicts (no UPDATE/DELETE)</li>
+      <li>pg_cron for MV refresh schedule</li>
+      <li>Recommended: 4 vCPU, 16 GB RAM, SSD</li>
+      <li>Connection pool: pgbouncer (transaction mode)</li>
+    </ul>
+  </div>
+  <div class="svc-block">
+    <h3>Apache Kafka</h3>
+    <ul class="field-list">
+      <li>12 topics (see §3 for full registry)</li>
+      <li>Minimum 3 brokers (production)</li>
+      <li>Replication factor: 3 (ISR min: 2)</li>
+      <li>Partition key: <code>email_id</code> on all topics</li>
+      <li>Consumer groups: 1 per consuming service</li>
+      <li>Exactly-once semantics (idempotent producers + transactional consumers)</li>
+      <li>Recommended: 2 vCPU, 8 GB RAM per broker</li>
+      <li>ZooKeeper or KRaft mode (KRaft preferred)</li>
+    </ul>
+  </div>
+  <div class="svc-block">
+    <h3>Redis 7+</h3>
+    <ul class="field-list">
+      <li>8 key patterns (see §5 for full registry)</li>
+      <li>Persistence: AOF with 1s fsync</li>
+      <li>Max memory: 2 GB (LRU eviction on TI cache keys)</li>
+      <li>Used for: dedup, URL score cache, TI cache, aggregator state, rate limiting, SimHash store, rule cache</li>
+      <li>Single instance sufficient; Sentinel for HA</li>
+      <li>Recommended: 2 vCPU, 4 GB RAM</li>
+    </ul>
+  </div>
+</div>
+
+
+<!-- ============================================================ -->
+<h2>11. Scaling Strategy</h2>
+
+<table>
+  <tr>
+    <th>Service</th>
+    <th>Stateless?</th>
+    <th>Scaling Method</th>
+    <th>Scale Trigger</th>
+    <th>Min / Max Instances</th>
+  </tr>
+  <tr><td>SVC-01 Ingestion</td><td>Yes</td><td>Horizontal (multiple adapter instances)</td><td>Ingestion lag &gt; 1000 emails</td><td>1 / 4</td></tr>
+  <tr><td>SVC-02 Parser</td><td>Yes</td><td>Horizontal (Kafka consumer group)</td><td>Consumer lag on <code>emails.raw</code> &gt; 500</td><td>1 / 6</td></tr>
+  <tr><td>SVC-03 URL Analysis</td><td>Yes</td><td>Horizontal (Kafka consumer group)</td><td>Consumer lag on <code>analysis.urls</code> &gt; 500</td><td>1 / 6</td></tr>
+  <tr><td>SVC-04 Header Analysis</td><td>Yes</td><td>Horizontal (Kafka consumer group)</td><td>Consumer lag on <code>analysis.headers</code> &gt; 1000</td><td>1 / 3</td></tr>
+  <tr><td>SVC-05 Attachment Analysis</td><td>Yes</td><td>Horizontal (Kafka consumer group)</td><td>Consumer lag on <code>analysis.attachments</code> &gt; 500</td><td>1 / 3</td></tr>
+  <tr><td>SVC-06 NLP Analysis</td><td>Yes</td><td>Horizontal (Kafka consumer group)</td><td>Consumer lag on <code>analysis.text</code> &gt; 200 (heavier compute)</td><td>1 / 4</td></tr>
+  <tr><td>SVC-07 Aggregator</td><td>No (Redis state)</td><td>Horizontal OK (shared Redis state)</td><td>Consumer lag on any <code>scores.*</code> &gt; 500</td><td>1 / 3</td></tr>
+  <tr><td>SVC-08 Decision Engine</td><td>Yes</td><td>Horizontal (Kafka consumer group)</td><td>Consumer lag on <code>emails.scored</code> &gt; 500</td><td>1 / 3</td></tr>
+  <tr><td>SVC-09 Notification</td><td>Yes</td><td>Horizontal</td><td>Rarely bottleneck</td><td>1 / 2</td></tr>
+  <tr><td>SVC-10 API/Dashboard</td><td>Yes</td><td>Horizontal (behind load balancer)</td><td>HTTP request latency p95 &gt; 500ms</td><td>2 / 6</td></tr>
+  <tr><td>SVC-11 TI Sync</td><td>Yes (scheduled)</td><td>Single instance (leader election)</td><td>N/A</td><td>1 / 1</td></tr>
+</table>
+
+
+<!-- ============================================================ -->
+<h2>12. Observability &amp; SLA Targets</h2>
+
+<table>
+  <tr>
+    <th>Metric</th>
+    <th>Target</th>
+    <th>Measurement Point</th>
+    <th>Alert Threshold</th>
+  </tr>
+  <tr><td>End-to-end latency (ingestion → verdict)</td><td>&lt; 60s p95</td><td><code>emails.verdict.processing_time_total_ms</code></td><td>&gt; 90s p95 over 5 min window</td></tr>
+  <tr><td>Email Parser throughput</td><td>&gt; 10 emails/s sustained</td><td>Kafka consumer lag on <code>emails.raw</code></td><td>Lag &gt; 1000 for &gt; 5 min</td></tr>
+  <tr><td>ML inference latency (URL XGBoost)</td><td>&lt; 5s p99</td><td>SVC-03 histogram</td><td>&gt; 5s p99 (timeout territory)</td></tr>
+  <tr><td>ML inference latency (NLP ensemble)</td><td>&lt; 10s p99</td><td>SVC-06 histogram</td><td>&gt; 10s p99 (timeout territory)</td></tr>
+  <tr><td>Score Aggregator completeness</td><td>&gt; 95% full analysis (not partial)</td><td><code>partial_analysis: true</code> rate</td><td>&gt; 10% partial over 15 min</td></tr>
+  <tr><td>TI feed freshness</td><td>&lt; 7 hours since last sync</td><td><code>feeds.last_fetched_at</code></td><td>&gt; 8 hours since last successful sync</td></tr>
+  <tr><td>DB connection pool utilization</td><td>&lt; 80%</td><td>pgbouncer stats</td><td>&gt; 90% for &gt; 2 min</td></tr>
+  <tr><td>Redis memory utilization</td><td>&lt; 80% of maxmemory</td><td>Redis INFO memory</td><td>&gt; 90%</td></tr>
+  <tr><td>Kafka disk usage per broker</td><td>&lt; 70%</td><td>Broker filesystem</td><td>&gt; 85%</td></tr>
+  <tr><td>Error rate (any service)</td><td>&lt; 1% of processed messages</td><td>Per-service error counters</td><td>&gt; 5% over 5 min</td></tr>
+</table>
+
+<div class="note" style="margin-top:12px;">
+  <strong>Tracing:</strong> OpenTelemetry SDK in all Go/Python services. Trace context propagated via Kafka headers (<code>traceparent</code>). Traces exported to Jaeger. <code>email_id</code> attached as span attribute on every operation for cross-service correlation.<br/>
+  <strong>Logging:</strong> zerolog (Go), structlog (Python). JSON format. Fields: <code>service</code>, <code>email_id</code>, <code>org_id</code>, <code>trace_id</code>, <code>level</code>, <code>msg</code>, <code>error</code>. Shipped to ELK or Loki.<br/>
+  <strong>Metrics:</strong> Prometheus exposition on <code>:9090/metrics</code> per service. Grafana dashboards.
+</div>
+
+<!-- ============================================================ -->
+<h2 class="page-break">13. Table Origin Reference — Migration File → Table</h2>
+
+<table class="compact-table">
+  <tr><th>Table / View</th><th>Defined In</th><th>Columns Added In</th><th>Column Count</th></tr>
+  <tr><td><code>enriched_threats</code></td><td>001_initial_schema.up.sql</td><td>002 (+org_id), 003 (+feed_id)</td><td>35</td></tr>
+  <tr><td><code>campaigns</code></td><td>001_initial_schema.up.sql</td><td>002 (+org_id)</td><td>13</td></tr>
+  <tr><td><code>emails</code> (partitioned)</td><td>001_initial_schema.up.sql</td><td>002 (+org_id, +uq_emails_org_message_id)</td><td>30</td></tr>
+  <tr><td><code>verdicts</code></td><td>001_initial_schema.up.sql</td><td>002 (+created_by)</td><td>10</td></tr>
+  <tr><td><code>email_urls</code></td><td>001_initial_schema.up.sql</td><td>—</td><td>5</td></tr>
+  <tr><td><code>attachment_library</code></td><td>001_initial_schema.up.sql</td><td>008 (+storage_uri, +updated_at)</td><td>13</td></tr>
+  <tr><td><code>email_attachments</code></td><td>001_initial_schema.up.sql</td><td>008 (+created_at)</td><td>10</td></tr>
+  <tr><td><code>organisations</code></td><td>002_add_users_orgs.up.sql</td><td>—</td><td>6</td></tr>
+  <tr><td><code>users</code></td><td>002_add_users_orgs.up.sql</td><td>—</td><td>10</td></tr>
+  <tr><td><code>api_keys</code></td><td>002_add_users_orgs.up.sql</td><td>—</td><td>10</td></tr>
+  <tr><td><code>audit_log</code></td><td>002_add_users_orgs.up.sql</td><td>—</td><td>9</td></tr>
+  <tr><td><code>feeds</code></td><td>003_add_enrichments.up.sql</td><td>—</td><td>9</td></tr>
+  <tr><td><code>enrichment_jobs</code></td><td>003_add_enrichments.up.sql</td><td>—</td><td>10</td></tr>
+  <tr><td><code>enrichment_results</code></td><td>003_add_enrichments.up.sql</td><td>008 (+ttl_seconds, +expires_at)</td><td>11</td></tr>
+  <tr><td><code>rules</code></td><td>003_add_enrichments.up.sql</td><td>008 (+rule_group_id)</td><td>11</td></tr>
+  <tr><td><code>rule_hits</code></td><td>003_add_enrichments.up.sql</td><td>—</td><td>7</td></tr>
+  <tr><td><code>email_recipients</code></td><td>008_add_missing_schema.up.sql</td><td>—</td><td>7</td></tr>
+  <tr><td style="border-top:2px solid #333"><code>current_verdicts</code> (VIEW)</td><td>001_initial_schema.up.sql</td><td>—</td><td>8 (DISTINCT ON verdicts)</td></tr>
+  <tr><td><code>mv_threat_summary</code></td><td>004_add_materialized_view.up.sql</td><td>—</td><td>Aggregates enriched_threats</td></tr>
+  <tr><td><code>mv_campaign_summary</code></td><td>004_add_materialized_view.up.sql</td><td>—</td><td>Joins campaigns + emails + verdicts</td></tr>
+  <tr><td><code>mv_feed_health</code></td><td>004_add_materialized_view.up.sql</td><td>—</td><td>Joins feeds + enriched_threats</td></tr>
+  <tr><td><code>mv_rule_performance</code></td><td>004_add_materialized_view.up.sql</td><td>—</td><td>Joins rules + rule_hits</td></tr>
+  <tr><td><code>mv_org_ingestion_summary</code></td><td>004_add_materialized_view.up.sql</td><td>—</td><td>Joins emails + verdicts</td></tr>
+</table>
+
+<div class="note">
+  <strong>Design note — <code>email_urls.threat_id</code> FK dependency:</strong><br/>
+  The <code>email_urls</code> table (001) has a <code>threat_id BIGINT NOT NULL REFERENCES enriched_threats(id)</code>.
+  This means the Email Parser (SVC-02) must UPSERT a bare row into <code>enriched_threats</code> (with just <code>url</code> + <code>domain</code>) <em>before</em> it can INSERT into <code>email_urls</code>, to obtain the <code>threat_id</code> FK.
+  The URL Analysis Service (SVC-03) later UPDATEs that same <code>enriched_threats</code> row with full enrichment data (WHOIS, SSL, geo, etc.).
+  This two-phase write pattern is documented in the column-level flow below.
+</div>
+
+
+<!-- ============================================================ -->
+<h2>14. Column-Level Data Flow — Full Traceability</h2>
+<p style="margin-bottom:8px;">For every pipeline step: exactly which table columns are read, which are written, and how Kafka message fields map to DB columns. Migration file references in parentheses.</p>
+
+<!-- ======== STEP 1 ======== -->
+<h3>Step 1 — Email Ingestion Service (SVC-01)</h3>
+
+<table class="compact-table">
+  <tr><th>Operation</th><th>Table (Migration)</th><th>Columns Accessed</th><th>Direction</th><th>Notes</th></tr>
+  <tr>
+    <td>Auth lookup</td>
+    <td><code>api_keys</code> (002)</td>
+    <td><code>key_hash</code>, <code>org_id</code>, <code>scopes</code>, <code>revoked_at</code>, <code>expires_at</code></td>
+    <td>READ</td>
+    <td>Validate API key → extract org_id. Also updates <code>last_used_at</code>.</td>
+  </tr>
+  <tr>
+    <td>Ingestion quota</td>
+    <td><code>organisations</code> (002)</td>
+    <td><code>id</code>, <code>monthly_ingestion_limit</code></td>
+    <td>READ</td>
+    <td>Enforce per-org monthly ingestion cap. Cached in Redis.</td>
+  </tr>
+  <tr>
+    <td>Dedup (fast)</td>
+    <td>Redis</td>
+    <td><code>dedup:{org_id}:{message_id}</code></td>
+    <td>READ then WRITE</td>
+    <td>SETNX check. If key exists → duplicate, discard. If not → set with TTL 7d.</td>
+  </tr>
+  <tr>
+    <td>Dedup (authoritative)</td>
+    <td><code>emails</code> (001+002)</td>
+    <td><code>org_id</code>, <code>message_id</code>, <code>fetched_at</code></td>
+    <td>READ (via constraint)</td>
+    <td>Unique constraint <code>uq_emails_org_message_id(org_id, message_id, fetched_at)</code> from migration 002. Falls through to this only on Redis miss.</td>
+  </tr>
+</table>
+
+<div class="note">
+  <strong>Kafka output <code>emails.raw</code> → DB column mapping:</strong><br/>
+  The <code>emails.raw</code> message carries <code>raw_rfc822</code> bytes. These are NOT written to any DB column at this stage. The raw bytes flow to SVC-02 (Parser) which extracts them into individual <code>emails</code> table columns.
+</div>
+
+<!-- ======== STEP 2 ======== -->
+<h3>Step 2 — Email Parser Service (SVC-02)</h3>
+
+<table class="compact-table">
+  <tr><th>Operation</th><th>Table (Migration)</th><th>Columns Written</th><th>Source</th></tr>
+  <tr>
+    <td rowspan="1"><strong>INSERT email</strong></td>
+    <td><code>emails</code> (001+002)</td>
+    <td>
+      <code>internal_id</code> (auto), <code>fetched_at</code> (from Kafka msg), <code>org_id</code> (from Kafka msg, 002),
+      <code>message_id</code>, <code>sender_name</code>, <code>sender_email</code>, <code>sender_domain</code>,
+      <code>reply_to_email</code>, <code>return_path</code>, <code>originating_ip</code>,
+      <code>auth_spf</code>, <code>auth_dkim</code>, <code>auth_dmarc</code>, <code>auth_arc</code>,
+      <code>x_originating_ip</code>, <code>mailer_agent</code>, <code>in_reply_to</code>,
+      <code>references_list</code>, <code>content_charset</code>, <code>precedence</code>, <code>list_id</code>,
+      <code>vendor_security_tags</code> (JSONB), <code>subject</code>, <code>sent_timestamp</code>,
+      <code>headers_json</code> (JSONB), <code>body_plain</code>, <code>body_html</code>
+    </td>
+    <td>All extracted from parsed RFC 822 MIME. Maps 1:1 to <code>ParsedEmail</code> struct fields in <code>pkg/models/email.go</code>.</td>
+  </tr>
+  <tr>
+    <td colspan="4" style="background:#f0f0f0;font-weight:700;">Score columns NOT written at this stage: <code>header_risk_score</code>, <code>content_risk_score</code>, <code>attachment_risk_score</code>, <code>url_risk_score</code>, <code>risk_score</code>, <code>campaign_id</code>, <code>analysis_metadata</code> — these remain at DEFAULT 0 / NULL until Decision Engine (Step 5) updates them.</td>
+  </tr>
+  <tr>
+    <td><strong>UPSERT bare URL</strong></td>
+    <td><code>enriched_threats</code> (001)</td>
+    <td><code>url</code>, <code>domain</code>, <code>tld</code></td>
+    <td>For each URL extracted from email body/headers. UPSERT by <code>url</code> unique constraint. Writes ONLY url+domain+tld. All enrichment columns (WHOIS, SSL, geo, etc.) left NULL — populated later by SVC-03.</td>
+  </tr>
+  <tr>
+    <td><strong>INSERT URL link</strong></td>
+    <td><code>email_urls</code> (001)</td>
+    <td><code>email_id</code> → <code>emails.internal_id</code>,<br/><code>email_fetched_at</code> → <code>emails.fetched_at</code>,<br/><code>threat_id</code> → <code>enriched_threats.id</code> (from UPSERT above),<br/><code>visible_text</code></td>
+    <td>One row per URL per email. <code>threat_id</code> FK obtained from the enriched_threats UPSERT RETURNING id.</td>
+  </tr>
+  <tr>
+    <td><strong>UPSERT attachment hash</strong></td>
+    <td><code>attachment_library</code> (001+008)</td>
+    <td><code>sha256</code>, <code>md5</code>, <code>sha1</code>, <code>actual_extension</code>, <code>size_bytes</code>, <code>entropy</code></td>
+    <td>UPSERT by <code>sha256</code> unique constraint. <code>is_malicious</code>, <code>risk_score</code>, <code>threat_tags</code>, <code>storage_uri</code> left at defaults — updated later by SVC-05 / SVC-11.</td>
+  </tr>
+  <tr>
+    <td><strong>INSERT attachment link</strong></td>
+    <td><code>email_attachments</code> (001+008)</td>
+    <td><code>email_id</code>, <code>email_fetched_at</code>, <code>attachment_id</code> → <code>attachment_library.id</code>,<br/><code>filename</code>, <code>content_type</code>, <code>content_id</code>, <code>disposition</code>, <code>created_at</code> (008)</td>
+    <td>One row per attachment per email. <code>analysis_metadata</code> and <code>risk_score</code> left NULL/0 — updated by SVC-05.</td>
+  </tr>
+  <tr>
+    <td><strong>INSERT recipients</strong></td>
+    <td><code>email_recipients</code> (008)</td>
+    <td><code>email_id</code>, <code>email_fetched_at</code>, <code>org_id</code>, <code>address</code>, <code>display_name</code>, <code>recipient_type</code> ('to'|'cc'|'bcc')</td>
+    <td>One row per recipient (To, CC, BCC) extracted from headers.</td>
+  </tr>
+</table>
+
+<div class="note">
+  <strong>Kafka output fields → DB column traceability:</strong><br/><br/>
+  <code>analysis.urls</code> fields: <code>url</code> → comes from parser's URL extraction → already written to <code>enriched_threats.url</code>; <code>visible_text</code> → already written to <code>email_urls.visible_text</code>. The Kafka message carries them to SVC-03 for scoring.<br/><br/>
+  <code>analysis.headers</code> fields: <code>sender_email</code> → <code>emails.sender_email</code>; <code>sender_domain</code> → <code>emails.sender_domain</code>; <code>auth_spf</code> → <code>emails.auth_spf</code>; <code>auth_dkim</code> → <code>emails.auth_dkim</code>; <code>auth_dmarc</code> → <code>emails.auth_dmarc</code>; <code>auth_arc</code> → <code>emails.auth_arc</code>; <code>originating_ip</code> → <code>emails.originating_ip</code>; <code>x_originating_ip</code> → <code>emails.x_originating_ip</code>; <code>mailer_agent</code> → <code>emails.mailer_agent</code>; <code>reply_to_email</code> → <code>emails.reply_to_email</code>; <code>return_path</code> → <code>emails.return_path</code>; <code>in_reply_to</code> → <code>emails.in_reply_to</code>; <code>references_list</code> → <code>emails.references_list</code>; <code>sent_timestamp</code> → <code>emails.sent_timestamp</code>; <code>content_charset</code> → <code>emails.content_charset</code>; <code>precedence</code> → <code>emails.precedence</code>; <code>list_id</code> → <code>emails.list_id</code>; <code>vendor_security_tags</code> → <code>emails.vendor_security_tags</code>; <code>headers_json</code> → <code>emails.headers_json</code>. All already persisted in DB by the INSERT above; the Kafka message passes copies to SVC-04 for analysis so SVC-04 doesn't need to re-read the DB.<br/><br/>
+  <code>analysis.attachments</code> fields: <code>sha256</code> → <code>attachment_library.sha256</code>; <code>md5</code> → <code>attachment_library.md5</code>; <code>sha1</code> → <code>attachment_library.sha1</code>; <code>filename</code> → <code>email_attachments.filename</code>; <code>content_type</code> → <code>email_attachments.content_type</code>; <code>size_bytes</code> → <code>attachment_library.size_bytes</code>; <code>entropy</code> → <code>attachment_library.entropy</code>. Already persisted; copies sent to SVC-05.<br/><br/>
+  <code>analysis.text</code> fields: <code>plain_text</code> → <code>emails.body_plain</code>; <code>subject</code> → <code>emails.subject</code>; <code>sender_name</code> → <code>emails.sender_name</code>; <code>sender_domain</code> → <code>emails.sender_domain</code>. Already persisted; copies sent to SVC-06. Fields <code>body_language</code> and <code>word_count</code> are computed by the parser and only exist in the Kafka message (not stored in DB).
+</div>
+
+<!-- ======== STEP 3a ======== -->
+<h3>Step 3a — URL Analysis Service (SVC-03)</h3>
+
+<table class="compact-table">
+  <tr><th>Operation</th><th>Table (Migration)</th><th>Columns Accessed</th><th>Direction</th><th>Details</th></tr>
+  <tr>
+    <td>TI blocklist lookup</td>
+    <td><code>enriched_threats</code> (001)</td>
+    <td><code>id</code>, <code>url</code>, <code>domain</code>, <code>risk_score</code>, <code>threat_type</code>, <code>target_brand</code>, <code>deleted_at</code></td>
+    <td>READ</td>
+    <td>Lookup by <code>url</code> (unique index) or <code>domain</code> (idx_enriched_domain). Only active rows (deleted_at IS NULL). Cached in Redis <code>ti_domain:{domain}</code>.</td>
+  </tr>
+  <tr>
+    <td>UPDATE enrichment data</td>
+    <td><code>enriched_threats</code> (001)</td>
+    <td>
+      <code>online</code>, <code>http_status_code</code>,
+      <code>ip_address</code>, <code>cidr_block</code>, <code>asn</code>, <code>asn_name</code>, <code>isp</code>,
+      <code>country</code>, <code>country_name</code>, <code>region</code>, <code>city</code>, <code>latitude</code>, <code>longitude</code>,
+      <code>ssl_enabled</code>, <code>cert_issuer</code>, <code>cert_subject</code>, <code>cert_valid_from</code>, <code>cert_valid_to</code>, <code>cert_serial</code>,
+      <code>tld</code>, <code>registrar</code>, <code>creation_date</code>, <code>expiry_date</code>, <code>updated_date</code>, <code>name_servers</code>,
+      <code>page_language</code>, <code>page_title</code>,
+      <code>last_checked</code>, <code>last_seen</code>,
+      <code>risk_score</code> (from ML), <code>analysis_metadata</code> (JSONB)
+    </td>
+    <td>WRITE (UPDATE)</td>
+    <td>Updates the bare row created by SVC-02. All 28 enrichment columns populated from WHOIS, SSL, DNS, HTTP, geo API responses. Maps 1:1 to <code>EnrichmentData</code> struct in <code>pkg/models/url.go</code>.</td>
+  </tr>
+  <tr>
+    <td>INSERT enrichment result</td>
+    <td><code>enrichment_results</code> (003+008)</td>
+    <td><code>entity_type</code>='threat', <code>entity_id</code> → <code>enriched_threats.id</code>, <code>provider</code> (e.g. 'whois','ipinfo','ssllabs'), <code>raw_response</code> (JSONB), <code>malicious_votes</code>, <code>harmless_votes</code>, <code>suspicious_votes</code>, <code>reputation_score</code>, <code>ttl_seconds</code> (008), <code>expires_at</code> (008, trigger-computed)</td>
+    <td>UPSERT</td>
+    <td>One row per provider per URL. UPSERT by <code>(entity_type, entity_id, provider)</code> unique constraint. Raw API responses stored for re-scoring without re-fetching.</td>
+  </tr>
+  <tr>
+    <td>INSERT enrichment job</td>
+    <td><code>enrichment_jobs</code> (003)</td>
+    <td><code>job_type</code> (whois|dns|asn|ip_geo|ssl_cert|url_scan), <code>status</code>, <code>entity_type</code>='threat', <code>entity_id</code>, <code>attempts</code>, <code>max_attempts</code>=3, <code>last_error</code>, <code>started_at</code>, <code>completed_at</code></td>
+    <td>WRITE</td>
+    <td>One job per enrichment type per URL. Tracks retries and failures. Partial index <code>idx_jobs_pending</code> (003) used for worker poll.</td>
+  </tr>
+</table>
+
+<div class="note">
+  <strong>Kafka <code>scores.url</code> output → data provenance:</strong><br/>
+  <code>score</code> → computed from XGBoost ML on features extracted from <code>enriched_threats</code> columns (domain_age = NOW()-<code>creation_date</code>, <code>ssl_enabled</code>, <code>registrar</code>, <code>country</code>, etc.).<br/>
+  <code>ti_matched</code> → true if <code>enriched_threats.risk_score</code> ≥ 80 at lookup time.<br/>
+  <code>domain_age_days</code> → NOW() - <code>enriched_threats.creation_date</code>.<br/>
+  <code>has_ssl</code> → <code>enriched_threats.ssl_enabled</code>.<br/>
+  <code>ssl_issuer</code> → <code>enriched_threats.cert_issuer</code>.<br/>
+  <code>redirect_count</code> → from HTTP probe, stored in <code>enrichment_results.raw_response</code> JSONB.<br/>
+  None of these score fields are written to DB at this stage — they flow via Kafka to SVC-07 (Aggregator) then SVC-08 (Decision Engine) which writes the final <code>emails.url_risk_score</code>.
+</div>
+
+<!-- ======== STEP 3b ======== -->
+<h3>Step 3b — Header Analysis Service (SVC-04)</h3>
+
+<table class="compact-table">
+  <tr><th>Operation</th><th>Table (Migration)</th><th>Columns Read</th><th>Details</th></tr>
+  <tr>
+    <td>Load rules</td>
+    <td><code>rules</code> (003+008)</td>
+    <td><code>id</code>, <code>org_id</code>, <code>name</code>, <code>version</code>, <code>status</code>, <code>logic</code> (JSONB), <code>score_impact</code>, <code>target</code>, <code>rule_group_id</code> (008)</td>
+    <td>WHERE <code>status</code>='active' AND (<code>target</code>='header' OR <code>target</code>='email') AND (<code>org_id</code>=? OR <code>org_id</code> IS NULL). Cached in Redis <code>rules_cache:{org_id}</code> TTL 60s.</td>
+  </tr>
+  <tr>
+    <td>Domain reputation</td>
+    <td><code>enriched_threats</code> (001)</td>
+    <td><code>domain</code>, <code>risk_score</code>, <code>threat_type</code>, <code>creation_date</code></td>
+    <td>Lookup sender_domain (from Kafka message) against <code>enriched_threats.domain</code>. Used for: domain age check (<code>creation_date</code>), TI match (<code>risk_score</code>). Cached in Redis <code>ti_domain:{domain}</code>.</td>
+  </tr>
+</table>
+
+<table class="compact-table">
+  <tr><th>Operation</th><th>Table (Migration)</th><th>Columns Written</th><th>Details</th></tr>
+  <tr>
+    <td>Record rule fires</td>
+    <td><code>rule_hits</code> (003)</td>
+    <td><code>rule_id</code> → <code>rules.id</code>, <code>rule_version</code> → <code>rules.version</code>, <code>entity_type</code>='email', <code>entity_id</code> → <code>emails.internal_id</code>, <code>score_impact</code> → <code>rules.score_impact</code>, <code>match_detail</code> (JSONB: which signal fired, e.g. {"signal":"spf_fail","value":"fail"})</td>
+    <td>One INSERT per fired rule. Append-only. Links back to both the rule definition and the email it fired on.</td>
+  </tr>
+</table>
+
+<div class="note">
+  <strong>Input traceability — Kafka <code>analysis.headers</code> fields → <code>emails</code> columns (001):</strong><br/>
+  Every field in the <code>analysis.headers</code> Kafka message maps to a column already persisted in the <code>emails</code> table by SVC-02.
+  SVC-04 receives them via Kafka to avoid a DB round-trip. The mapping is:<br/>
+  <code>auth_spf</code> ← <code>emails.auth_spf</code> (001) &nbsp;|&nbsp;
+  <code>auth_dkim</code> ← <code>emails.auth_dkim</code> (001) &nbsp;|&nbsp;
+  <code>auth_dmarc</code> ← <code>emails.auth_dmarc</code> (001) &nbsp;|&nbsp;
+  <code>auth_arc</code> ← <code>emails.auth_arc</code> (001) &nbsp;|&nbsp;
+  <code>sender_domain</code> ← <code>emails.sender_domain</code> (001) &nbsp;|&nbsp;
+  <code>reply_to_email</code> ← <code>emails.reply_to_email</code> (001) &nbsp;|&nbsp;
+  <code>return_path</code> ← <code>emails.return_path</code> (001) &nbsp;|&nbsp;
+  <code>originating_ip</code> ← <code>emails.originating_ip</code> (001) &nbsp;|&nbsp;
+  <code>x_originating_ip</code> ← <code>emails.x_originating_ip</code> (001) &nbsp;|&nbsp;
+  <code>mailer_agent</code> ← <code>emails.mailer_agent</code> (001) &nbsp;|&nbsp;
+  <code>sent_timestamp</code> ← <code>emails.sent_timestamp</code> (001) &nbsp;|&nbsp;
+  <code>headers_json</code> ← <code>emails.headers_json</code> (001, JSONB — contains the received chain for hop count analysis)<br/><br/>
+  <strong>Output:</strong> <code>scores.header</code> carries the computed <code>header_risk_score</code>. This value is NOT written to DB here — it flows to SVC-07→SVC-08 which writes <code>emails.header_risk_score</code> (001).
+</div>
+
+<!-- ======== STEP 3c ======== -->
+<h3>Step 3c — Attachment Analysis Service (SVC-05)</h3>
+
+<table class="compact-table">
+  <tr><th>Operation</th><th>Table (Migration)</th><th>Columns Accessed</th><th>Direction</th><th>Details</th></tr>
+  <tr>
+    <td>Hash lookup</td>
+    <td><code>attachment_library</code> (001+008)</td>
+    <td><code>sha256</code>, <code>is_malicious</code>, <code>risk_score</code>, <code>threat_tags</code></td>
+    <td>READ</td>
+    <td>Lookup by <code>sha256</code> (unique index). Cached in Redis <code>ti_hash:{sha256}</code>.</td>
+  </tr>
+  <tr>
+    <td>VT enrichment cache</td>
+    <td><code>enrichment_results</code> (003+008)</td>
+    <td><code>entity_type</code>='attachment', <code>entity_id</code>, <code>provider</code>='virustotal', <code>raw_response</code>, <code>malicious_votes</code>, <code>harmless_votes</code>, <code>suspicious_votes</code>, <code>expires_at</code> (008)</td>
+    <td>READ then UPSERT</td>
+    <td>Check if cached VT result exists and is not expired (<code>expires_at</code> > NOW()). If miss or stale → query VT API → UPSERT with <code>ttl_seconds</code>=86400 (008).</td>
+  </tr>
+  <tr>
+    <td>Update malicious flag</td>
+    <td><code>attachment_library</code> (001)</td>
+    <td><code>is_malicious</code>, <code>risk_score</code>, <code>threat_tags</code>, <code>updated_at</code> (008, trigger)</td>
+    <td>WRITE (UPDATE)</td>
+    <td>If VT returns malicious_votes > 0 or heuristics flag dangerous: update <code>is_malicious</code>=true, <code>risk_score</code>, append to <code>threat_tags</code>. The <code>updated_at</code> trigger (008) fires automatically.</td>
+  </tr>
+</table>
+
+<div class="note">
+  <strong>Input traceability — Kafka <code>analysis.attachments</code> fields → DB columns:</strong><br/>
+  <code>sha256</code> ← <code>attachment_library.sha256</code> (001) &nbsp;|&nbsp;
+  <code>md5</code> ← <code>attachment_library.md5</code> (001) &nbsp;|&nbsp;
+  <code>sha1</code> ← <code>attachment_library.sha1</code> (001) &nbsp;|&nbsp;
+  <code>filename</code> ← <code>email_attachments.filename</code> (001) &nbsp;|&nbsp;
+  <code>content_type</code> ← <code>email_attachments.content_type</code> (001) &nbsp;|&nbsp;
+  <code>entropy</code> ← <code>attachment_library.entropy</code> (001) &nbsp;|&nbsp;
+  <code>size_bytes</code> ← <code>attachment_library.size_bytes</code> (001) &nbsp;|&nbsp;
+  <code>content_id</code> ← <code>email_attachments.content_id</code> (001) &nbsp;|&nbsp;
+  <code>disposition</code> ← <code>email_attachments.disposition</code> (001)<br/><br/>
+  <strong>Output:</strong> <code>scores.attachment</code> carries the computed <code>attachment_risk_score</code>. Flows to SVC-07→SVC-08 which writes <code>emails.attachment_risk_score</code> (001).
+</div>
+
+<!-- ======== STEP 3d ======== -->
+<h3>Step 3d — NLP Analysis Service (SVC-06)</h3>
+
+<table class="compact-table">
+  <tr><th>Operation</th><th>Table (Migration)</th><th>Columns Accessed</th><th>Direction</th><th>Details</th></tr>
+  <tr>
+    <td colspan="5"><strong>No database access. Stateless inference only.</strong></td>
+  </tr>
+</table>
+
+<div class="note">
+  <strong>Input traceability — Kafka <code>analysis.text</code> fields → DB columns:</strong><br/>
+  <code>plain_text</code> ← <code>emails.body_plain</code> (001) &nbsp;|&nbsp;
+  <code>subject</code> ← <code>emails.subject</code> (001) &nbsp;|&nbsp;
+  <code>sender_name</code> ← <code>emails.sender_name</code> (001) &nbsp;|&nbsp;
+  <code>sender_domain</code> ← <code>emails.sender_domain</code> (001)<br/>
+  Fields <code>body_language</code> and <code>word_count</code> are parser-computed and not stored in any DB table.<br/><br/>
+  <strong>Output:</strong> <code>scores.nlp</code> carries the computed <code>content_risk_score</code>. Flows to SVC-07→SVC-08 which writes <code>emails.content_risk_score</code> (001).
+</div>
+
+<!-- ======== STEP 4 ======== -->
+<h3>Step 4 — Score Aggregator Service (SVC-07)</h3>
+
+<table class="compact-table">
+  <tr><th>Operation</th><th>Storage</th><th>Details</th></tr>
+  <tr>
+    <td>State tracking</td>
+    <td>Redis only</td>
+    <td>Key <code>aggregator:{email_id}</code> (TTL 120s). No PostgreSQL tables accessed. Consumes from 5 Kafka topics, produces to 1. Pure event-driven state machine.</td>
+  </tr>
+</table>
+
+<div class="note">
+  <strong>Score provenance in <code>emails.scored</code> output:</strong><br/>
+  <code>url_score</code> → from <code>scores.url.score</code> (SVC-03) → destined for <code>emails.url_risk_score</code> (001)<br/>
+  <code>header_score</code> → from <code>scores.header.score</code> (SVC-04) → destined for <code>emails.header_risk_score</code> (001)<br/>
+  <code>attachment_score</code> → from <code>scores.attachment.score</code> (SVC-05) → destined for <code>emails.attachment_risk_score</code> (001)<br/>
+  <code>nlp_score</code> → from <code>scores.nlp.score</code> (SVC-06) → destined for <code>emails.content_risk_score</code> (001)<br/>
+  <code>aggregated_score</code> → weighted combination → destined for <code>emails.risk_score</code> (001) after rule adjustment in SVC-08
+</div>
+
+<!-- ======== STEP 5 ======== -->
+<h3>Step 5 — Decision Engine / Verdict Service (SVC-08)</h3>
+
+<table class="compact-table">
+  <tr><th>Operation</th><th>Table (Migration)</th><th>Columns Accessed</th><th>Direction</th><th>SQL Pattern</th></tr>
+  <tr>
+    <td>Load rules</td>
+    <td><code>rules</code> (003+008)</td>
+    <td><code>id</code>, <code>org_id</code>, <code>name</code>, <code>version</code>, <code>status</code>, <code>logic</code>, <code>score_impact</code>, <code>target</code>, <code>rule_group_id</code> (008)</td>
+    <td>READ</td>
+    <td><code>SELECT * FROM rules WHERE status='active' AND (org_id=? OR org_id IS NULL)</code></td>
+  </tr>
+  <tr>
+    <td>Campaign lookup</td>
+    <td><code>campaigns</code> (001+002)</td>
+    <td><code>id</code>, <code>fingerprint</code>, <code>org_id</code> (002)</td>
+    <td>READ</td>
+    <td><code>SELECT id FROM campaigns WHERE fingerprint=?</code></td>
+  </tr>
+  <tr>
+    <td><strong>UPDATE email scores</strong></td>
+    <td><code>emails</code> (001)</td>
+    <td>
+      <code>risk_score</code> ← final_score (after rule adjustments),<br/>
+      <code>header_risk_score</code> ← from scores.header,<br/>
+      <code>content_risk_score</code> ← from scores.nlp,<br/>
+      <code>url_risk_score</code> ← from scores.url,<br/>
+      <code>attachment_risk_score</code> ← from scores.attachment,<br/>
+      <code>campaign_id</code> ← from campaign UPSERT below,<br/>
+      <code>analysis_metadata</code> (JSONB) ← full component breakdown
+    </td>
+    <td>WRITE (UPDATE)</td>
+    <td><code>UPDATE emails SET risk_score=?, header_risk_score=?, content_risk_score=?, url_risk_score=?, attachment_risk_score=?, campaign_id=?, analysis_metadata=? WHERE internal_id=? AND fetched_at=?</code></td>
+  </tr>
+  <tr>
+    <td><strong>INSERT verdict</strong></td>
+    <td><code>verdicts</code> (001+002)</td>
+    <td>
+      <code>entity_type</code>='email',<br/>
+      <code>entity_id</code> → <code>emails.internal_id</code>,<br/>
+      <code>label</code> ← verdict_label ENUM (001),<br/>
+      <code>confidence</code> ← computed separately: base = distance from nearest threshold / 25, penalties for partial_analysis (×0.7) and rule-only verdict (×0.5),<br/>
+      <code>source</code> ← 'model' verdict_source ENUM (001),<br/>
+      <code>model_version</code> ← from config,<br/>
+      <code>notes</code> ← NULL (automated),<br/>
+      <code>created_by</code> (002) ← NULL (automated)
+    </td>
+    <td>WRITE (INSERT)</td>
+    <td>Append-only. Never UPDATE existing verdicts. Current verdict resolved by <code>current_verdicts</code> VIEW (001): <code>DISTINCT ON (entity_type, entity_id) ORDER BY created_at DESC</code>.</td>
+  </tr>
+  <tr>
+    <td><strong>INSERT rule hits</strong></td>
+    <td><code>rule_hits</code> (003)</td>
+    <td><code>rule_id</code>, <code>rule_version</code>, <code>entity_type</code>='email', <code>entity_id</code>, <code>score_impact</code>, <code>match_detail</code> (JSONB)</td>
+    <td>WRITE (INSERT)</td>
+    <td>One row per rule that fired. Same structure as SVC-04 rule_hits but with target='email' rules.</td>
+  </tr>
+  <tr>
+    <td><strong>UPSERT campaign</strong></td>
+    <td><code>campaigns</code> (001+002)</td>
+    <td>
+      <code>fingerprint</code> ← SHA256(sender_domain|url_domain|subject_tpl|intent),<br/>
+      <code>org_id</code> (002),<br/>
+      <code>name</code> ← auto-generated,<br/>
+      <code>threat_type</code>,<br/>
+      <code>target_brand</code>,<br/>
+      <code>first_seen</code> / <code>last_seen</code>,<br/>
+      <code>risk_score</code> ← rolling avg
+    </td>
+    <td>UPSERT</td>
+    <td><code>INSERT INTO campaigns (fingerprint, org_id, ...) ON CONFLICT (fingerprint) DO UPDATE SET last_seen=NOW(), risk_score=(campaigns.risk_score + $score)/2</code></td>
+  </tr>
+</table>
+
+<!-- ======== STEP 6a ======== -->
+<h3>Step 6a — Notification Service (SVC-09)</h3>
+
+<table class="compact-table">
+  <tr><th>Operation</th><th>Table (Migration)</th><th>Columns Read</th><th>Details</th></tr>
+  <tr>
+    <td>Org preferences</td>
+    <td><code>organisations</code> (002)</td>
+    <td><code>id</code>, <code>name</code>, <code>slug</code>, <code>monthly_ingestion_limit</code></td>
+    <td>Notification threshold not yet a column — requires migration (see §15 Schema Gap #1). Until migration is applied, SVC-09 uses config-based defaults: threshold=70, channels=["email"]. Migration adds <code>notification_threshold INT DEFAULT 70</code> and <code>notification_channels JSONB DEFAULT '["email"]'</code> to organisations table.</td>
+  </tr>
+  <tr>
+    <td>Admin contacts</td>
+    <td><code>users</code> (002)</td>
+    <td><code>id</code>, <code>org_id</code>, <code>email</code>, <code>display_name</code>, <code>role</code></td>
+    <td><code>SELECT email, display_name FROM users WHERE org_id=? AND role='admin' AND deleted_at IS NULL</code></td>
+  </tr>
+</table>
+
+<!-- ======== STEP 6b ======== -->
+<h3>Step 6b — API / Dashboard Service (SVC-10)</h3>
+
+<table class="compact-table">
+  <tr><th>Operation</th><th>Table (Migration)</th><th>Columns</th><th>Direction</th></tr>
+  <tr><td>Email list/detail</td><td><code>emails</code> (001+002)</td><td>All 30 columns</td><td>READ</td></tr>
+  <tr><td>Email URLs</td><td><code>email_urls</code> (001) JOIN <code>enriched_threats</code> (001)</td><td>All columns from both (URL details + threat details)</td><td>READ</td></tr>
+  <tr><td>Email attachments</td><td><code>email_attachments</code> (001+008) JOIN <code>attachment_library</code> (001+008)</td><td>All columns from both</td><td>READ</td></tr>
+  <tr><td>Email recipients</td><td><code>email_recipients</code> (008)</td><td>All 7 columns</td><td>READ</td></tr>
+  <tr><td>Current verdict</td><td><code>current_verdicts</code> VIEW (001)</td><td><code>entity_type</code>, <code>entity_id</code>, <code>label</code>, <code>confidence</code>, <code>source</code>, <code>model_version</code>, <code>notes</code>, <code>created_at</code></td><td>READ</td></tr>
+  <tr><td>Verdict history</td><td><code>verdicts</code> (001+002)</td><td>All 10 columns</td><td>READ</td></tr>
+  <tr><td>Campaign list/detail</td><td><code>mv_campaign_summary</code> (004)</td><td>All MV columns (joins campaigns+emails+verdicts)</td><td>READ</td></tr>
+  <tr><td>Org dashboard stats</td><td><code>mv_org_ingestion_summary</code> (004)</td><td>All MV columns (aggregates emails+verdicts)</td><td>READ</td></tr>
+  <tr><td>TI dashboard</td><td><code>mv_threat_summary</code> (004)</td><td>All MV columns (aggregates enriched_threats)</td><td>READ</td></tr>
+  <tr><td>Feed health</td><td><code>mv_feed_health</code> (004)</td><td>All MV columns (joins feeds+enriched_threats)</td><td>READ</td></tr>
+  <tr><td>Rule performance</td><td><code>mv_rule_performance</code> (004)</td><td>All MV columns (joins rules+rule_hits)</td><td>READ</td></tr>
+  <tr><td>Rule CRUD</td><td><code>rules</code> (003+008)</td><td>All 11 columns incl. <code>rule_group_id</code> (008)</td><td>READ + WRITE</td></tr>
+  <tr><td>Analyst verdict</td><td><code>verdicts</code> (001+002)</td><td>INSERT: <code>entity_type</code>, <code>entity_id</code>, <code>label</code>, <code>confidence</code>, <code>source</code>='analyst', <code>notes</code>, <code>created_by</code> (002) → <code>users.id</code></td><td>WRITE</td></tr>
+  <tr><td>User/org mgmt</td><td><code>users</code> (002), <code>organisations</code> (002)</td><td>All columns</td><td>READ + WRITE</td></tr>
+  <tr><td>API key mgmt</td><td><code>api_keys</code> (002)</td><td>All 10 columns</td><td>READ + WRITE</td></tr>
+  <tr><td>Feed mgmt</td><td><code>feeds</code> (003)</td><td>All 9 columns</td><td>READ + WRITE</td></tr>
+  <tr><td>Audit logging</td><td><code>audit_log</code> (002)</td><td><code>org_id</code>, <code>user_id</code>, <code>api_key_id</code>, <code>action</code>, <code>entity_type</code>, <code>entity_id</code>, <code>diff</code> (JSONB), <code>ip_address</code></td><td>WRITE (every mutation)</td></tr>
+  <tr><td>Enrichment jobs</td><td><code>enrichment_jobs</code> (003)</td><td>All 10 columns</td><td>READ (monitoring)</td></tr>
+  <tr><td>Enrichment results</td><td><code>enrichment_results</code> (003+008)</td><td>All 11 columns</td><td>READ (detail views)</td></tr>
+  <tr><td>Rule hits</td><td><code>rule_hits</code> (003)</td><td>All 7 columns</td><td>READ (explainability)</td></tr>
+</table>
+
+<!-- ======== STEP BG ======== -->
+<h3>Background — TI Feed Sync Service (SVC-11)</h3>
+
+<table class="compact-table">
+  <tr><th>Operation</th><th>Table (Migration)</th><th>Columns</th><th>Direction</th><th>Details</th></tr>
+  <tr>
+    <td>Load feed config</td>
+    <td><code>feeds</code> (003)</td>
+    <td><code>id</code>, <code>name</code>, <code>feed_type</code>, <code>url</code>, <code>last_fetched_at</code>, <code>enabled</code>, <code>reliability_weight</code></td>
+    <td>READ</td>
+    <td><code>SELECT * FROM feeds WHERE enabled=TRUE</code></td>
+  </tr>
+  <tr>
+    <td>Update feed status</td>
+    <td><code>feeds</code> (003)</td>
+    <td><code>last_fetched_at</code>, <code>updated_at</code> (trigger)</td>
+    <td>WRITE</td>
+    <td><code>UPDATE feeds SET last_fetched_at=NOW() WHERE id=?</code></td>
+  </tr>
+  <tr>
+    <td>UPSERT threat indicators</td>
+    <td><code>enriched_threats</code> (001+002+003)</td>
+    <td>
+      <code>url</code>, <code>domain</code>, <code>tld</code>,
+      <code>threat_type</code>, <code>target_brand</code>, <code>threat_tags</code>,
+      <code>source_feed</code> (legacy), <code>feed_id</code> (003) → <code>feeds.id</code>,
+      <code>source_id</code>,
+      <code>first_seen</code>, <code>last_seen</code>,
+      <code>risk_score</code>,
+      <code>org_id</code> (002, NULL for global feeds)
+    </td>
+    <td>UPSERT</td>
+    <td><code>INSERT INTO enriched_threats (url, domain, ...) ON CONFLICT (url) DO UPDATE SET last_seen=NOW(), threat_tags=array_cat(enriched_threats.threat_tags, $new_tags), risk_score=GREATEST(enriched_threats.risk_score, $score)</code>. Enrichment columns (WHOIS/SSL/geo) NOT written by TI sync — only by SVC-03.</td>
+  </tr>
+  <tr>
+    <td>UPSERT malware hashes</td>
+    <td><code>attachment_library</code> (001)</td>
+    <td><code>sha256</code>, <code>is_malicious</code>=TRUE, <code>risk_score</code>, <code>threat_tags</code></td>
+    <td>UPSERT</td>
+    <td>MalwareBazaar feed provides SHA256 hashes of known malware. <code>INSERT INTO attachment_library (sha256, is_malicious, risk_score, threat_tags) ON CONFLICT (sha256) DO UPDATE SET is_malicious=TRUE, risk_score=GREATEST(...)</code></td>
+  </tr>
+  <tr>
+    <td>Refresh MVs</td>
+    <td>All 5 materialized views (004)</td>
+    <td>—</td>
+    <td>REFRESH</td>
+    <td>Calls <code>refresh_all_materialized_views()</code> (function defined in 004). CONCURRENTLY mode, no read blocking.</td>
+  </tr>
+  <tr>
+    <td>Update Redis caches</td>
+    <td>Redis</td>
+    <td><code>ti_domain:{domain}</code>, <code>ti_hash:{sha256}</code></td>
+    <td>WRITE</td>
+    <td>Bulk-load recently-updated enriched_threats domains and attachment_library hashes into Redis for fast lookup by SVC-03/04/05.</td>
+  </tr>
+</table>
+
+
+<!-- ============================================================ -->
+<h2>15. Implementation Deltas — Tracked Gaps</h2>
+
+<p style="margin-bottom:8px; font-size:10.5px;">The following items are known differences between the architecture as specified and the current schema/implementation state. These are tracked deltas, not unresolved design questions. Each has a clear resolution path.</p>
+
+<table class="compact-table">
+  <tr><th>Gap</th><th>Affected Table</th><th>Migration Needed?</th><th>Resolution</th></tr>
+  <tr>
+    <td><code>organisations</code> lacks notification config columns</td>
+    <td><code>organisations</code> (002)</td>
+    <td>Yes — new migration</td>
+    <td>Add <code>notification_threshold INT DEFAULT 70</code>, <code>notification_channels JSONB DEFAULT '[]'</code>, <code>retention_days INT DEFAULT 30</code>. SVC-09 reads these; SVC-10 writes them.</td>
+  </tr>
+  <tr>
+    <td><code>email_attachments.risk_score</code> never updated by SVC-05</td>
+    <td><code>email_attachments</code> (001)</td>
+    <td>No — just implementation</td>
+    <td>SVC-05 should UPDATE <code>email_attachments SET risk_score=?, analysis_metadata=? WHERE email_id=? AND attachment_id=?</code> after scoring each attachment.</td>
+  </tr>
+  <tr>
+    <td><code>enrichment_results.suspicious_votes</code> column present but not referenced</td>
+    <td><code>enrichment_results</code> (003)</td>
+    <td>No</td>
+    <td>SVC-03 and SVC-05 should populate this from VirusTotal <code>last_analysis_stats.suspicious</code> field. Already in schema, just needs implementation.</td>
+  </tr>
+  <tr>
+    <td><code>current_verdicts</code> VIEW not referenced in spec</td>
+    <td>VIEW on <code>verdicts</code> (001)</td>
+    <td>No</td>
+    <td>SVC-10 (API/Dashboard) should use <code>current_verdicts</code> for email detail views instead of manually <code>DISTINCT ON</code>. Already exists in 001.</td>
+  </tr>
+  <tr>
+    <td><code>rules.rule_group_id</code> (008) not in spec</td>
+    <td><code>rules</code> (008)</td>
+    <td>No</td>
+    <td>SVC-10 uses <code>rule_group_id</code> when displaying rule version history. SVC-04/SVC-08 should include it in rule cache for audit trail. Already in schema.</td>
+  </tr>
+</table>
+
+<hr/>
+<div style="text-align:center; font-size:10px; color:#666; margin-top:12px;">
+  <strong>END OF DOCUMENT</strong> — ARCH-SPEC-v2.1 — CyberSiren System Architecture Specification — 2026-03-11<br/>
+  This document is the authoritative reference for implementation. All service boundaries, message schemas, database access patterns, column-level data flows, and migration references defined herein constitute the approved architecture baseline. Items in the Schema Gap section (§15) are tracked implementation deltas.
+</div>
+
+</body>
+</html>
