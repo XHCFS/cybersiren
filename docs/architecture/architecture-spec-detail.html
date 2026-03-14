@@ -171,8 +171,8 @@
 
 <h1>CYBERSIREN — SYSTEM ARCHITECTURE SPECIFICATION</h1>
 <div class="doc-meta">
-  <span><strong>Document:</strong> ARCH-SPEC-v2.1</span>
-  <span><strong>Date:</strong> 2026-03-11</span>
+  <span><strong>Document:</strong> ARCH-SPEC-v2.2</span>
+  <span><strong>Date:</strong> 2026-03-15</span>
   <span><strong>Status:</strong> Implementation Baseline — Approved Architecture with Tracked Deltas</span>
   <span><strong>Classification:</strong> Internal / Graduation Project</span>
 </div>
@@ -294,7 +294,7 @@
       <strong>URL ANALYSIS SERVICE</strong> (Go + Python subprocess) — <em>SVC-03</em><br/>
       Consumes <code>analysis.urls</code>. For each URL in the message:<br/>
       <strong>(i)</strong> Redis cache check: key <code>url_score:{sha256(url)}</code> TTL 6h → if hit, reuse score, skip remaining steps.<br/>
-      <strong>(ii)</strong> TI blocklist: lookup URL domain against <code>enriched_threats</code> table (indexed on <code>url</code>, <code>domain</code>). If exact match with <code>risk_score ≥ 80</code> → emit score 95, <code>ti_matched=true</code>, skip ML.<br/>
+      <strong>(ii)</strong> TI feed match: lookup URL domain against <code>ti_indicators</code> table (indexed on <code>indicator_value</code>, <code>indicator_type</code>). If exact match with <code>risk_score ≥ 80</code> → emit score 95, <code>ti_matched=true</code>, skip ML. Also checks <code>enriched_threats</code> to see if this URL was observed and enriched in a prior email.<br/>
       <strong>(iii)</strong> Enrichment (concurrency limit: 5 goroutines): WHOIS (registrar, creation_date, expiry_date, name_servers), SSL cert (issuer, subject, valid_from, valid_to, self-signed check), DNS (A/MX/NS/CNAME), HTTP probe (status_code, redirect_count, final_url, response_time_ms), IP geo (country, asn, asn_name, isp, city).<br/>
       <strong>(iv)</strong> ML inference: Enriched features → XGBoost model via Python subprocess (JSON stdin/stdout). Timeout: 5s. On timeout: score=50.<br/>
       <strong>Per-email URL score = max(individual URL scores).</strong> Each URL gets its own entry in enrichment tables.
@@ -306,9 +306,11 @@
       <div class="topic-meta">Key: email_id · 6 partitions · 24h retention</div>
     </div>
     <div class="step-db">
-      <strong>R</strong> <code>enriched_threats</code> (TI lookup)<br/>
+      <strong>R</strong> <code>ti_indicators</code> (TI feed match)<br/>
+      <strong>R</strong> <code>enriched_threats</code> (prior-email URL lookup)<br/>
       <strong>R</strong> Redis: <code>url_score:{hash}</code><br/>
       <strong>W</strong> <code>enriched_threats</code> (new URLs)<br/>
+      <strong>W</strong> <code>email_url_ti_matches</code> (feed match audit trail)<br/>
       <strong>W</strong> <code>enrichment_results</code> (raw responses)<br/>
       <strong>W</strong> <code>enrichment_jobs</code> (job tracking)<br/>
       <strong>W</strong> Redis: <code>url_score:{hash}</code>
@@ -342,7 +344,7 @@
     </div>
     <div class="step-db">
       <strong>R</strong> <code>rules</code> (active header rules)<br/>
-      <strong>R</strong> <code>enriched_threats</code> (domain/IP rep.)<br/>
+      <strong>R</strong> <code>ti_indicators</code> (domain/IP rep. via Redis cache)<br/>
       <strong>W</strong> <code>rule_hits</code> (one per fired rule)
     </div>
   </div>
@@ -524,7 +526,7 @@
       <div class="topic-meta">No output topic.</div>
     </div>
     <div class="step-db">
-      <strong>R</strong> all 17 tables + 5 MVs + 1 view<br/>
+      <strong>R</strong> all 19 tables + 5 MVs + 1 view<br/>
       <strong>W</strong> <code>users</code>, <code>organisations</code>, <code>api_keys</code>, <code>rules</code>, <code>verdicts</code> (analyst), <code>audit_log</code>
     </div>
   </div>
@@ -536,7 +538,7 @@
     <div class="step-num">BG</div>
     <div class="step-content">
       <strong>TI FEED SYNC SERVICE</strong> (Go) — <em>SVC-11</em> — <strong>Independent background service, not in main pipeline.</strong><br/>
-      Runs on schedule (default: every 6h, configurable per feed). For each enabled feed: fetch → parse (CSV/JSON/STIX) → deduplicate → bulk UPSERT into <code>enriched_threats</code>.<br/>
+      Runs on schedule (default: every 6h, configurable per feed). For each enabled feed: fetch → parse (CSV/JSON/STIX) → deduplicate → bulk UPSERT into <code>ti_indicators</code>.<br/>
       After all feeds: <code>REFRESH MATERIALIZED VIEW CONCURRENTLY</code> for all 5 views. Update Redis TI cache.<br/>
       <strong>Feeds:</strong> PhishTank, OpenPhish, URLhaus, MalwareBazaar (hashes → <code>attachment_library</code>), Abuse.ch ThreatFox, custom feeds.
     </div>
@@ -547,7 +549,7 @@
       <div class="topic-meta">DB-driven schedule.</div>
     </div>
     <div class="step-db">
-      <strong>R/W</strong> <code>feeds</code> · <strong>W</strong> <code>enriched_threats</code> (bulk UPSERT) · <strong>W</strong> <code>attachment_library</code> (malware hashes)<br/>
+      <strong>R/W</strong> <code>feeds</code> · <strong>W</strong> <code>ti_indicators</code> (bulk UPSERT) · <strong>W</strong> <code>attachment_library</code> (malware hashes)<br/>
       <strong>W</strong> Redis: TI cache refresh · Triggers MV refresh
     </div>
   </div>
@@ -678,7 +680,9 @@
   <tr><td><code>email_attachments</code></td><td>—</td><td><strong>W</strong></td><td>—</td><td>—</td><td>R</td><td>—</td><td>—</td><td>—</td><td>—</td><td>R</td><td>—</td></tr>
   <tr><td><code>email_recipients</code></td><td>—</td><td><strong>W</strong></td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>R</td><td>—</td></tr>
   <tr><td><code>attachment_library</code></td><td>—</td><td><strong>U</strong></td><td>—</td><td>—</td><td>R/<strong>W</strong></td><td>—</td><td>—</td><td>—</td><td>—</td><td>R</td><td><strong>W</strong></td></tr>
-  <tr><td><code>enriched_threats</code></td><td>—</td><td>—</td><td>R/<strong>W</strong></td><td>R</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>R</td><td><strong>U</strong></td></tr>
+  <tr><td><code>enriched_threats</code></td><td>—</td><td>—</td><td>R/<strong>W</strong></td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>R</td><td>—</td></tr>
+  <tr><td><code>ti_indicators</code></td><td>—</td><td>—</td><td>R</td><td>R</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>R</td><td><strong>U</strong></td></tr>
+  <tr><td><code>email_url_ti_matches</code></td><td>—</td><td>—</td><td><strong>W</strong></td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>R</td><td>—</td></tr>
   <tr><td><code>enrichment_results</code></td><td>—</td><td>—</td><td><strong>U</strong></td><td>—</td><td>R/<strong>U</strong></td><td>—</td><td>—</td><td>—</td><td>—</td><td>R</td><td>—</td></tr>
   <tr><td><code>enrichment_jobs</code></td><td>—</td><td>—</td><td><strong>W</strong></td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>R</td><td>—</td></tr>
   <tr><td><code>verdicts</code></td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>R/<strong>W</strong></td><td>—</td><td>R/<strong>W</strong></td><td>—</td></tr>
@@ -712,7 +716,7 @@
   </tr>
   <tr><td><code>dedup:{org_id}:{message_id}</code></td><td>STRING (1)</td><td>7 days</td><td>SVC-01</td><td>SVC-01</td><td>Email ingestion deduplication. Value: "1". Existence check only.</td></tr>
   <tr><td><code>url_score:{sha256(url)}</code></td><td>HASH</td><td>6 hours</td><td>SVC-03</td><td>SVC-03</td><td>URL score cache. Fields: score, ti_matched, domain, cached_at. Avoids re-enrichment.</td></tr>
-  <tr><td><code>ti_domain:{domain}</code></td><td>HASH</td><td>1 hour</td><td>SVC-11</td><td>SVC-03, SVC-04</td><td>TI domain cache. Fields: threat_id, risk_score, threat_type. Avoids DB query per URL.</td></tr>
+  <tr><td><code>ti_domain:{domain}</code></td><td>HASH</td><td>1 hour</td><td>SVC-11</td><td>SVC-03, SVC-04</td><td>TI domain cache. Fields: ti_indicator_id, risk_score, threat_type. Sourced from <code>ti_indicators</code>. Avoids DB query per URL.</td></tr>
   <tr><td><code>ti_hash:{sha256}</code></td><td>HASH</td><td>1 hour</td><td>SVC-11</td><td>SVC-05</td><td>TI attachment hash cache. Fields: is_malicious, risk_score, source.</td></tr>
   <tr><td><code>aggregator:{email_id}</code></td><td>HASH</td><td>120 seconds</td><td>SVC-07</td><td>SVC-07</td><td>Score aggregation state. Fields: expected (JSON), received (JSON), created_at.</td></tr>
   <tr><td><code>simhash:{org_id}:{campaign_id}</code></td><td>STRING</td><td>30 days</td><td>SVC-08</td><td>SVC-08</td><td>64-bit SimHash for campaign near-duplicate detection. Per-org scoped to prevent cross-tenant matching.</td></tr>
@@ -784,7 +788,7 @@
   <tr>
     <td>TI Feed Sync (SVC-11)</td>
     <td>Duplicate threat indicators</td>
-    <td>URL unique constraint on <code>enriched_threats</code></td>
+    <td>(indicator_value, indicator_type) unique constraint on <code>ti_indicators</code></td>
     <td>PostgreSQL unique index</td>
     <td>Global</td>
   </tr>
@@ -927,11 +931,25 @@ INPUT: email plain_text body
     <td>Hash-only — no PII. Cross-tenant malware signal.</td>
   </tr>
   <tr>
-    <td>Threat intelligence</td>
+    <td>Threat intelligence (email-observed)</td>
     <td>PostgreSQL <code>enriched_threats</code></td>
     <td>Indefinite (soft-delete stale)</td>
     <td><code>deleted_at</code> set for entries not seen in 90 days</td>
-    <td>TI data is valuable for historical correlation.</td>
+    <td>URLs/domains observed in emails, enriched with WHOIS/SSL/geo.</td>
+  </tr>
+  <tr>
+    <td>Threat intelligence (feed indicators)</td>
+    <td>PostgreSQL <code>ti_indicators</code></td>
+    <td>Indefinite (soft-delete stale)</td>
+    <td><code>deleted_at</code> set for entries not seen in 90 days</td>
+    <td>Cheap, normalized feed data for matching. No enrichment columns.</td>
+  </tr>
+  <tr>
+    <td>Feed–email URL match audit</td>
+    <td>PostgreSQL <code>email_url_ti_matches</code></td>
+    <td>Same as parent <code>email_urls</code></td>
+    <td>CASCADE from <code>email_urls</code></td>
+    <td>Junction table recording which TI feed indicator matched a URL.</td>
   </tr>
   <tr>
     <td>Enrichment API responses</td>
@@ -957,7 +975,7 @@ INPUT: email plain_text body
   <div class="svc-block">
     <h3>PostgreSQL 15+</h3>
     <ul class="field-list">
-      <li>16 tables, 5 materialized views, 1 view</li>
+      <li>18 tables, 5 materialized views, 1 view</li>
       <li>Monthly range partitioning on <code>emails</code></li>
       <li>Row-level security per <code>org_id</code> (migration 018)</li>
       <li>JSONB + GIN indexes for headers, tags</li>
@@ -1052,7 +1070,7 @@ INPUT: email plain_text body
 
 <table class="compact-table">
   <tr><th>Table / View</th><th>Defined In</th><th>Columns Added In</th><th>Column Count</th></tr>
-  <tr><td><code>enriched_threats</code></td><td>001_initial_schema.up.sql</td><td>002 (+org_id), 003 (+feed_id)</td><td>35</td></tr>
+  <tr><td><code>enriched_threats</code></td><td>001_initial_schema.up.sql</td><td>002 (+org_id), 003 (+feed_id)</td><td>35 (email-observed URLs; enrichment data)</td></tr>
   <tr><td><code>campaigns</code></td><td>001_initial_schema.up.sql</td><td>002 (+org_id)</td><td>13</td></tr>
   <tr><td><code>emails</code> (partitioned)</td><td>001_initial_schema.up.sql</td><td>002 (+org_id, +uq_emails_org_message_id)</td><td>30</td></tr>
   <tr><td><code>verdicts</code></td><td>001_initial_schema.up.sql</td><td>002 (+created_by)</td><td>10</td></tr>
@@ -1069,6 +1087,8 @@ INPUT: email plain_text body
   <tr><td><code>rules</code></td><td>003_add_enrichments.up.sql</td><td>008 (+rule_group_id)</td><td>11</td></tr>
   <tr><td><code>rule_hits</code></td><td>003_add_enrichments.up.sql</td><td>—</td><td>7</td></tr>
   <tr><td><code>email_recipients</code></td><td>008_add_missing_schema.up.sql</td><td>—</td><td>7</td></tr>
+  <tr><td><code>ti_indicators</code></td><td>026_add_ti_indicators.up.sql</td><td>—</td><td>12</td></tr>
+  <tr><td><code>email_url_ti_matches</code></td><td>026_add_ti_indicators.up.sql</td><td>—</td><td>5</td></tr>
   <tr><td style="border-top:2px solid #333"><code>current_verdicts</code> (VIEW)</td><td>001_initial_schema.up.sql</td><td>—</td><td>8 (DISTINCT ON verdicts)</td></tr>
   <tr><td><code>mv_threat_summary</code></td><td>004_add_materialized_view.up.sql</td><td>—</td><td>Aggregates enriched_threats</td></tr>
   <tr><td><code>mv_campaign_summary</code></td><td>004_add_materialized_view.up.sql</td><td>—</td><td>Joins campaigns + emails + verdicts</td></tr>
@@ -1082,7 +1102,10 @@ INPUT: email plain_text body
   The <code>email_urls</code> table (001) has a <code>threat_id BIGINT NOT NULL REFERENCES enriched_threats(id)</code>.
   This means the Email Parser (SVC-02) must UPSERT a bare row into <code>enriched_threats</code> (with just <code>url</code> + <code>domain</code>) <em>before</em> it can INSERT into <code>email_urls</code>, to obtain the <code>threat_id</code> FK.
   The URL Analysis Service (SVC-03) later UPDATEs that same <code>enriched_threats</code> row with full enrichment data (WHOIS, SSL, geo, etc.).
-  This two-phase write pattern is documented in the column-level flow below.
+  This two-phase write pattern is documented in the column-level flow below.<br/><br/>
+  <strong>Design note — <code>email_url_ti_matches</code> junction table (026):</strong><br/>
+  When SVC-03 matches a URL against <code>ti_indicators</code> (feed data), it records the match in <code>email_url_ti_matches</code> linking <code>email_urls.id</code> → <code>ti_indicators.id</code>.
+  This separates the feed-match audit trail from the enrichment data in <code>enriched_threats</code>. Feed indicators (<code>ti_indicators</code>) are cheap, normalized, and used for matching only. Email-observed threats (<code>enriched_threats</code>) carry expensive enrichment data (WHOIS/SSL/geo/ASN).
 </div>
 
 
@@ -1199,11 +1222,18 @@ INPUT: email plain_text body
 <table class="compact-table">
   <tr><th>Operation</th><th>Table (Migration)</th><th>Columns Accessed</th><th>Direction</th><th>Details</th></tr>
   <tr>
-    <td>TI blocklist lookup</td>
+    <td>TI feed match</td>
+    <td><code>ti_indicators</code> (026)</td>
+    <td><code>id</code>, <code>indicator_value</code>, <code>indicator_type</code>, <code>risk_score</code>, <code>threat_type</code>, <code>target_brand</code>, <code>deleted_at</code></td>
+    <td>READ</td>
+    <td>Lookup by <code>indicator_value</code> (unique index) or domain prefix. Only active rows (deleted_at IS NULL). Cached in Redis <code>ti_domain:{domain}</code>.</td>
+  </tr>
+  <tr>
+    <td>Prior-email URL lookup</td>
     <td><code>enriched_threats</code> (001)</td>
     <td><code>id</code>, <code>url</code>, <code>domain</code>, <code>risk_score</code>, <code>threat_type</code>, <code>target_brand</code>, <code>deleted_at</code></td>
     <td>READ</td>
-    <td>Lookup by <code>url</code> (unique index) or <code>domain</code> (idx_enriched_domain). Only active rows (deleted_at IS NULL). Cached in Redis <code>ti_domain:{domain}</code>.</td>
+    <td>Check if this URL was previously observed and enriched in a prior email. Uses existing enrichment data to avoid redundant API calls.</td>
   </tr>
   <tr>
     <td>UPDATE enrichment data</td>
@@ -1220,6 +1250,13 @@ INPUT: email plain_text body
     </td>
     <td>WRITE (UPDATE)</td>
     <td>Updates the bare row created by SVC-02. All 28 enrichment columns populated from WHOIS, SSL, DNS, HTTP, geo API responses. Maps 1:1 to <code>EnrichmentData</code> struct in <code>pkg/models/url.go</code>.</td>
+  </tr>
+  <tr>
+    <td>INSERT TI match audit</td>
+    <td><code>email_url_ti_matches</code> (026)</td>
+    <td><code>email_url_id</code> → <code>email_urls.id</code>, <code>ti_indicator_id</code> → <code>ti_indicators.id</code>, <code>matched_at</code></td>
+    <td>WRITE</td>
+    <td>One row per URL-indicator hit. Records which feed indicator matched which email URL for full audit trail.</td>
   </tr>
   <tr>
     <td>INSERT enrichment result</td>
@@ -1240,7 +1277,7 @@ INPUT: email plain_text body
 <div class="note">
   <strong>Kafka <code>scores.url</code> output → data provenance:</strong><br/>
   <code>score</code> → computed from XGBoost ML on features extracted from <code>enriched_threats</code> columns (domain_age = NOW()-<code>creation_date</code>, <code>ssl_enabled</code>, <code>registrar</code>, <code>country</code>, etc.).<br/>
-  <code>ti_matched</code> → true if <code>enriched_threats.risk_score</code> ≥ 80 at lookup time.<br/>
+  <code>ti_matched</code> → true if <code>ti_indicators.risk_score</code> ≥ 80 at lookup time, or <code>enriched_threats.risk_score</code> ≥ 80 from a prior email.<br/>
   <code>domain_age_days</code> → NOW() - <code>enriched_threats.creation_date</code>.<br/>
   <code>has_ssl</code> → <code>enriched_threats.ssl_enabled</code>.<br/>
   <code>ssl_issuer</code> → <code>enriched_threats.cert_issuer</code>.<br/>
@@ -1261,9 +1298,9 @@ INPUT: email plain_text body
   </tr>
   <tr>
     <td>Domain reputation</td>
-    <td><code>enriched_threats</code> (001)</td>
-    <td><code>domain</code>, <code>risk_score</code>, <code>threat_type</code>, <code>creation_date</code></td>
-    <td>Lookup sender_domain (from Kafka message) against <code>enriched_threats.domain</code>. Used for: domain age check (<code>creation_date</code>), TI match (<code>risk_score</code>). Cached in Redis <code>ti_domain:{domain}</code>.</td>
+    <td><code>ti_indicators</code> (026)</td>
+    <td><code>indicator_value</code>, <code>risk_score</code>, <code>threat_type</code>, <code>first_seen_at</code></td>
+    <td>Lookup sender_domain (from Kafka message) against <code>ti_indicators.indicator_value</code> WHERE <code>indicator_type</code>='domain'. Used for: domain age check (<code>first_seen_at</code>), TI match (<code>risk_score</code>). Cached in Redis <code>ti_domain:{domain}</code>.</td>
   </tr>
 </table>
 
@@ -1520,18 +1557,18 @@ INPUT: email plain_text body
   </tr>
   <tr>
     <td>UPSERT threat indicators</td>
-    <td><code>enriched_threats</code> (001+002+003)</td>
+    <td><code>ti_indicators</code> (026)</td>
     <td>
-      <code>url</code>, <code>domain</code>, <code>tld</code>,
+      <code>indicator_value</code>, <code>indicator_type</code> (url|domain|ip|hash),
       <code>threat_type</code>, <code>target_brand</code>, <code>threat_tags</code>,
-      <code>source_feed</code> (legacy), <code>feed_id</code> (003) → <code>feeds.id</code>,
-      <code>source_id</code>,
-      <code>first_seen</code>, <code>last_seen</code>,
+      <code>feed_id</code> → <code>feeds.id</code>,
+      <code>source_id</code> (original feed record ID),
+      <code>first_seen_at</code>, <code>last_seen_at</code>,
       <code>risk_score</code>,
-      <code>org_id</code> (002, NULL for global feeds)
+      <code>deleted_at</code> (NULL for active)
     </td>
     <td>UPSERT</td>
-    <td><code>INSERT INTO enriched_threats (url, domain, ...) ON CONFLICT (url) DO UPDATE SET last_seen=NOW(), threat_tags=array_cat(enriched_threats.threat_tags, $new_tags), risk_score=GREATEST(enriched_threats.risk_score, $score)</code>. Enrichment columns (WHOIS/SSL/geo) NOT written by TI sync — only by SVC-03.</td>
+    <td><code>INSERT INTO ti_indicators (indicator_value, indicator_type, ...) ON CONFLICT (indicator_value, indicator_type) DO UPDATE SET last_seen_at=NOW(), threat_tags=array_cat(ti_indicators.threat_tags, $new_tags), risk_score=GREATEST(ti_indicators.risk_score, $score)</code>. No enrichment columns — ti_indicators is a lightweight feed-only table.</td>
   </tr>
   <tr>
     <td>UPSERT malware hashes</td>
@@ -1552,7 +1589,7 @@ INPUT: email plain_text body
     <td>Redis</td>
     <td><code>ti_domain:{domain}</code>, <code>ti_hash:{sha256}</code></td>
     <td>WRITE</td>
-    <td>Bulk-load recently-updated enriched_threats domains and attachment_library hashes into Redis for fast lookup by SVC-03/04/05.</td>
+    <td>Bulk-load recently-updated ti_indicators domains and attachment_library hashes into Redis for fast lookup by SVC-03/04/05.</td>
   </tr>
 </table>
 
@@ -1598,7 +1635,7 @@ INPUT: email plain_text body
 
 <hr/>
 <div style="text-align:center; font-size:10px; color:#666; margin-top:12px;">
-  <strong>END OF DOCUMENT</strong> — ARCH-SPEC-v2.1 — CyberSiren System Architecture Specification — 2026-03-11<br/>
+  <strong>END OF DOCUMENT</strong> — ARCH-SPEC-v2.2 — CyberSiren System Architecture Specification — 2026-03-15<br/>
   This document is the authoritative reference for implementation. All service boundaries, message schemas, database access patterns, column-level data flows, and migration references defined herein constitute the approved architecture baseline. Items in the Schema Gap section (§15) are tracked implementation deltas.
 </div>
 
