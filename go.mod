@@ -6,6 +6,7 @@ require (
 	github.com/exaring/otelpgx v0.10.0
 	github.com/gin-gonic/gin v1.12.0
 	github.com/jackc/pgx/v5 v5.8.0
+	github.com/joho/godotenv v1.5.1
 	github.com/knadh/koanf/parsers/yaml v1.1.0
 	github.com/knadh/koanf/providers/env/v2 v2.0.0
 	github.com/knadh/koanf/providers/file v1.2.1
@@ -14,6 +15,8 @@ require (
 	github.com/prometheus/client_golang v1.23.2
 	github.com/rs/zerolog v1.34.0
 	github.com/stretchr/testify v1.11.1
+	github.com/valkey-io/valkey-go v1.0.72
+	github.com/valkey-io/valkey-go/valkeyotel v1.0.72
 	go.opentelemetry.io/otel v1.42.0
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp v1.42.0
 	go.opentelemetry.io/otel/sdk v1.42.0
@@ -47,7 +50,6 @@ require (
 	github.com/jackc/pgpassfile v1.0.0 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
 	github.com/jackc/puddle/v2 v2.2.2 // indirect
-	github.com/joho/godotenv v1.5.1 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
 	github.com/knadh/koanf/maps v0.1.2 // indirect
@@ -68,8 +70,6 @@ require (
 	github.com/quic-go/quic-go v0.59.0 // indirect
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
 	github.com/ugorji/go/codec v1.3.1 // indirect
-	github.com/valkey-io/valkey-go v1.0.72 // indirect
-	github.com/valkey-io/valkey-go/valkeyotel v1.0.72 // indirect
 	go.mongodb.org/mongo-driver/v2 v2.5.0 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.42.0 // indirect
