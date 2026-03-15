@@ -33,6 +33,7 @@ type Config struct {
 	FeedURLhausEnabled   bool   `koanf:"feed_urlhaus_enabled"`
 	FeedThreatFoxEnabled bool   `koanf:"feed_threatfox_enabled"`
 	SyncIntervalSeconds  int    `koanf:"sync_interval_seconds"`
+	ValkeyAddr           string `koanf:"valkey_addr"`
 
 	Valkey     ValkeyConfig     `koanf:"valkey"`
 	Worker     WorkerConfig     `koanf:"worker"`
@@ -234,6 +235,7 @@ func Load() (*Config, error) {
 		FeedURLhausEnabled:   true,
 		FeedThreatFoxEnabled: true,
 		SyncIntervalSeconds:  21600,
+		ValkeyAddr:           "localhost:6379",
 		Valkey: ValkeyConfig{
 			Addr: "localhost:6379",
 			DB:   0,
@@ -321,6 +323,13 @@ func Load() (*Config, error) {
 	cfg := &Config{}
 	if err := k.Unmarshal("", cfg); err != nil {
 		return nil, fmt.Errorf("unmarshalling config: %w", err)
+	}
+
+	if strings.TrimSpace(cfg.ValkeyAddr) == "" && strings.TrimSpace(cfg.Valkey.Addr) != "" {
+		cfg.ValkeyAddr = cfg.Valkey.Addr
+	}
+	if strings.TrimSpace(cfg.Valkey.Addr) == "" && strings.TrimSpace(cfg.ValkeyAddr) != "" {
+		cfg.Valkey.Addr = cfg.ValkeyAddr
 	}
 
 	if err := validate(cfg); err != nil {
