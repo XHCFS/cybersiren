@@ -1,0 +1,515 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>CyberSiren — ML Model Specification (SVC-03 URL Analysis)</title>
+<style>
+  @page { size: A4 portrait; margin: 12mm; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Courier New', 'Consolas', monospace;
+    background: #ffffff;
+    color: #111111;
+    padding: 28px 36px;
+    font-size: 11px;
+    line-height: 1.45;
+  }
+
+  h1 { font-size: 20px; font-weight: 700; border-bottom: 3px solid #111; padding-bottom: 6px; margin-bottom: 2px; letter-spacing: -0.3px; }
+  .doc-meta { font-size: 10px; color: #555; margin-bottom: 20px; border-bottom: 1px solid #999; padding-bottom: 8px; }
+  .doc-meta span { margin-right: 24px; }
+
+  h2 { font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: 1.5px; border-bottom: 2px solid #333; padding-bottom: 3px; margin: 22px 0 10px 0; }
+  h3 { font-size: 11.5px; font-weight: 700; margin: 12px 0 4px 0; }
+
+  table { border-collapse: collapse; width: 100%; margin: 6px 0 14px 0; font-size: 10.5px; }
+  th, td { border: 1px solid #888; padding: 4px 7px; text-align: left; vertical-align: top; }
+  th { background: #e8e8e8; font-weight: 700; white-space: nowrap; }
+  td { background: #fff; }
+  tr:nth-child(even) td { background: #f8f8f8; }
+  td.svc { font-weight: 700; }
+  td code, th code { font-family: inherit; background: #f0f0f0; padding: 1px 3px; font-size: 10px; }
+
+  .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .three-col { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; }
+
+  .note {
+    border: 1px solid #aaa;
+    background: #f9f9f9;
+    padding: 6px 10px;
+    margin: 6px 0;
+    font-size: 10px;
+  }
+  .note strong { font-size: 10px; }
+
+  .pipeline-step {
+    border: 2px solid #333;
+    margin-bottom: 10px;
+    page-break-inside: avoid;
+  }
+  .pipeline-step .step-header {
+    display: flex;
+    align-items: stretch;
+  }
+  .pipeline-step .step-num {
+    background: #333;
+    color: #fff;
+    font-weight: 700;
+    padding: 8px 12px;
+    min-width: 36px;
+    text-align: center;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 13px;
+  }
+  .pipeline-step .step-content {
+    padding: 8px 12px;
+    flex: 1;
+  }
+
+  .compact-table td, .compact-table th { padding: 3px 6px; font-size: 10px; }
+
+  .metric-block {
+    border: 2px solid #333;
+    padding: 10px 12px;
+    margin-bottom: 10px;
+    page-break-inside: avoid;
+  }
+  .metric-block .metric-header {
+    font-size: 12.5px;
+    font-weight: 700;
+    border-bottom: 1px solid #aaa;
+    padding-bottom: 4px;
+    margin-bottom: 6px;
+  }
+
+  hr { border: none; border-top: 1px solid #ccc; margin: 14px 0; }
+  .page-break { page-break-before: always; }
+
+  .ref-list { margin: 4px 0; padding-left: 18px; font-size: 10px; }
+  .ref-list li { margin-bottom: 3px; }
+</style>
+</head>
+<body>
+
+<h1>CYBERSIREN — URL ANALYSIS ML MODEL SPECIFICATION</h1>
+<div class="doc-meta">
+  <span><strong>Document:</strong> ML-SPEC-v1.1</span>
+  <span><strong>Date:</strong> 2025-07-15</span>
+  <span><strong>Scope:</strong> SVC-03 URL Analysis — Low-Latency Phishing Detection Model</span>
+  <span><strong>Classification:</strong> Internal / Graduation Project</span>
+</div>
+
+<div class="note">
+  <strong>Context:</strong> This document specifies the machine learning model deployed inside SVC-03 (URL Analysis Service) as defined in ARCH-SPEC-v2.1. The model runs as a Python subprocess invoked by the Go service. It receives a raw URL string, extracts 28 structural features, and returns a phishing probability. No network calls or page downloads occur at inference time. The model file is 0.8 MB (joblib-compressed LightGBM).
+</div>
+
+<div class="note">
+  <strong>Champion Model:</strong> LightGBM &nbsp;|&nbsp; <strong>Test Accuracy:</strong> 99.824% &nbsp;|&nbsp; <strong>Test MCC:</strong> 0.99645 &nbsp;|&nbsp; <strong>Test AUC-ROC:</strong> 0.99929 &nbsp;|&nbsp; <strong>False Positive Rate:</strong> 0.099% &nbsp;|&nbsp; <strong>False Negative Rate:</strong> 0.240% &nbsp;|&nbsp; <strong>Single-Inference Latency:</strong> 1,582 μs
+</div>
+
+
+<!-- ============================================================ -->
+<h2>1. Literature Foundation</h2>
+
+<p style="margin-bottom:8px;">Five peer-reviewed papers informed feature selection, model choice, and evaluation methodology. Every design decision traces to one or more of these sources.</p>
+
+<table>
+  <tr>
+    <th>Ref</th>
+    <th>Citation</th>
+    <th>Year</th>
+    <th>Dataset</th>
+    <th>Contribution to This Work</th>
+  </tr>
+  <tr>
+    <td class="svc">[1]</td>
+    <td>K.L. Chiew et al. "A new hybrid ensemble feature selection framework for ML-based phishing detection." <em>Information Sciences</em> 484, 153–166.</td>
+    <td>2019</td>
+    <td>10,000 URLs, 48 features</td>
+    <td>HEFS framework. CDF-g algorithm for feature cut-off. Identified 10 baseline features from 48 candidates. RF consensus best classifier. Features NumDash, NumNumericChars, NumSensitiveWords selected as HEFS baseline.</td>
+  </tr>
+  <tr>
+    <td class="svc">[2]</td>
+    <td>M.A. Tamal et al. "Dataset of suspicious phishing URL detection." <em>Frontiers in Computer Science</em> 6:1308634.</td>
+    <td>2024</td>
+    <td>247,950 URLs, 42 features</td>
+    <td>10 novel features: Shannon entropy of URL/domain, repeated digits, subdomain statistics. URL-only design. IQR outlier removal methodology.</td>
+  </tr>
+  <tr>
+    <td class="svc">[3]</td>
+    <td>R.M. Mohammad et al. "An Assessment of Features Related to Phishing Websites using an Automated Technique." <em>ICITST-2012</em>, IEEE.</td>
+    <td>2012</td>
+    <td>2,500 phishing URLs</td>
+    <td>Rule-based extraction thresholds. URL length ≥54 = suspicious (48.8%). HTTPS absence = 92.8%. IP address in URL = 22.8%. Feature frequency weights.</td>
+  </tr>
+  <tr>
+    <td class="svc">[4]</td>
+    <td>R.S. Potpelwar et al. "LegitPhish: A large-scale annotated dataset for URL-based phishing detection." <em>Data in Brief</em> 63, 111972.</td>
+    <td>2025</td>
+    <td>101,219 URLs, 17 features</td>
+    <td>Manually verified dataset. Source for DS3 (LegitPhish). Features: tld_popularity, suspicious_file_extension, percentage_numeric_chars.</td>
+  </tr>
+  <tr>
+    <td class="svc">[5]</td>
+    <td>A. Prasad, S. Chandra. "PhiUSIIL: A diverse security profile empowered phishing URL detection framework." <em>Computers &amp; Security</em> 136, 103545.</td>
+    <td>2024</td>
+    <td>235,795 URLs, 54 features</td>
+    <td>Source for DS2 (PhiUSIIL). Novel derived features: URLCharProb (Eq. 1), CharContinuationRate, TLDLegitimateProb. LightGBM 99.99% in Table 3. MCC as primary metric (Eq. 7). Incremental learning architecture. Security profiles.</td>
+  </tr>
+</table>
+
+
+<!-- ============================================================ -->
+<h2>2. Data Pipeline</h2>
+
+<h3>2.1 Source Datasets</h3>
+<p style="margin-bottom:6px;">Two datasets selected. Criteria: raw URL strings present, continuous feature encoding, no pre-discretization.</p>
+
+<table class="compact-table">
+  <tr><th>ID</th><th>Name</th><th>Rows</th><th>Cols</th><th>Source Paper</th><th>URL Column</th><th>Label Column</th><th>Native Encoding</th></tr>
+  <tr><td class="svc">DS2</td><td>PhiUSIIL Phishing URL Dataset</td><td>235,795</td><td>56</td><td>[5] Prasad &amp; Chandra (2024)</td><td><code>URL</code></td><td><code>label</code></td><td>1=legit, 0=phish</td></tr>
+  <tr><td class="svc">DS3</td><td>LegitPhish</td><td>101,219</td><td>18</td><td>[4] Potpelwar et al. (2025)</td><td><code>URL</code></td><td><code>ClassLabel</code></td><td>1=legit, 0=phish</td></tr>
+</table>
+
+<h3>2.2 Excluded Datasets (with reason)</h3>
+<table class="compact-table">
+  <tr><th>ID</th><th>Name</th><th>Rows</th><th>Reason for Exclusion</th></tr>
+  <tr><td>DS1</td><td>Chiew (2019) Feature Evaluation</td><td>10,000</td><td>No raw URL column. 6 ternary-encoded features. Incompatible with continuous pipeline.</td></tr>
+  <tr><td>DS4</td><td>Tamal (2024) Phishing Detection</td><td>247,950</td><td>No raw URL column. 118,172 exact duplicate rows (47.6%).</td></tr>
+  <tr><td>DS6</td><td>UCI Phishing Websites (ARFF)</td><td>11,055</td><td>Ternary (-1/0/1) encoding. 5,206 duplicate rows. Pre-discretized — original values lost.</td></tr>
+  <tr><td>DS7</td><td>UCI Phishing Websites (legacy)</td><td>2,456</td><td>Same ternary encoding as DS6. 740 duplicate rows.</td></tr>
+</table>
+
+<h3>2.3 Label Unification</h3>
+<div class="note">
+  Both source datasets encode legitimate=1, phishing=0. CyberSiren unifies to standard convention: <strong>0=legitimate, 1=phishing</strong> (positive class). Applied via <code>map({1: 0, 0: 1})</code>. This aligns with [5] Algorithm 3 where "prediction 1 means legitimate" and [4] Table 1 where "Phishing=0, Legitimate=1."
+</div>
+
+<h3>2.4 Quality Steps</h3>
+<table class="compact-table">
+  <tr><th>Step</th><th>Action</th><th>Rows Affected</th></tr>
+  <tr><td>1</td><td>Drop rows with null URL or null label</td><td>1</td></tr>
+  <tr><td>2</td><td>Drop URLs &lt;10 characters or containing no dots</td><td>1</td></tr>
+  <tr><td>3</td><td>Strip whitespace from URL strings</td><td>—</td></tr>
+  <tr><td>4</td><td>Case-insensitive deduplication. On conflict: keep PhiUSIIL (larger, more recent)</td><td>37,706</td></tr>
+</table>
+
+<h3>2.5 Final Dataset — PullDD</h3>
+<div class="two-col">
+  <table class="compact-table">
+    <tr><th>Metric</th><th>Value</th></tr>
+    <tr><td>Total rows</td><td><strong>299,306</strong></td></tr>
+    <tr><td>Legitimate (label=0)</td><td>135,295 (45.2%)</td></tr>
+    <tr><td>Phishing (label=1)</td><td>164,011 (54.8%)</td></tr>
+    <tr><td>From PhiUSIIL</td><td>235,370</td></tr>
+    <tr><td>From LegitPhish</td><td>63,936</td></tr>
+  </table>
+  <table class="compact-table">
+    <tr><th>Metric</th><th>Value</th></tr>
+    <tr><td>Features extracted</td><td>30</td></tr>
+    <tr><td>Features used in model</td><td>28 (2 pruned — zero importance)</td></tr>
+    <tr><td>Null cells</td><td>0</td></tr>
+    <tr><td>Infinite values</td><td>0</td></tr>
+    <tr><td>Output file</td><td><code>cybersiren_lowlatency_dataset.csv</code> (43.8 MB)</td></tr>
+  </table>
+</div>
+
+
+<!-- ============================================================ -->
+<h2>3. Lookup Tables</h2>
+
+<p style="margin-bottom:6px;">Three pre-computed tables are loaded at startup. Built from the Cisco Umbrella top-1M domains list.</p>
+
+<table>
+  <tr><th>Table</th><th>Source</th><th>Paper</th><th>Build Method</th><th>Size</th></tr>
+  <tr>
+    <td class="svc">CHAR_PROB_TABLE</td>
+    <td>Cisco Umbrella top-1M</td>
+    <td>[5] PhiUSIIL §3.1.4, Eq. 1</td>
+    <td>For each char a–z and 0–9: <code>count(char) / total_alphanumeric_chars</code>. Corpus: 21,593,440 chars. Chars a,c,e,o,r,t higher in legitimate. Chars b,f,q,v,w,x,y,z and all digits higher in phishing.</td>
+    <td>36 entries</td>
+  </tr>
+  <tr>
+    <td class="svc">TLD_LEGIT_PROB</td>
+    <td>Cisco Umbrella top-1M</td>
+    <td>[5] PhiUSIIL §3.1.4</td>
+    <td>For each TLD: <code>count(TLD) / total_TLDs</code>. Parsed via <code>tldextract</code>. Top: com=0.617, net=0.141, org=0.026, io=0.023, co.uk=0.010.</td>
+    <td>1,319 entries</td>
+  </tr>
+  <tr>
+    <td class="svc">SENSITIVE_WORDS</td>
+    <td>[1] Chiew (2019) feature #25</td>
+    <td>[1] §Appendix, Feature 25</td>
+    <td>Extended from Chiew base list: secure, account, webscr, login, ebayisapi, signin, banking, confirm, update, verify, password, suspend, paypal, authenticate, wallet, credential.</td>
+    <td>16 words</td>
+  </tr>
+</table>
+
+
+<!-- ============================================================ -->
+<h2 class="page-break">4. Feature Specification — 30 Defined / 28 Active</h2>
+
+<div class="note">
+  <strong>Extraction:</strong> All features extracted from the raw URL string at inference time. No network calls. No page downloads. No third-party API lookups. Feature extraction is vectorized using pandas string operations for batch processing (~60,000 URLs/sec). Single-URL extraction uses per-row functions.
+</div>
+<div class="note">
+  <strong>Pruned features:</strong> <code>has_ip_address</code> (F04) and <code>double_slash_in_path</code> (F24) contributed 0 splits in the champion LightGBM model and have been removed from the active feature set. Both are defined below for completeness but are not passed to the model at inference time.
+</div>
+
+<h3>4.1 Tier 1 — Strongest Features (5/5 or 4/5 paper support, HEFS-validated)</h3>
+<table>
+  <tr><th>#</th><th>Feature</th><th>Type</th><th>Extraction</th><th>Papers</th><th>Evidence</th></tr>
+  <tr><td>F01</td><td class="svc">url_length</td><td>int</td><td><code>len(url)</code></td><td>5/5</td><td>[3]: threshold ≥54, 48.8% of phishing. [1] feature #4. [2] F1. [4]. [5].</td></tr>
+  <tr><td>F02</td><td class="svc">num_dots</td><td>int</td><td><code>url.count('.')</code></td><td>5/5</td><td>[1] feature #1. [2] F2. [3] subdomain rule. [4] dot_count. [5].</td></tr>
+  <tr><td>F03</td><td class="svc">num_subdomains</td><td>int</td><td>Count parts in subdomain split by <code>'.'</code></td><td>5/5</td><td>[3]: 3 dots in domain = suspicious, 44.4%. [2] F24. [5] NoOfSubDomain. [1] #2.</td></tr>
+  <tr><td>F04</td><td class="svc" style="text-decoration:line-through; color:#999;">has_ip_address</td><td>bin</td><td><code>PRUNED</code> — Anchored regex on parsed hostname: <code>^(\d{1,3}\.){3}\d{1,3}$</code> or hex IP. Not on full URL string.</td><td>4/5</td><td>[3]: 22.8%. [1] #17. [5] IsDomainIP. <strong>Removed: 0 splits in LightGBM.</strong></td></tr>
+  <tr><td>F05</td><td class="svc">num_hyphens_url</td><td>int</td><td><code>url.count('-')</code></td><td>5/5</td><td>[1]: <strong>HEFS baseline feature</strong>. [3]: 26.4%. [2] F6.</td></tr>
+  <tr><td>F06</td><td class="svc">num_hyphens_hostname</td><td>int</td><td><code>hostname.count('-')</code></td><td>5/5</td><td>[1] feature #6 NumDashInHostname.</td></tr>
+  <tr><td>F07</td><td class="svc">https_flag</td><td>bin</td><td><code>scheme == 'https'</code></td><td>4/5</td><td>[3]: 92.8% phishing lacks HTTPS. [5] IsHTTPS.</td></tr>
+  <tr><td>F08</td><td class="svc">entropy_url</td><td>float</td><td>Shannon entropy: <code>E = -Σ(p_i × log₂(p_i))</code> where <code>p_i = freq(char)/len(url)</code></td><td>3/5</td><td>[2] F40. [4] url_entropy. [5] via URLCharProb.</td></tr>
+  <tr><td>F09</td><td class="svc">num_numeric_chars</td><td>int</td><td>Count digits 0–9 in URL</td><td>4/5</td><td>[1]: <strong>HEFS baseline feature</strong>. [2] F4. [5].</td></tr>
+  <tr><td>F10</td><td class="svc">num_sensitive_words</td><td>int</td><td><code>Σ url.lower().count(w)</code> for each word in 16-word list. Counts total occurrences, not just presence.</td><td>1/5</td><td>[1]: <strong>HEFS baseline feature</strong>. Selected by CDF-g + ensemble from 48 candidates.</td></tr>
+</table>
+
+<h3>4.2 Tier 2 — Strong Features (2–3 papers, novel derived features)</h3>
+<table>
+  <tr><th>#</th><th>Feature</th><th>Type</th><th>Extraction</th><th>Papers</th><th>Evidence</th></tr>
+  <tr><td>F11</td><td class="svc">hostname_length</td><td>int</td><td><code>len(parsed_hostname)</code></td><td>3/5</td><td>[1] #21. [4] domain_name_length.</td></tr>
+  <tr><td>F12</td><td class="svc">path_length</td><td>int</td><td><code>len(parsed_path)</code></td><td>3/5</td><td>[1] #22. [2] F36. [4].</td></tr>
+  <tr><td>F13</td><td class="svc">url_char_prob</td><td>float</td><td><code>Σ prob_table[char_i] / n</code> for alphanumeric chars. Prob table from 1M legit URLs.</td><td>1/5</td><td>[5] Eq. 1. <strong>Rank #1 in feature importance (2,697 splits, 15.5% cumulative).</strong></td></tr>
+  <tr><td>F14</td><td class="svc">char_continuation_rate</td><td>float</td><td><code>(max_alpha_seq + max_digit_seq + max_special_seq) / len(url)</code></td><td>1/5</td><td>[5] §3.1.4. Lower rate = more randomized = suspicious.</td></tr>
+  <tr><td>F15</td><td class="svc">tld_legit_prob</td><td>float</td><td>Lookup TLD in frequency table built from top-1M sites.</td><td>2/5</td><td>[5] §3.1.4. [4] tld_popularity. <strong>Rank #4 in feature importance (2,081 splits).</strong></td></tr>
+  <tr><td>F16</td><td class="svc">entropy_domain</td><td>float</td><td>Shannon entropy on domain string only.</td><td>2/5</td><td>[2] F41. Novel feature.</td></tr>
+  <tr><td>F17</td><td class="svc">num_query_params</td><td>int</td><td><code>len(query.split('&amp;'))</code> if query else 0. Counts raw delimiters, not unique keys.</td><td>4/5</td><td>[1] #11, #12. [2] F9, F10. Raw count catches <code>?id=1&amp;id=2&amp;id=3</code> as 3, not 1.</td></tr>
+  <tr><td>F18</td><td class="svc">num_special_chars</td><td>int</td><td>Count of <code>!@#$%^&amp;*~`|\&lt;&gt;{}</code> in URL.</td><td>2/5</td><td>[2] F5, F20. [5] NoOfObfuscatedChar.</td></tr>
+  <tr><td>F19</td><td class="svc">at_symbol_present</td><td>bin</td><td><code>'@' in url</code></td><td>4/5</td><td>[3]: 3.6% frequency. Browser ignores everything before @. [1] #7.</td></tr>
+  <tr><td>F20</td><td class="svc">pct_numeric_chars</td><td>float</td><td><code>num_numeric_chars / max(len(url), 1)</code></td><td>1/5</td><td>[4] percentage_numeric_chars. Ratio-normalized F09.</td></tr>
+</table>
+
+<h3>4.3 Tier 3 — Useful Features (1–2 papers, lower importance)</h3>
+<table>
+  <tr><th>#</th><th>Feature</th><th>Type</th><th>Extraction</th><th>Papers</th></tr>
+  <tr><td>F21</td><td class="svc">suspicious_file_ext</td><td>bin</td><td>Path ends in .exe/.zip/.rar/.scr/.bat/.cmd/.msi/.dll/.vbs/.js/.jar/.ps1/.wsf/.lnk/.7z/.cab</td><td>[4]</td></tr>
+  <tr><td>F22</td><td class="svc">path_depth</td><td>int</td><td><code>path.count('/') - 1</code>, min 0</td><td>[1] #3. [2] F8.</td></tr>
+  <tr><td>F23</td><td class="svc">num_underscores</td><td>int</td><td><code>url.count('_')</code></td><td>[1] #9. [2] F7.</td></tr>
+  <tr><td>F24</td><td class="svc" style="text-decoration:line-through; color:#999;">double_slash_in_path</td><td>bin</td><td><code>PRUNED</code> — <code>'//' in path</code> (after protocol)</td><td>[1] #24. <strong>Removed: 0 splits in LightGBM.</strong></td></tr>
+  <tr><td>F25</td><td class="svc">query_length</td><td>int</td><td><code>len(query_string)</code></td><td>[1] #23.</td></tr>
+  <tr><td>F26</td><td class="svc">has_fragment</td><td>bin</td><td>Fragment component is non-empty.</td><td>[2] F38. [1] #13.</td></tr>
+  <tr><td>F27</td><td class="svc">has_repeated_digits</td><td>bin</td><td>Regex: <code>(\d)\1{2,}</code></td><td>[2] F3. Novel.</td></tr>
+  <tr><td>F28</td><td class="svc">avg_subdomain_length</td><td>float</td><td>Mean length of subdomain parts.</td><td>[2] F27. Novel.</td></tr>
+  <tr><td>F29</td><td class="svc">tld_length</td><td>int</td><td><code>len(tld_string)</code></td><td>[4].</td></tr>
+  <tr><td>F30</td><td class="svc">token_count</td><td>int</td><td>Split URL by <code>/?.&amp;=-_.:@#+~%</code>, count non-empty tokens.</td><td>[4].</td></tr>
+</table>
+
+
+<!-- ============================================================ -->
+<h2 class="page-break">5. Feature Importance — Measured from Champion Model</h2>
+
+<div class="note">
+  <strong>Method:</strong> LightGBM <code>feature_importances_</code> attribute. Values are split counts across all trees. Top 4 features account for 53.6% of total model importance. Two of four are novel derived features from [5]; two are Shannon entropy variants from [2].
+</div>
+
+<table>
+  <tr><th>Rank</th><th>Feature</th><th>Splits</th><th>Cumul. %</th><th>Tier</th><th>Source Paper</th></tr>
+  <tr><td>1</td><td class="svc">url_char_prob</td><td>2,697</td><td>15.5%</td><td>T2</td><td>[5] Eq. 1</td></tr>
+  <tr><td>2</td><td class="svc">entropy_domain</td><td>2,293</td><td>28.7%</td><td>T2</td><td>[2] F41</td></tr>
+  <tr><td>3</td><td class="svc">entropy_url</td><td>2,244</td><td>41.6%</td><td>T1</td><td>[2] F40</td></tr>
+  <tr><td>4</td><td class="svc">tld_legit_prob</td><td>2,081</td><td>53.6%</td><td>T2</td><td>[5] §3.1.4</td></tr>
+  <tr><td>5</td><td class="svc">char_continuation_rate</td><td>1,659</td><td>63.1%</td><td>T2</td><td>[5] §3.1.4</td></tr>
+  <tr><td>6</td><td class="svc">url_length</td><td>1,171</td><td>69.9%</td><td>T1</td><td>[1][2][3][4][5]</td></tr>
+  <tr><td>7</td><td class="svc">hostname_length</td><td>844</td><td>74.7%</td><td>T2</td><td>[1][4]</td></tr>
+  <tr><td>8</td><td class="svc">path_length</td><td>708</td><td>78.8%</td><td>T2</td><td>[1][2][4]</td></tr>
+  <tr><td>9</td><td class="svc">avg_subdomain_length</td><td>692</td><td>82.8%</td><td>T3</td><td>[2] F27</td></tr>
+  <tr><td>10</td><td class="svc">pct_numeric_chars</td><td>413</td><td>85.2%</td><td>T2</td><td>[4]</td></tr>
+  <tr><td colspan="6" style="text-align:center; font-size:9px; color:#555;">... remaining 18 active features account for 14.8% of importance. has_ip_address and double_slash_in_path contributed 0 splits and have been pruned.</td></tr>
+</table>
+
+<div class="note">
+  <strong>Observation:</strong> Features traditionally considered essential — IpAddress, AtSymbol, DoubleSlash — contributed zero or near-zero importance. This aligns with [1] §5.5: "some frequently promoted features in existing phishing detection studies are not chosen as baseline features... phishers are employing new schemes to evade detection."
+</div>
+
+
+<!-- ============================================================ -->
+<h2>6. Model Selection</h2>
+
+<h3>6.1 Candidates Tested</h3>
+<p style="margin-bottom:6px;">10 models evaluated. Selection driven by paper evidence. Data split: 70/15/15 stratified ([1] §5.2 uses 70/30; we carve validation from the 30%).</p>
+
+<table class="compact-table">
+  <tr><th>Model</th><th>Paper Rationale</th><th>Val MCC</th><th>Val Acc</th><th>Train Time</th><th>Single Latency</th></tr>
+  <tr><td class="svc">LightGBM</td><td>[5] Table 3: 99.99%, fastest training</td><td><strong>0.99564</strong></td><td>0.99784</td><td>3.8s</td><td>1,582 μs</td></tr>
+  <tr><td>VotingEnsemble</td><td>[5] §4.2.2: multi-model consensus</td><td>0.99555</td><td>0.99779</td><td>61.3s</td><td>62,462 μs</td></tr>
+  <tr><td>StackingEnsemble</td><td>[5] Table 3: 99.979%</td><td>0.99564</td><td>0.99784</td><td>163.1s</td><td>42,260 μs</td></tr>
+  <tr><td>XGBoost</td><td>[5] Table 3: 99.993% — highest in paper</td><td>0.99542</td><td>0.99773</td><td>3.7s</td><td>4,385 μs</td></tr>
+  <tr><td>CatBoost</td><td>[5] Table 3: 99.987%</td><td>0.99528</td><td>0.99766</td><td>10.0s</td><td>2,006 μs</td></tr>
+  <tr><td>RandomForest</td><td>[1] §5.3: consensus best. [5]: 99.982%</td><td>0.99506</td><td>0.99755</td><td>28.7s</td><td>55,746 μs</td></tr>
+  <tr><td>ExtraTrees</td><td>RF variant, random splits</td><td>0.99447</td><td>0.99726</td><td>16.6s</td><td>57,950 μs</td></tr>
+  <tr><td>DecisionTree</td><td>[1]: C4.5 at 94.37%</td><td>0.99349</td><td>0.99677</td><td>2.0s</td><td>1,323 μs</td></tr>
+  <tr><td>AdaBoost</td><td>[5] Table 3: 99.981%</td><td>0.98131</td><td>0.99069</td><td>39.0s</td><td>34,359 μs</td></tr>
+  <tr><td>LogisticRegression</td><td>[5] Table 3: 99.654%</td><td>0.96525</td><td>0.98260</td><td>2.8s</td><td>975 μs</td></tr>
+</table>
+
+<div class="note">
+  <strong>Ranking metric: MCC</strong> (Matthews Correlation Coefficient). [5] uses MCC as primary metric (Eq. 7). MCC accounts for all four confusion matrix quadrants. F1 ignores true negatives. Accuracy treats all errors equally. With 45.2/54.8 class split, MCC is the most informative single metric. Range: −1 to +1.
+</div>
+
+<h3>6.2 Why LightGBM over XGBoost</h3>
+<p style="margin-bottom:14px;">
+XGBoost achieved highest accuracy in [5] Table 3 (99.993%). In our benchmark, LightGBM ranks #1 by MCC (0.99564 vs 0.99542). Single-inference latency: 1,582 μs vs 4,385 μs. Training: 3.8s vs 3.7s. LightGBM is faster at inference with higher MCC. For a low-latency production service, this is the correct choice.
+</p>
+
+
+<!-- ============================================================ -->
+<h2 class="page-break">7. Final Results — Held-Out Test Set</h2>
+
+<div class="note">
+  <strong>Protocol:</strong> Test set touched exactly once. 44,896 URLs. Stratified. Positive rate: 0.5480. These are the official reported numbers.
+</div>
+
+<h3>7.1 Top 3 Models</h3>
+<table>
+  <tr><th>Model</th><th>Accuracy</th><th>F1</th><th>MCC</th><th>AUC-ROC</th><th>Log Loss</th><th>FPR</th><th>FNR</th></tr>
+  <tr><td class="svc">LightGBM</td><td><strong>0.99824</strong></td><td><strong>0.99839</strong></td><td><strong>0.99645</strong></td><td>0.99929</td><td><strong>0.01026</strong></td><td><strong>0.00099</strong></td><td>0.00240</td></tr>
+  <tr><td>VotingEnsemble</td><td>0.99820</td><td>0.99835</td><td>0.99636</td><td>0.99931</td><td>0.01069</td><td>0.00103</td><td>0.00244</td></tr>
+  <tr><td>StackingEnsemble</td><td>0.99817</td><td>0.99833</td><td>0.99631</td><td><strong>0.99936</strong></td><td>0.01090</td><td>0.00118</td><td><strong>0.00236</strong></td></tr>
+</table>
+
+<h3>7.2 Champion: LightGBM</h3>
+<div class="two-col">
+  <div class="metric-block">
+    <div class="metric-header">Classification Metrics</div>
+    <table class="compact-table">
+      <tr><td>Accuracy</td><td><strong>99.824%</strong></td><td>79 errors out of 44,896</td></tr>
+      <tr><td>Precision</td><td>99.919%</td><td>Of flagged phishing, 99.919% correct</td></tr>
+      <tr><td>Recall</td><td>99.760%</td><td>Of actual phishing, 99.760% caught</td></tr>
+      <tr><td>F1 Score</td><td>99.839%</td><td>Harmonic mean of precision and recall</td></tr>
+      <tr><td>MCC</td><td>0.99645</td><td>Near-perfect across all quadrants</td></tr>
+      <tr><td>AUC-ROC</td><td>0.99929</td><td>Near-perfect class separation</td></tr>
+      <tr><td>Log Loss</td><td>0.01026</td><td>Calibrated probability estimates</td></tr>
+    </table>
+  </div>
+  <div class="metric-block">
+    <div class="metric-header">Operational Metrics</div>
+    <table class="compact-table">
+      <tr><td>FPR</td><td><strong>0.099%</strong></td><td>20 legit URLs blocked / 20,295</td></tr>
+      <tr><td>FNR</td><td><strong>0.240%</strong></td><td>59 phishing URLs missed / 24,601</td></tr>
+      <tr><td>Model size</td><td>0.8 MB</td><td>Compressed joblib</td></tr>
+      <tr><td>Training time</td><td>3.8 s</td><td>Kaggle 2-core CPU</td></tr>
+      <tr><td>Batch latency</td><td>7.6 μs/URL</td><td>Vectorized batch prediction</td></tr>
+      <tr><td>Single latency</td><td>1,582 μs/URL</td><td>Production API estimate</td></tr>
+      <tr><td>Feature extraction</td><td>~60,000 URLs/sec</td><td>Vectorized pandas ops</td></tr>
+    </table>
+  </div>
+</div>
+
+<h3>7.3 Confusion Matrix (Test Set)</h3>
+<table style="width:400px;">
+  <tr><th></th><th>Predicted Legit</th><th>Predicted Phish</th></tr>
+  <tr><td class="svc">Actual Legit</td><td>20,275 (TN)</td><td>20 (FP)</td></tr>
+  <tr><td class="svc">Actual Phish</td><td>59 (FN)</td><td>24,542 (TP)</td></tr>
+</table>
+
+
+<!-- ============================================================ -->
+<h2>8. Production Integration — SVC-03 Interface</h2>
+
+<h3>8.1 Inference Flow</h3>
+<div class="pipeline-step">
+  <div class="step-header">
+    <div class="step-num">1</div>
+    <div class="step-content">
+      <strong>INPUT:</strong> Raw URL string from <code>analysis.urls</code> Kafka message. Example: <code>https://secure-login.example.com/verify?token=abc123</code>
+    </div>
+  </div>
+</div>
+<div class="pipeline-step">
+  <div class="step-header">
+    <div class="step-num">2</div>
+    <div class="step-content">
+      <strong>FEATURE EXTRACTION:</strong> Extract 28 active features from URL string (30 defined; has_ip_address and double_slash_in_path excluded). No network calls. Uses pre-loaded lookup tables (CHAR_PROB_TABLE, TLD_LEGIT_PROB, SENSITIVE_WORDS). Parse URL components via regex. Compute entropy, char probabilities, continuation rate.
+    </div>
+  </div>
+</div>
+<div class="pipeline-step">
+  <div class="step-header">
+    <div class="step-num">3</div>
+    <div class="step-content">
+      <strong>PREDICTION:</strong> Pass 28-feature vector to LightGBM. Returns <code>predict_proba[:,1]</code> as phishing probability (float 0.0–1.0). Binary label: probability ≥ 0.5 → phishing.
+    </div>
+  </div>
+</div>
+<div class="pipeline-step">
+  <div class="step-header">
+    <div class="step-num">4</div>
+    <div class="step-content">
+      <strong>OUTPUT:</strong> <code>ml_score: int 0–100</code> (probability × 100, rounded). Included in <code>scores.url</code> message per ARCH-SPEC-v2.1 Step 3a schema.
+    </div>
+  </div>
+</div>
+
+<h3>8.2 Confidence-Gated Routing</h3>
+<div class="note">
+  Follows [5] security profile design (§4.2.2). Different thresholds accommodate different risk tolerances. URLs in the uncertainty band are candidates for SVC-03's enrichment path (WHOIS, SSL, DNS) before final scoring.
+</div>
+<table style="width:600px;">
+  <tr><th>Probability</th><th>Risk Level</th><th>SVC-03 Action</th></tr>
+  <tr><td>0.85 – 1.00</td><td class="svc">DANGEROUS</td><td>Score = ml_score. Skip enrichment. Emit immediately.</td></tr>
+  <tr><td>0.50 – 0.85</td><td class="svc">SUSPICIOUS</td><td>Route to enrichment (WHOIS/SSL/DNS). Score = enriched model or ml_score.</td></tr>
+  <tr><td>0.30 – 0.50</td><td class="svc">UNCERTAIN</td><td>Route to enrichment (WHOIS/SSL/DNS). Score = enriched model or ml_score.</td></tr>
+  <tr><td>0.00 – 0.30</td><td class="svc">SAFE</td><td>Score = ml_score. Skip enrichment. Emit immediately.</td></tr>
+</table>
+
+<h3>8.3 Exported Artifacts</h3>
+<table class="compact-table" style="width:500px;">
+  <tr><th>File</th><th>Size</th><th>Contents</th></tr>
+  <tr><td><code>model.joblib</code></td><td>0.8 MB</td><td>Trained LightGBM classifier (compress=3)</td></tr>
+  <tr><td><code>config.json</code></td><td>~50 KB</td><td>feature_names, char_prob_table, tld_legit_prob, sensitive_words</td></tr>
+  <tr><td><code>metrics.json</code></td><td>&lt;1 KB</td><td>Test set performance metrics</td></tr>
+</table>
+
+
+<!-- ============================================================ -->
+<h2 class="page-break">9. Design Justifications</h2>
+
+<table>
+  <tr><th>Decision</th><th>Rationale</th></tr>
+  <tr><td class="svc">URL-only features</td><td>[2] deliberately excluded content features "to optimize speed and responsiveness." [5] §3.1.2: URL features have high potential but cannot be sole defense — hence two-tier architecture. Content features reserved for enrichment path.</td></tr>
+  <tr><td class="svc">LightGBM over XGBoost</td><td>LightGBM ranks #1 by MCC on both validation (0.99564) and test (0.99645). Single-inference: 1,582 μs vs 4,385 μs. Train: 3.8s vs 3.7s. Faster at inference with higher MCC.</td></tr>
+  <tr><td class="svc">MCC for ranking</td><td>[5] uses MCC as primary metric (Eq. 7). Accounts for all four confusion matrix quadrants. F1 ignores TN. Accuracy treats all errors equally. With 45/55 class split, MCC is most informative.</td></tr>
+  <tr><td class="svc">Strict hostname IP detection</td><td>Original regex matched against full URL string. False positive on <code>http://192.168.1.1.example.com</code>. Fix: anchored regex on parsed hostname only. Also guards TLD/domain/subdomain fallback parsers from treating IP octets as TLD components.</td></tr>
+  <tr><td class="svc">Raw delimiter query counting</td><td><code>parse_qs</code> groups duplicate keys. <code>?id=1&amp;id=2&amp;id=3</code> returns length 1. [1] feature #11 counts total components. Raw <code>'&amp;'</code> counting preserves this intent.</td></tr>
+  <tr><td class="svc">Occurrence-based sensitive words</td><td><code>url.count(w)</code> not <code>w in url</code>. URL containing "login" twice (e.g. <code>login.site.com/login</code>) scores 2, not 1. Captures keyword stuffing.</td></tr>
+  <tr><td class="svc">Two source datasets only</td><td>DS2 (PhiUSIIL) and DS3 (LegitPhish) are the only datasets with raw URL strings and continuous encoding. Raw URLs required for consistent feature extraction. Pre-discretized datasets (DS1, DS6, DS7) cannot be combined. DS4 has no raw URLs and 47.6% duplicates.</td></tr>
+  <tr><td class="svc">70/15/15 split</td><td>[1] §5.2 uses 70/30. We carve validation from the 30% for model comparison. Test set touched exactly once.</td></tr>
+  <tr><td class="svc">tldextract dependency</td><td>Fallback TLD parser failed on bare domains from Cisco Umbrella file (urlparse requires scheme prefix). Installing <code>tldextract</code> resolved this. Feature <code>tld_legit_prob</code> jumped to rank #4 in importance with 1,900 splits.</td></tr>
+</table>
+
+
+<!-- ============================================================ -->
+<h2>10. Limitations</h2>
+
+<table>
+  <tr><th>#</th><th>Limitation</th><th>Impact</th><th>Mitigation</th></tr>
+  <tr><td>1</td><td>Training data from 2015–2023. Phishing tactics evolve.</td><td>Concept drift over time.</td><td>Periodic retraining. [5] incremental learning approach.</td></tr>
+  <tr><td>2</td><td>URL structure only. No page content analysis.</td><td>Sophisticated mimicry URLs evade detection.</td><td>Two-tier architecture. Enrichment path handles ambiguous cases.</td></tr>
+  <tr><td>3</td><td>English/Latin-script URL bias.</td><td>Non-Latin IDN URLs underrepresented.</td><td>Future dataset expansion. [4] acknowledges this.</td></tr>
+  <tr><td>4</td><td>has_ip_address and double_slash_in_path contributed 0 splits in the champion model.</td><td>Two features consumed memory and inference time without contributing signal.</td><td>Both pruned from active feature set in Phase 0 of the benchmark pipeline. 28 features now used at inference.</td></tr>
+  <tr><td>5</td><td>45.2/54.8 class split does not reflect real-world traffic.</td><td>Production prevalence is ~1% phishing. Threshold calibration needed.</td><td>Adjust decision threshold post-deployment using production data.</td></tr>
+</table>
+
+
+<!-- ============================================================ -->
+<h2>11. References</h2>
+
+<ol class="ref-list">
+  <li>K.L. Chiew, C.L. Tan, K. Wong, K.S.C. Yong, W.K. Tiong. "A new hybrid ensemble feature selection framework for machine learning-based phishing detection system." <em>Information Sciences</em> 484 (2019) 153–166. doi:10.1016/j.ins.2019.01.064</li>
+  <li>M.A. Tamal, M.K. Islam, T. Bhuiyan, A. Sattar. "Dataset of suspicious phishing URL detection." <em>Frontiers in Computer Science</em> 6:1308634 (2024). doi:10.3389/fcomp.2024.1308634</li>
+  <li>R.M. Mohammad, F. Thabtah, L. McCluskey. "An Assessment of Features Related to Phishing Websites using an Automated Technique." ICITST-2012, IEEE (2012).</li>
+  <li>R.S. Potpelwar, U.V. Kulkarni, J.M. Waghmare. "LegitPhish: A large-scale annotated dataset for URL-based phishing detection." <em>Data in Brief</em> 63 (2025) 111972. doi:10.1016/j.dib.2025.111972</li>
+  <li>A. Prasad, S. Chandra. "PhiUSIIL: A diverse security profile empowered phishing URL detection framework based on similarity index and incremental learning." <em>Computers &amp; Security</em> 136 (2024) 103545. doi:10.1016/j.cose.2023.103545</li>
+</ol>
+
+</body>
+</html>
