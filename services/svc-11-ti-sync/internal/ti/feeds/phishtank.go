@@ -51,6 +51,9 @@ func NewPhishTankFeed(feedID int64, cfg *config.Config, httpClient httputil.Clie
 	}, nil
 }
 
+func (f *PhishTankFeed) Name() string  { return "phishtank" }
+func (f *PhishTankFeed) FeedID() int64 { return f.feedID }
+
 func (f *PhishTankFeed) Fetch(ctx context.Context) (indicators []ti.TIIndicator, err error) {
 	fetchCtx, cancel := context.WithTimeout(ctx, ti.FeedFetchTimeout)
 	defer cancel()

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/joho/godotenv"
 	koanfyaml "github.com/knadh/koanf/parsers/yaml"
 	enpv2 "github.com/knadh/koanf/providers/env/v2"
 	"github.com/knadh/koanf/providers/file"
@@ -30,7 +31,6 @@ type Config struct {
 	FeedThreatFoxAPIKey string `koanf:"feed_threatfox_api_key"`
 	FeedOpenPhishAPIKey string `koanf:"feed_openphish_api_key"`
 	SyncIntervalSeconds int    `koanf:"sync_interval_seconds"`
-	ValkeyAddr          string `koanf:"valkey_addr"`
 
 	Valkey     ValkeyConfig     `koanf:"valkey"`
 	Worker     WorkerConfig     `koanf:"worker"`
@@ -188,11 +188,12 @@ type EmbeddingConfig struct {
 
 // Load reads configuration from:
 //  1. config.yaml (or the path in CYBERSIREN_CONFIG_PATH)
-//  2. Environment variables prefixed with CYBERSIREN_
+//  2. .env file (or the path in CYBERSIREN_ENV_FILE); does not overwrite already-set env vars
+//  3. Environment variables prefixed with CYBERSIREN_
 //     Double underscores delimit hierarchy levels:
 //     e.g. CYBERSIREN_DB__PASSWORD overrides db.password
 //
-// Env vars always take precedence over the YAML file.
+// Precedence (highest to lowest): process env > .env file > config.yaml > defaults.
 func Load() (*Config, error) {
 	k := koanf.New(".")
 
@@ -228,7 +229,6 @@ func Load() (*Config, error) {
 		JaegerEndpoint:      "",
 		MetricsPort:         9090,
 		SyncIntervalSeconds: 21600,
-		ValkeyAddr:          "localhost:6379",
 		Valkey: ValkeyConfig{
 			Addr: "localhost:6379",
 			DB:   0,
@@ -299,6 +299,18 @@ func Load() (*Config, error) {
 		}
 	}
 
+	envFile := os.Getenv("CYBERSIREN_ENV_FILE")
+	if envFile == "" {
+		envFile = ".env"
+	}
+	// godotenv.Load does not overwrite env vars that are already set in the process,
+	// so shell/container env always takes precedence over the .env file.
+	if _, err := os.Stat(envFile); err == nil {
+		if err := godotenv.Load(envFile); err != nil {
+			return nil, fmt.Errorf("reading env file %q: %w", envFile, err)
+		}
+	}
+
 	if err := k.Load(enpv2.Provider(".", enpv2.Opt{
 		Prefix: "CYBERSIREN_",
 		TransformFunc: func(k, v string) (string, any) {
@@ -316,13 +328,6 @@ func Load() (*Config, error) {
 	cfg := &Config{}
 	if err := k.Unmarshal("", cfg); err != nil {
 		return nil, fmt.Errorf("unmarshalling config: %w", err)
-	}
-
-	if strings.TrimSpace(cfg.ValkeyAddr) == "" && strings.TrimSpace(cfg.Valkey.Addr) != "" {
-		cfg.ValkeyAddr = cfg.Valkey.Addr
-	}
-	if strings.TrimSpace(cfg.Valkey.Addr) == "" && strings.TrimSpace(cfg.ValkeyAddr) != "" {
-		cfg.Valkey.Addr = cfg.ValkeyAddr
 	}
 
 	if err := validate(cfg); err != nil {

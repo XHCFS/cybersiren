@@ -49,6 +49,9 @@ func NewThreatFoxFeed(feedID int64, cfg *config.Config, httpClient httputil.Clie
 	}
 }
 
+func (f *ThreatFoxFeed) Name() string  { return "threatfox" }
+func (f *ThreatFoxFeed) FeedID() int64 { return f.feedID }
+
 func (f *ThreatFoxFeed) Fetch(ctx context.Context) (indicators []ti.TIIndicator, err error) {
 	fetchCtx, cancel := context.WithTimeout(ctx, ti.FeedFetchTimeout)
 	defer cancel()

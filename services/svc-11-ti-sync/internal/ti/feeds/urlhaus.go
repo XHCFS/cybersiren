@@ -37,6 +37,9 @@ func NewURLhausFeed(feedID int64, httpClient httputil.Client, log zerolog.Logger
 	}
 }
 
+func (f *URLhausFeed) Name() string  { return "urlhaus" }
+func (f *URLhausFeed) FeedID() int64 { return f.feedID }
+
 func (f *URLhausFeed) Fetch(ctx context.Context) (indicators []ti.TIIndicator, err error) {
 	fetchCtx, cancel := context.WithTimeout(ctx, ti.FeedFetchTimeout)
 	defer cancel()
