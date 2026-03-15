@@ -285,6 +285,53 @@ func (ns NullRuleTargetEnum) Value() (driver.Value, error) {
 	return string(ns.RuleTargetEnum), nil
 }
 
+// Canonical set of indicator kinds stored in ti_indicators.  Not to be confused with entity_type_enum, which describes artefact types in the polymorphic verdict / enrichment tables.  To add a new kind: ALTER TYPE ti_indicator_type ADD VALUE 'new_kind';
+type TiIndicatorType string
+
+const (
+	TiIndicatorTypeUrl          TiIndicatorType = "url"
+	TiIndicatorTypeDomain       TiIndicatorType = "domain"
+	TiIndicatorTypeIp           TiIndicatorType = "ip"
+	TiIndicatorTypeCidr         TiIndicatorType = "cidr"
+	TiIndicatorTypeHash         TiIndicatorType = "hash"
+	TiIndicatorTypeEmailAddress TiIndicatorType = "email_address"
+)
+
+func (e *TiIndicatorType) Scan(src interface{}) error {
+	switch s := src.(type) {
+	case []byte:
+		*e = TiIndicatorType(s)
+	case string:
+		*e = TiIndicatorType(s)
+	default:
+		return fmt.Errorf("unsupported scan type for TiIndicatorType: %T", src)
+	}
+	return nil
+}
+
+type NullTiIndicatorType struct {
+	TiIndicatorType TiIndicatorType `json:"ti_indicator_type"`
+	Valid           bool            `json:"valid"` // Valid is true if TiIndicatorType is not NULL
+}
+
+// Scan implements the Scanner interface.
+func (ns *NullTiIndicatorType) Scan(value interface{}) error {
+	if value == nil {
+		ns.TiIndicatorType, ns.Valid = "", false
+		return nil
+	}
+	ns.Valid = true
+	return ns.TiIndicatorType.Scan(value)
+}
+
+// Value implements the driver Valuer interface.
+func (ns NullTiIndicatorType) Value() (driver.Value, error) {
+	if !ns.Valid {
+		return nil, nil
+	}
+	return string(ns.TiIndicatorType), nil
+}
+
 type UserRole string
 
 const (
@@ -602,6 +649,15 @@ type EmailUrl struct {
 	VisibleText pgtype.Text        `db:"visible_text" json:"visible_text"`
 	CreatedAt   pgtype.Timestamptz `db:"created_at" json:"created_at"`
 	OrgID       pgtype.Int8        `db:"org_id" json:"org_id"`
+}
+
+// Audit trail of TI feed matches against email URLs.  Records which ti_indicator was matched for each email_url, how the match was determined, and when.  Does not replace email_urls.threat_id → enriched_threats, which remains the link to the full enrichment record.
+type EmailUrlTiMatch struct {
+	ID            int64              `db:"id" json:"id"`
+	EmailUrlID    int64              `db:"email_url_id" json:"email_url_id"`
+	TiIndicatorID int64              `db:"ti_indicator_id" json:"ti_indicator_id"`
+	MatchType     string             `db:"match_type" json:"match_type"`
+	MatchedAt     pgtype.Timestamptz `db:"matched_at" json:"matched_at"`
 }
 
 type Emails202501 struct {
@@ -2109,7 +2165,7 @@ type EnrichedThreat struct {
 	// DEPRECATED in favour of brand_id (see brands table, migration 020).  Retained for backwards compatibility — new code should populate brand_id instead.  Will be dropped in a future migration once all consumers have been migrated.
 	TargetBrand pgtype.Text `db:"target_brand" json:"target_brand"`
 	ThreatTags  []string    `db:"threat_tags" json:"threat_tags"`
-	// Deprecated free-text feed label, retained for backwards compatibility with records ingested before the feeds table was introduced in migration 003.  New inserts must populate feed_id instead.  This column will be dropped in a future migration once all legacy rows have been back-filled.
+	// DEPRECATED free-text feed label, retained for backwards compatibility with records ingested before the feeds table (migration 003).  New code must populate feed_id instead.  Will be dropped after all legacy rows have been backfilled.  Originally added in 001_initial_schema.sql.
 	SourceFeed       pgtype.Text        `db:"source_feed" json:"source_feed"`
 	SourceID         pgtype.Text        `db:"source_id" json:"source_id"`
 	FirstSeen        pgtype.Timestamptz `db:"first_seen" json:"first_seen"`
@@ -2122,9 +2178,9 @@ type EnrichedThreat struct {
 	CreatedAt        pgtype.Timestamptz `db:"created_at" json:"created_at"`
 	UpdatedAt        pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
 	OrgID            pgtype.Int8        `db:"org_id" json:"org_id"`
-	// Foreign key to the feeds table (added in migration 003).  This is the canonical feed identifier and must be populated on all new inserts.  Supersedes the deprecated source_feed TEXT column.
+	// FK to feeds(id).  On an email-observed threat, this may point to a TI feed that independently confirmed the indicator — i.e. the URL was both extracted from an email AND found in a feed.  This column does NOT make a row a "feed indicator row"; that concept now belongs exclusively to ti_indicators.  Deprecated free-text counterpart: source_feed (see below).  Originally added in migration 003.
 	FeedID pgtype.Int8 `db:"feed_id" json:"feed_id"`
-	// TRUE = shared across all tenants (e.g. ingested from a public feed). FALSE = attributed to org_id only. Queries for org-specific threats should filter WHERE is_global = FALSE AND org_id = $1. Queries for the full global TI corpus should filter WHERE is_global = TRUE.
+	// TRUE = this record was originally ingested as a global TI feed record, shared across all tenants.  FALSE = attributed to org_id only.  AFTER MIGRATION 026: new TI feed indicators must be stored in ti_indicators, not here.  enriched_threats is now reserved for URL/domain/IP artefacts observed through the email pipeline and subsequently enriched.  Existing is_global = TRUE rows that are already referenced by email_urls are legitimate (email-observed AND feed-confirmed) and should not be moved.  See also: 005_fix_current_verdicts.sql (original column),           013_fix_multitenancy.sql (invariant CHECK).
 	IsGlobal bool        `db:"is_global" json:"is_global"`
 	BrandID  pgtype.Int8 `db:"brand_id" json:"brand_id"`
 }
@@ -2237,6 +2293,30 @@ type RuleHit struct {
 // Canonical set of lowercase threat_type values.  The trg_normalise_threat_type triggers on enriched_threats and campaigns reject any value not present in this table.  To add a new threat type, INSERT INTO threat_type_values(value) VALUES ('my_new_type') before inserting rows that use it.
 type ThreatTypeValue struct {
 	Value string `db:"value" json:"value"`
+}
+
+// Normalised store for raw threat-intelligence feed indicators.  These rows are ingested cheaply from external TI feeds and are used only for matching against email-extracted URLs / domains / IPs / hashes.  They carry no enrichment data (no WHOIS, geo, ASN, cert, VT results, etc.). Enrichment happens only in enriched_threats, which is reserved for URL/domain/IP artefacts actually observed through the email pipeline.  Relationship: email_urls → enriched_threats (email observation + enrichment);               email_urls → ti_indicators via email_url_ti_matches (TI matching).
+type TiIndicator struct {
+	ID            int64           `db:"id" json:"id"`
+	FeedID        int64           `db:"feed_id" json:"feed_id"`
+	IndicatorType TiIndicatorType `db:"indicator_type" json:"indicator_type"`
+	// Canonical normalised representation of the indicator.  For urls: lowercased, scheme-normalised.  For domains: lowercased FQDN, no trailing dot.  For ip: canonical address text (inet_norm form).  For cidr: standard CIDR notation.  For hash: lowercase hex prefixed with algorithm, e.g. sha256:abc123….  For email_address: lower(address).
+	IndicatorValue string      `db:"indicator_value" json:"indicator_value"`
+	ThreatType     pgtype.Text `db:"threat_type" json:"threat_type"`
+	BrandID        pgtype.Int8 `db:"brand_id" json:"brand_id"`
+	// DEPRECATED in favour of brand_id (brands table, migration 020).  Populated only when migrating legacy enriched_threats rows that carried a target_brand value.  New ingest must populate brand_id.
+	TargetBrand pgtype.Text        `db:"target_brand" json:"target_brand"`
+	ThreatTags  []string           `db:"threat_tags" json:"threat_tags"`
+	SourceID    pgtype.Text        `db:"source_id" json:"source_id"`
+	FirstSeen   pgtype.Timestamptz `db:"first_seen" json:"first_seen"`
+	LastSeen    pgtype.Timestamptz `db:"last_seen" json:"last_seen"`
+	Confidence  pgtype.Float8      `db:"confidence" json:"confidence"`
+	// Feed-assigned severity score [0, 100].  Used for TI-side matching and prioritisation only.  Not aggregated into the main email/threat enrichment risk scoring model.
+	RiskScore   int32              `db:"risk_score" json:"risk_score"`
+	IsActive    bool               `db:"is_active" json:"is_active"`
+	RawMetadata []byte             `db:"raw_metadata" json:"raw_metadata"`
+	CreatedAt   pgtype.Timestamptz `db:"created_at" json:"created_at"`
+	UpdatedAt   pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
 }
 
 type User struct {
