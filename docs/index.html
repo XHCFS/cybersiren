@@ -133,6 +133,7 @@
 
     .spec-frame { min-height: 960px; }
     .diagram-frame { min-height: 760px; }
+    .model-frame { min-height: 960px; }
 
     code {
       font-family: inherit;
@@ -152,6 +153,7 @@
 
       .spec-frame { min-height: 760px; }
       .diagram-frame { min-height: 520px; }
+      .model-frame { min-height: 760px; }
     }
   </style>
 </head>
@@ -200,6 +202,21 @@
         <a href="diagrams/architecture-diagram.html">OPEN HTML</a>
       </div>
     </article>
+
+    <article class="doc-card">
+      <div class="card-header">
+        <div class="card-title">URL Low-Latency Model Specification</div>
+        <div class="card-id">DOC-03</div>
+      </div>
+      <p>Full specification for the phishing URL detection model: feature engineering pipeline, training methodology, champion model selection, and evaluation results.</p>
+      <table>
+        <tr><th>Format</th><th>Purpose</th></tr>
+        <tr><td>HTML</td><td>Model internals reference for the URL inference subsystem</td></tr>
+      </table>
+      <div class="actions">
+        <a href="internals/CyberSiren_URL_Low_latency_Model_Specification.html">OPEN HTML</a>
+      </div>
+    </article>
   </div>
 
   <div class="note">
@@ -233,6 +250,18 @@
         class="diagram-frame"
         title="CyberSiren architecture diagram preview"
         src="diagrams/architecture-diagram.html"
+        loading="lazy"></iframe>
+    </article>
+
+    <article class="preview-block">
+      <div class="preview-header">
+        <strong>URL MODEL SPECIFICATION PREVIEW</strong>
+        <span>Live preview of <code>internals/CyberSiren_URL_Low_latency_Model_Specification.html</code></span>
+      </div>
+      <iframe
+        class="model-frame"
+        title="CyberSiren URL low-latency model specification preview"
+        src="internals/CyberSiren_URL_Low_latency_Model_Specification.html"
         loading="lazy"></iframe>
     </article>
   </section>
