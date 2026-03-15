@@ -20,9 +20,9 @@ install-tools: ## Install development tools
 build: ## Build all binaries
 	@echo "Building binaries..."
 	@mkdir -p $(BINARY_DIR)
-	go build -o $(API_BINARY) cmd/api/main.go
-	go build -o $(WORKER_BINARY) cmd/worker/main.go
-	go build -o $(TI_SYNC_BINARY) cmd/ti_sync/main.go
+	go build -o $(API_BINARY) services/svc-10-api-dashboard/cmd/api/main.go
+	go build -o $(WORKER_BINARY) services/svc-07-aggregator/cmd/aggregator/main.go
+	go build -o $(TI_SYNC_BINARY) services/svc-11-ti-sync/cmd/ti-sync/main.go
 	@echo "Build complete: binaries in $(BINARY_DIR)/"
 
 test: ## Run all tests
@@ -51,10 +51,10 @@ vet: ## Run go vet
 
 docker-build: ## Build all Docker images
 	@echo "Building Docker images..."
-	docker build -f deploy/Dockerfile.api -t phishguard-api:latest .
-	docker build -f deploy/Dockerfile.worker -t phishguard-worker:latest .
-	docker build -f deploy/Dockerfile.ti_sync -t phishguard-ti-sync:latest .
-	docker build -f deploy/Dockerfile.web -t phishguard-web:latest ./web
+	docker build -f services/svc-10-api-dashboard/Dockerfile -t phishguard-api:latest .
+	docker build -f services/svc-07-aggregator/Dockerfile -t phishguard-worker:latest .
+	docker build -f services/svc-11-ti-sync/Dockerfile -t phishguard-ti-sync:latest .
+	docker build -f web/svc-10-dashboard/Dockerfile -t phishguard-web:latest ./web/svc-10-dashboard
 
 docker-up: ## Start all services with docker-compose
 	@echo "Starting Docker services..."
@@ -74,14 +74,14 @@ docker-clean: ## Remove all Docker containers, volumes, and images
 
 migrate-up: ## Run database migrations up
 	@echo "Running database migrations..."
-	./scripts/setup_db.sh
+	./scripts/db/setup_db.sh
 
 migrate-down: ## Rollback last database migration
-	migrate -path migrations -database "${DB_URL}" down 1
+	migrate -path db/migrations -database "${DB_URL}" down 1
 
 migrate-create: ## Create a new migration file (usage: make migrate-create NAME=create_users_table)
 	@if [ -z "$(NAME)" ]; then echo "Error: NAME is required. Usage: make migrate-create NAME=create_users_table"; exit 1; fi
-	migrate create -ext sql -dir migrations -seq $(NAME)
+	migrate create -ext sql -dir db/migrations -seq $(NAME)
 
 clean: ## Clean build artifacts and temporary files
 	@echo "Cleaning build artifacts..."
@@ -98,44 +98,44 @@ deps: ## Download and tidy dependencies
 
 dev-api: ## Run API server in development mode
 	@echo "Starting API server..."
-	go run cmd/api/main.go
+	go run services/svc-10-api-dashboard/cmd/api/main.go
 
 dev-worker: ## Run worker in development mode
-	@echo "Starting worker..."
-	go run cmd/worker/main.go
+	@echo "Starting worker (aggregator)..."
+	go run services/svc-07-aggregator/cmd/aggregator/main.go
 
 dev-ti-sync: ## Run TI sync service in development mode
 	@echo "Starting TI sync service..."
-	go run cmd/ti_sync/main.go
+	go run services/svc-11-ti-sync/cmd/ti-sync/main.go
 
 seed-ti: ## Seed TI database with initial data
 	@echo "Seeding TI database..."
-	./scripts/seed_ti.sh
+	./scripts/db/seed_ti.sh
 
 web-install: ## Install web dashboard dependencies
 	@echo "Installing web dependencies..."
-	cd web && npm install
+	cd web/svc-10-dashboard && npm install
 
 web-dev: ## Run web dashboard in development mode
 	@echo "Starting web development server..."
-	cd web && npm run dev
+	cd web/svc-10-dashboard && npm run dev
 
 web-build: ## Build web dashboard for production
 	@echo "Building web dashboard..."
-	cd web && npm run build
+	cd web/svc-10-dashboard && npm run build
 
 ml-install: ## Install Python ML dependencies
 	@echo "Installing ML dependencies..."
-	pip install -r ml/url_model/requirements.txt
-	pip install -r ml/nlp_model/requirements.txt
+	pip install -r python/url-ml/requirements.txt
+	pip install -r python/svc-06-nlp/requirements.txt
 
 ml-train-url: ## Train URL detection model
 	@echo "Training URL model..."
-	cd ml/url_model && python train.py
+	cd python/url-ml && python train.py
 
 ml-train-nlp: ## Train NLP model
 	@echo "Training NLP model..."
-	cd ml/nlp_model && python train.py
+	cd python/svc-06-nlp && python train.py
 
 all: deps build test lint ## Run deps, build, test, and lint
 
