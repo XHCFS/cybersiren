@@ -16,7 +16,7 @@ var (
 )
 
 const (
-	FeedFetchTimeout = 30 * time.Second
+	FeedFetchTimeout = 60 * time.Second
 	URLIndicatorType = "url"
 )
 

@@ -42,6 +42,9 @@ func NewOpenPhishFeed(feedID int64, httpClient httputil.Client, log zerolog.Logg
 	}
 }
 
+func (f *OpenPhishFeed) Name() string  { return "openphish" }
+func (f *OpenPhishFeed) FeedID() int64 { return f.feedID }
+
 func (f *OpenPhishFeed) Fetch(ctx context.Context) (indicators []ti.TIIndicator, err error) {
 	fetchCtx, cancel := context.WithTimeout(ctx, ti.FeedFetchTimeout)
 	defer cancel()
