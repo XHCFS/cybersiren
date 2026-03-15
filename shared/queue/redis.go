@@ -1,2 +1,2 @@
-// TODO: implement Redis queue client (redis.go).
+// TODO: implement Valkey queue client (redis.go).
 package queue
