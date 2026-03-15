@@ -34,7 +34,7 @@ type Config struct {
 	FeedThreatFoxEnabled bool   `koanf:"feed_threatfox_enabled"`
 	SyncIntervalSeconds  int    `koanf:"sync_interval_seconds"`
 
-	Redis      RedisConfig      `koanf:"redis"`
+	Valkey     ValkeyConfig     `koanf:"valkey"`
 	Worker     WorkerConfig     `koanf:"worker"`
 	CORS       CORSConfig       `koanf:"cors"`
 	ML         MLConfig         `koanf:"ml"`
@@ -105,7 +105,7 @@ type LogConfig struct {
 	Pretty bool   `koanf:"pretty"`
 }
 
-type RedisConfig struct {
+type ValkeyConfig struct {
 	Addr     string `koanf:"addr"`
 	DB       int    `koanf:"db"`
 	Password string `koanf:"password"`
@@ -234,7 +234,7 @@ func Load() (*Config, error) {
 		FeedURLhausEnabled:   true,
 		FeedThreatFoxEnabled: true,
 		SyncIntervalSeconds:  21600,
-		Redis: RedisConfig{
+		Valkey: ValkeyConfig{
 			Addr: "localhost:6379",
 			DB:   0,
 		},
