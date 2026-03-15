@@ -46,6 +46,13 @@ func validConfig() *Config {
 			Level:  "info",
 			Pretty: false,
 		},
+		MetricsPort:          9090,
+		FeedPhishTankAPIKey:  "test-phishtank-key",
+		FeedPhishTankEnabled: true,
+		FeedOpenPhishEnabled: true,
+		FeedURLhausEnabled:   true,
+		FeedThreatFoxEnabled: true,
+		SyncIntervalSeconds:  21600,
 		Enrichment: EnrichmentConfig{
 			WorkerCount: 10,
 			JobTimeout:  30 * time.Second,
@@ -72,6 +79,7 @@ func setRequiredEnv(t *testing.T) {
 	t.Setenv("CYBERSIREN_DB__USER", "testuser")
 	t.Setenv("CYBERSIREN_DB__PASSWORD", "testpassword")
 	t.Setenv("CYBERSIREN_AUTH__JWT_SECRET", "testsecret")
+	t.Setenv("CYBERSIREN_FEED_PHISHTANK_API_KEY", "test-phishtank-key")
 	t.Setenv("CYBERSIREN_CONFIG_PATH", "./nonexistent-config.yaml")
 }
 
@@ -190,6 +198,7 @@ func TestValidate_MissingRequiredValues(t *testing.T) {
 		{"missing db.user", func(c *Config) { c.DB.User = "" }, "db.user"},
 		{"missing db.password", func(c *Config) { c.DB.Password = "" }, "db.password"},
 		{"missing jwt_secret", func(c *Config) { c.Auth.JWTSecret = "" }, "auth.jwt_secret"},
+		{"missing phishtank api key", func(c *Config) { c.FeedPhishTankAPIKey = "" }, "feed_phishtank_api_key"},
 	}
 
 	for _, tt := range tests {
@@ -333,6 +342,7 @@ func TestLoad_EnvOverridesWithDoubleUnderscore(t *testing.T) {
 	t.Setenv("CYBERSIREN_DB__USER", "env_user")
 	t.Setenv("CYBERSIREN_DB__PASSWORD", "env_password")
 	t.Setenv("CYBERSIREN_AUTH__JWT_SECRET", "supersecret")
+	t.Setenv("CYBERSIREN_FEED_PHISHTANK_API_KEY", "test-phishtank-key")
 	t.Setenv("CYBERSIREN_CONFIG_PATH", "./nonexistent-config.yaml")
 
 	cfg, err := Load()
@@ -413,6 +423,7 @@ auth:
 		t.Fatalf("writing temp YAML: %v", err)
 	}
 	t.Setenv("CYBERSIREN_CONFIG_PATH", tmpFile)
+	t.Setenv("CYBERSIREN_FEED_PHISHTANK_API_KEY", "test-phishtank-key")
 
 	cfg, err := Load()
 	if err != nil {
@@ -459,6 +470,7 @@ auth:
 		t.Fatalf("writing temp YAML: %v", err)
 	}
 	t.Setenv("CYBERSIREN_CONFIG_PATH", tmpFile)
+	t.Setenv("CYBERSIREN_FEED_PHISHTANK_API_KEY", "test-phishtank-key")
 
 	// Env should override YAML.
 	t.Setenv("CYBERSIREN_DB__NAME", "env_override_db")
