@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -22,6 +23,16 @@ type Config struct {
 	DB     DBConfig     `koanf:"db"`
 	Auth   AuthConfig   `koanf:"auth"`
 	Log    LogConfig    `koanf:"log"`
+
+	JaegerEndpoint       string `koanf:"jaeger_endpoint"`
+	MetricsPort          int    `koanf:"metrics_port"`
+	FeedPhishTankAPIKey  string `koanf:"feed_phishtank_api_key"`
+	FeedOpenPhishAPIKey  string `koanf:"feed_openphish_api_key"`
+	FeedPhishTankEnabled bool   `koanf:"feed_phishtank_enabled"`
+	FeedOpenPhishEnabled bool   `koanf:"feed_openphish_enabled"`
+	FeedURLhausEnabled   bool   `koanf:"feed_urlhaus_enabled"`
+	FeedThreatFoxEnabled bool   `koanf:"feed_threatfox_enabled"`
+	SyncIntervalSeconds  int    `koanf:"sync_interval_seconds"`
 
 	Redis      RedisConfig      `koanf:"redis"`
 	Worker     WorkerConfig     `koanf:"worker"`
@@ -216,6 +227,13 @@ func Load() (*Config, error) {
 			Level:  "info",
 			Pretty: false,
 		},
+		JaegerEndpoint:       "",
+		MetricsPort:          9090,
+		FeedPhishTankEnabled: true,
+		FeedOpenPhishEnabled: true,
+		FeedURLhausEnabled:   true,
+		FeedThreatFoxEnabled: true,
+		SyncIntervalSeconds:  21600,
 		Redis: RedisConfig{
 			Addr: "localhost:6379",
 			DB:   0,
@@ -312,104 +330,111 @@ func Load() (*Config, error) {
 	return cfg, nil
 }
 
-func validate(cfg *Config) error {
-	var missing []string
+func (c *Config) Validate() error {
+	if c == nil {
+		return errors.New("config is nil")
+	}
 
-	if cfg.DB.Name == "" {
-		missing = append(missing, "db.name (CYBERSIREN_DB__NAME)")
+	var missing []error
+
+	if c.DB.Name == "" {
+		missing = append(missing, errors.New("db.name (CYBERSIREN_DB__NAME)"))
 	}
-	if cfg.DB.User == "" {
-		missing = append(missing, "db.user (CYBERSIREN_DB__USER)")
+	if c.DB.User == "" {
+		missing = append(missing, errors.New("db.user (CYBERSIREN_DB__USER)"))
 	}
-	if cfg.DB.Password == "" {
-		missing = append(missing, "db.password (CYBERSIREN_DB__PASSWORD)")
+	if c.DB.Password == "" {
+		missing = append(missing, errors.New("db.password (CYBERSIREN_DB__PASSWORD)"))
 	}
-	if cfg.Auth.JWTSecret == "" {
-		missing = append(missing, "auth.jwt_secret (CYBERSIREN_AUTH__JWT_SECRET)")
+	if c.Auth.JWTSecret == "" {
+		missing = append(missing, errors.New("auth.jwt_secret (CYBERSIREN_AUTH__JWT_SECRET)"))
+	}
+	if c.FeedPhishTankEnabled && strings.TrimSpace(c.FeedPhishTankAPIKey) == "" {
+		missing = append(missing, errors.New("feed_phishtank_api_key (CYBERSIREN_FEED_PHISHTANK_API_KEY) when feed_phishtank_enabled is true"))
 	}
 
 	if len(missing) > 0 {
-		return fmt.Errorf("missing required config values: %s", strings.Join(missing, ", "))
+		return fmt.Errorf("missing required config values: %w", errors.Join(missing...))
 	}
 
 	validEnvs := map[string]bool{"development": true, "staging": true, "production": true}
-	if !validEnvs[cfg.Env] {
-		return fmt.Errorf("env must be one of: development, staging, production, got %q", cfg.Env)
+	if !validEnvs[c.Env] {
+		return fmt.Errorf("env must be one of: development, staging, production, got %q", c.Env)
 	}
 
-	if cfg.Embedding.Dimension <= 0 {
-		return fmt.Errorf("embedding.dimension must be greater than 0, got %d", cfg.Embedding.Dimension)
+	if c.Embedding.Dimension <= 0 {
+		return fmt.Errorf("embedding.dimension must be greater than 0, got %d", c.Embedding.Dimension)
 	}
 
-	if cfg.Auth.APIKeyPrefixLen <= 0 {
-		return fmt.Errorf("auth.api_key_prefix_len must be greater than 0, got %d", cfg.Auth.APIKeyPrefixLen)
+	if c.Auth.APIKeyPrefixLen <= 0 {
+		return fmt.Errorf("auth.api_key_prefix_len must be greater than 0, got %d", c.Auth.APIKeyPrefixLen)
 	}
 
-	if cfg.Auth.BcryptCost < 4 || cfg.Auth.BcryptCost > 31 {
-		return fmt.Errorf("auth.bcrypt_cost must be between 4 and 31, got %d", cfg.Auth.BcryptCost)
+	if c.Auth.BcryptCost < 4 || c.Auth.BcryptCost > 31 {
+		return fmt.Errorf("auth.bcrypt_cost must be between 4 and 31, got %d", c.Auth.BcryptCost)
 	}
 
-	if cfg.Server.Port < 1 || cfg.Server.Port > 65535 {
-		return fmt.Errorf("server.port must be between 1 and 65535, got %d", cfg.Server.Port)
+	if c.Server.Port < 1 || c.Server.Port > 65535 {
+		return fmt.Errorf("server.port must be between 1 and 65535, got %d", c.Server.Port)
 	}
 
-	if cfg.Server.ReadTimeout <= 0 {
-		return fmt.Errorf("server.read_timeout must be greater than 0, got %v", cfg.Server.ReadTimeout)
+	if c.Server.ReadTimeout <= 0 {
+		return fmt.Errorf("server.read_timeout must be greater than 0, got %v", c.Server.ReadTimeout)
 	}
-	if cfg.Server.WriteTimeout <= 0 {
-		return fmt.Errorf("server.write_timeout must be greater than 0, got %v", cfg.Server.WriteTimeout)
+	if c.Server.WriteTimeout <= 0 {
+		return fmt.Errorf("server.write_timeout must be greater than 0, got %v", c.Server.WriteTimeout)
 	}
-	if cfg.Server.IdleTimeout <= 0 {
-		return fmt.Errorf("server.idle_timeout must be greater than 0, got %v", cfg.Server.IdleTimeout)
-	}
-
-	if cfg.DB.Port < 1 || cfg.DB.Port > 65535 {
-		return fmt.Errorf("db.port must be between 1 and 65535, got %d", cfg.DB.Port)
+	if c.Server.IdleTimeout <= 0 {
+		return fmt.Errorf("server.idle_timeout must be greater than 0, got %v", c.Server.IdleTimeout)
 	}
 
-	if cfg.DB.MaxConns <= 0 {
-		return fmt.Errorf("db.max_conns must be greater than 0, got %d", cfg.DB.MaxConns)
-	}
-	if cfg.DB.MinConns < 0 {
-		return fmt.Errorf("db.min_conns must be greater than or equal to 0, got %d", cfg.DB.MinConns)
-	}
-	if cfg.DB.MinConns > cfg.DB.MaxConns {
-		return fmt.Errorf("db.min_conns (%d) cannot be greater than db.max_conns (%d)", cfg.DB.MinConns, cfg.DB.MaxConns)
-	}
-	if cfg.DB.MaxConnLifetime <= 0 {
-		return fmt.Errorf("db.max_conn_lifetime must be greater than 0, got %v", cfg.DB.MaxConnLifetime)
-	}
-	if cfg.DB.MaxConnIdleTime <= 0 {
-		return fmt.Errorf("db.max_conn_idle_time must be greater than 0, got %v", cfg.DB.MaxConnIdleTime)
-	}
-	if cfg.DB.HealthCheckPeriod <= 0 {
-		return fmt.Errorf("db.health_check_period must be greater than 0, got %v", cfg.DB.HealthCheckPeriod)
+	if c.DB.Port < 1 || c.DB.Port > 65535 {
+		return fmt.Errorf("db.port must be between 1 and 65535, got %d", c.DB.Port)
 	}
 
-	if cfg.Enrichment.WorkerCount <= 0 {
-		return fmt.Errorf("enrichment.worker_count must be greater than 0, got %d", cfg.Enrichment.WorkerCount)
+	if c.DB.MaxConns <= 0 {
+		return fmt.Errorf("db.max_conns must be greater than 0, got %d", c.DB.MaxConns)
 	}
-	if cfg.Enrichment.JobTimeout <= 0 {
-		return fmt.Errorf("enrichment.job_timeout must be greater than 0, got %v", cfg.Enrichment.JobTimeout)
+	if c.DB.MinConns < 0 {
+		return fmt.Errorf("db.min_conns must be greater than or equal to 0, got %d", c.DB.MinConns)
 	}
-	if cfg.Enrichment.MaxRetries < 0 {
-		return fmt.Errorf("enrichment.max_retries must be greater than or equal to 0, got %d", cfg.Enrichment.MaxRetries)
+	if c.DB.MinConns > c.DB.MaxConns {
+		return fmt.Errorf("db.min_conns (%d) cannot be greater than db.max_conns (%d)", c.DB.MinConns, c.DB.MaxConns)
+	}
+	if c.DB.MaxConnLifetime <= 0 {
+		return fmt.Errorf("db.max_conn_lifetime must be greater than 0, got %v", c.DB.MaxConnLifetime)
+	}
+	if c.DB.MaxConnIdleTime <= 0 {
+		return fmt.Errorf("db.max_conn_idle_time must be greater than 0, got %v", c.DB.MaxConnIdleTime)
+	}
+	if c.DB.HealthCheckPeriod <= 0 {
+		return fmt.Errorf("db.health_check_period must be greater than 0, got %v", c.DB.HealthCheckPeriod)
 	}
 
-	if cfg.Enrichment.VirusTotal.Timeout <= 0 {
-		return fmt.Errorf("enrichment.virustotal.timeout must be greater than 0, got %v", cfg.Enrichment.VirusTotal.Timeout)
+	if c.Enrichment.WorkerCount <= 0 {
+		return fmt.Errorf("enrichment.worker_count must be greater than 0, got %d", c.Enrichment.WorkerCount)
 	}
-	if cfg.Enrichment.IPInfo.Timeout <= 0 {
-		return fmt.Errorf("enrichment.ipinfo.timeout must be greater than 0, got %v", cfg.Enrichment.IPInfo.Timeout)
+	if c.Enrichment.JobTimeout <= 0 {
+		return fmt.Errorf("enrichment.job_timeout must be greater than 0, got %v", c.Enrichment.JobTimeout)
 	}
-	if cfg.Enrichment.WHOIS.Timeout <= 0 {
-		return fmt.Errorf("enrichment.whois.timeout must be greater than 0, got %v", cfg.Enrichment.WHOIS.Timeout)
+	if c.Enrichment.MaxRetries < 0 {
+		return fmt.Errorf("enrichment.max_retries must be greater than or equal to 0, got %d", c.Enrichment.MaxRetries)
 	}
-	if cfg.Enrichment.URLScan.Timeout <= 0 {
-		return fmt.Errorf("enrichment.urlscan.timeout must be greater than 0, got %v", cfg.Enrichment.URLScan.Timeout)
+
+	if c.Enrichment.VirusTotal.Timeout <= 0 {
+		return fmt.Errorf("enrichment.virustotal.timeout must be greater than 0, got %v", c.Enrichment.VirusTotal.Timeout)
 	}
-	if cfg.Enrichment.Screenshot.Timeout <= 0 {
-		return fmt.Errorf("enrichment.screenshot.timeout must be greater than 0, got %v", cfg.Enrichment.Screenshot.Timeout)
+	if c.Enrichment.IPInfo.Timeout <= 0 {
+		return fmt.Errorf("enrichment.ipinfo.timeout must be greater than 0, got %v", c.Enrichment.IPInfo.Timeout)
+	}
+	if c.Enrichment.WHOIS.Timeout <= 0 {
+		return fmt.Errorf("enrichment.whois.timeout must be greater than 0, got %v", c.Enrichment.WHOIS.Timeout)
+	}
+	if c.Enrichment.URLScan.Timeout <= 0 {
+		return fmt.Errorf("enrichment.urlscan.timeout must be greater than 0, got %v", c.Enrichment.URLScan.Timeout)
+	}
+	if c.Enrichment.Screenshot.Timeout <= 0 {
+		return fmt.Errorf("enrichment.screenshot.timeout must be greater than 0, got %v", c.Enrichment.Screenshot.Timeout)
 	}
 
 	validSSLModes := map[string]bool{
@@ -420,9 +445,13 @@ func validate(cfg *Config) error {
 		"verify-ca":   true,
 		"verify-full": true,
 	}
-	if !validSSLModes[cfg.DB.SSLMode] {
-		return fmt.Errorf("db.ssl_mode must be one of: disable, allow, prefer, require, verify-ca, verify-full, got %q", cfg.DB.SSLMode)
+	if !validSSLModes[c.DB.SSLMode] {
+		return fmt.Errorf("db.ssl_mode must be one of: disable, allow, prefer, require, verify-ca, verify-full, got %q", c.DB.SSLMode)
 	}
 
 	return nil
+}
+
+func validate(cfg *Config) error {
+	return cfg.Validate()
 }
