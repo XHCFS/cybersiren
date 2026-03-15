@@ -24,16 +24,13 @@ type Config struct {
 	Auth   AuthConfig   `koanf:"auth"`
 	Log    LogConfig    `koanf:"log"`
 
-	JaegerEndpoint       string `koanf:"jaeger_endpoint"`
-	MetricsPort          int    `koanf:"metrics_port"`
-	FeedPhishTankAPIKey  string `koanf:"feed_phishtank_api_key"`
-	FeedOpenPhishAPIKey  string `koanf:"feed_openphish_api_key"`
-	FeedPhishTankEnabled bool   `koanf:"feed_phishtank_enabled"`
-	FeedOpenPhishEnabled bool   `koanf:"feed_openphish_enabled"`
-	FeedURLhausEnabled   bool   `koanf:"feed_urlhaus_enabled"`
-	FeedThreatFoxEnabled bool   `koanf:"feed_threatfox_enabled"`
-	SyncIntervalSeconds  int    `koanf:"sync_interval_seconds"`
-	ValkeyAddr           string `koanf:"valkey_addr"`
+	JaegerEndpoint      string `koanf:"jaeger_endpoint"`
+	MetricsPort         int    `koanf:"metrics_port"`
+	FeedPhishTankAPIKey string `koanf:"feed_phishtank_api_key"`
+	FeedThreatFoxAPIKey string `koanf:"feed_threatfox_api_key"`
+	FeedOpenPhishAPIKey string `koanf:"feed_openphish_api_key"`
+	SyncIntervalSeconds int    `koanf:"sync_interval_seconds"`
+	ValkeyAddr          string `koanf:"valkey_addr"`
 
 	Valkey     ValkeyConfig     `koanf:"valkey"`
 	Worker     WorkerConfig     `koanf:"worker"`
@@ -228,14 +225,10 @@ func Load() (*Config, error) {
 			Level:  "info",
 			Pretty: false,
 		},
-		JaegerEndpoint:       "",
-		MetricsPort:          9090,
-		FeedPhishTankEnabled: true,
-		FeedOpenPhishEnabled: true,
-		FeedURLhausEnabled:   true,
-		FeedThreatFoxEnabled: true,
-		SyncIntervalSeconds:  21600,
-		ValkeyAddr:           "localhost:6379",
+		JaegerEndpoint:      "",
+		MetricsPort:         9090,
+		SyncIntervalSeconds: 21600,
+		ValkeyAddr:          "localhost:6379",
 		Valkey: ValkeyConfig{
 			Addr: "localhost:6379",
 			DB:   0,
@@ -357,9 +350,6 @@ func (c *Config) Validate() error {
 	}
 	if c.Auth.JWTSecret == "" {
 		missing = append(missing, errors.New("auth.jwt_secret (CYBERSIREN_AUTH__JWT_SECRET)"))
-	}
-	if c.FeedPhishTankEnabled && strings.TrimSpace(c.FeedPhishTankAPIKey) == "" {
-		missing = append(missing, errors.New("feed_phishtank_api_key (CYBERSIREN_FEED_PHISHTANK_API_KEY) when feed_phishtank_enabled is true"))
 	}
 
 	if len(missing) > 0 {
