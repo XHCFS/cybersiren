@@ -13,19 +13,18 @@ const (
 	UserRoleViewer  UserRole = "viewer"
 )
 
-
 // APIKeyWithRawKey is returned once at creation time only.
 // The RawKey is never stored — this is the caller's only chance to save it.
 type APIKeyWithRawKey struct {
-	ID         int64    `json:"id"`
-	OrgID      int64    `json:"org_id"`
-	UserID     *int64   `json:"user_id,omitempty"`
-	Name       string   `json:"name"`
-	KeyPrefix  string   `json:"key_prefix"`
-	Scopes     []string `json:"scopes"`
-	ExpiresAt  *time.Time `json:"expires_at,omitempty"`
-	CreatedAt  time.Time `json:"created_at"`
-	RawKey     string   `json:"raw_key"`
+	ID        int64      `json:"id"`
+	OrgID     int64      `json:"org_id"`
+	UserID    *int64     `json:"user_id,omitempty"`
+	Name      string     `json:"name"`
+	KeyPrefix string     `json:"key_prefix"`
+	Scopes    []string   `json:"scopes"`
+	ExpiresAt *time.Time `json:"expires_at,omitempty"`
+	CreatedAt time.Time  `json:"created_at"`
+	RawKey    string     `json:"raw_key"`
 }
 
 // JobStatus mirrors the job_status Postgres ENUM.
@@ -53,4 +52,3 @@ const (
 	JobTypeFeedIngest JobType = "feed_ingest"
 	JobTypeRuleEval   JobType = "rule_eval"
 )
-

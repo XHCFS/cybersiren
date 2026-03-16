@@ -1,0 +1,205 @@
+# =============================================================================
+# CyberSiren — Local Development Infrastructure
+# =============================================================================
+# Infrastructure-only compose file. Application services run natively
+# via `make dev svc=<service-name>`.
+#
+# Usage:
+#   make up              — start all infra (postgres, valkey, kafka, jaeger)
+#   make up-infra        — start core infra without observability
+#   make dev svc=svc-11  — start only the infra that svc-11-ti-sync needs
+#   make down            — stop all containers (preserves volumes)
+#   make down-v          — stop all and destroy volumes
+#
+# Profiles allow selective startup:
+#   postgres     — PostgreSQL 15
+#   valkey       — Valkey cache
+#   kafka        — Kafka + Zookeeper + topic init
+#   observability — Jaeger tracing UI
+# =============================================================================
+
+# All env vars are sourced from deploy/compose/.env (copy .env.example first).
+
+networks:
+  cybersiren:
+    driver: bridge
+
+volumes:
+  pgdata:
+  valkeydata:
+
+services:
+
+  # ── PostgreSQL 15 ──────────────────────────────────────────────────────────
+  # Primary relational store for all services that need persistence.
+  postgres:
+    image: postgres:15-alpine
+    profiles: ["postgres"]
+    container_name: cybersiren-postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-cybersiren}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - cybersiren
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  # ── Valkey (Redis-compatible cache) ────────────────────────────────────────
+  # Used for rate-limiting, caching TI lookups, and deduplication.
+  valkey:
+    image: valkey/valkey:7-alpine
+    profiles: ["valkey"]
+    container_name: cybersiren-valkey
+    ports:
+      - "${VALKEY_PORT:-6379}:6379"
+    volumes:
+      - valkeydata:/data
+    networks:
+      - cybersiren
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  # ── Zookeeper ──────────────────────────────────────────────────────────────
+  # Required by Kafka for broker coordination.
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    profiles: ["kafka"]
+    container_name: cybersiren-zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+      # Enable 'ruok' 4-letter-word command for healthcheck
+      KAFKA_OPTS: "-Dzookeeper.4lw.commands.whitelist=ruok,srvr"
+    networks:
+      - cybersiren
+    healthcheck:
+      test: ["CMD-SHELL", "echo srvr | nc localhost 2181 | grep Zookeeper"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+
+  # ── Kafka ──────────────────────────────────────────────────────────────────
+  # Message broker for the analysis pipeline.
+  # Port 9092 is for host access, 29092 for inter-container communication.
+  # Auto-create is disabled — topics are created by kafka-init.
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    profiles: ["kafka"]
+    container_name: cybersiren-kafka
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      # Listeners: PLAINTEXT for inter-container, HOST for localhost access
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,HOST:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,HOST://localhost:9092
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+    ports:
+      - "${KAFKA_PORT:-9092}:9092"
+    networks:
+      - cybersiren
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-broker-api-versions --bootstrap-server localhost:9092"]
+      interval: 5s
+      timeout: 10s
+      retries: 15
+      start_period: 15s
+    restart: unless-stopped
+
+  # ── Kafka topic initializer ────────────────────────────────────────────────
+  # One-shot container that creates all 12 pipeline topics then exits.
+  # Idempotent — safe to run multiple times.
+  kafka-init:
+    image: confluentinc/cp-kafka:7.5.0
+    profiles: ["kafka"]
+    container_name: cybersiren-kafka-init
+    depends_on:
+      kafka:
+        condition: service_healthy
+    volumes:
+      - ./kafka-init.sh:/kafka-init.sh:ro
+    entrypoint: ["/bin/bash", "/kafka-init.sh"]
+    networks:
+      - cybersiren
+    restart: "no"
+
+  # ── Jaeger (distributed tracing) ───────────────────────────────────────────
+  # All-in-one Jaeger instance for local development.
+  # UI at http://localhost:16686, OTLP HTTP receiver on port 4318.
+  # No persistence — traces are lost on restart.
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    profiles: ["observability"]
+    container_name: cybersiren-jaeger
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "16686:16686"   # Jaeger UI
+      - "4318:4318"     # OTLP HTTP
+    networks:
+      - cybersiren
+    restart: unless-stopped
+
+  # ── pgAdmin (Postgres web UI) ──────────────────────────────────────────────
+  # Local dev only — credentials below are NOT for production.
+  # Login: admin@cybersiren.dev / admin (override via PGADMIN_PASSWORD)
+  # No volume — state is ephemeral for local dev.
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    profiles: ["postgres"]
+    container_name: cybersiren-pgadmin
+    ports:
+      - "${PGADMIN_PORT:-5050}:80"
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@cybersiren.dev
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:-admin}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - cybersiren
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:80/misc/ping || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+
+  # ── Kafka UI ───────────────────────────────────────────────────────────────
+  # Web UI for browsing topics, consumer groups, and messages.
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    profiles: ["kafka"]
+    container_name: cybersiren-kafka-ui
+    ports:
+      - "${KAFKA_UI_PORT:-8080}:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+    depends_on:
+      kafka:
+        condition: service_healthy
+    networks:
+      - cybersiren
+    restart: unless-stopped
