@@ -1,7 +1,7 @@
 # CyberSiren — Database Schema Reference
 
-> **Version:** 2.1
-> **Last Updated:** March 11, 2026
+> **Version:** 2.2
+> **Last Updated:** March 15, 2026
 > **Database:** PostgreSQL 15+
 
 ---
@@ -11,7 +11,7 @@
 The database uses a **shared PostgreSQL instance with service-owned tables**.
 Each microservice has clear read/write boundaries documented below.
 
-Total tables: 16 + 5 materialized views + 1 view
+Total tables: 18 + 5 materialized views + 1 view
 
 ### Identifier Convention
 
@@ -74,13 +74,15 @@ The central entity. One row per ingested email.
 
 ### 1.2 `enriched_threats`
 
-Global threat intelligence corpus. URLs/domains known to be malicious.
+Email-observed threat entities. Stores URLs, domains, and IPs extracted from emails that have been (or are candidates for) enrichment with WHOIS, SSL, geo, ASN, and content analysis data.
+
+> **Scope:** This table is reserved for indicators discovered through the email pipeline. External TI feed indicators are stored in `ti_indicators` (see §1.5). An email-observed threat may *also* match a feed indicator — that relationship is recorded in `email_url_ti_matches` (see §2.4), not by duplicating the row here.
 
 | Column | Type | Service That Writes | Purpose |
 |--------|------|-------------------|---------|
-| `id` | BIGSERIAL PK | TI Feed Sync / URL Analysis | Auto-generated |
-| `url` | TEXT UNIQUE | TI Feed Sync / URL Analysis | The indicator URL |
-| `domain` | TEXT | TI Feed Sync / URL Analysis | Extracted domain |
+| `id` | BIGSERIAL PK | URL Analysis | Auto-generated |
+| `url` | TEXT UNIQUE | URL Analysis | The indicator URL (email-observed) |
+| `domain` | TEXT | URL Analysis | Extracted domain |
 | `online` | BOOLEAN | URL Analysis (enrichment) | Availability status |
 | `http_status_code` | INT | URL Analysis (enrichment) | HTTP response code |
 | `ip_address` | INET | URL Analysis (enrichment) | Resolved IP |
@@ -108,22 +110,25 @@ Global threat intelligence corpus. URLs/domains known to be malicious.
 | `name_servers` | TEXT[] | URL Analysis (enrichment) | DNS name servers |
 | `page_language` | TEXT | URL Analysis (enrichment) | Landing page language |
 | `page_title` | TEXT | URL Analysis (enrichment) | Landing page title |
-| `threat_type` | TEXT | TI Feed Sync | Classification |
-| `target_brand` | TEXT | TI Feed Sync | Targeted brand name |
-| `threat_tags` | TEXT[] | TI Feed Sync | Classification tags |
-| `source_feed` | TEXT | TI Feed Sync | Legacy: feed name |
-| `feed_id` | BIGINT FK → feeds | TI Feed Sync | Feed reference |
-| `source_id` | TEXT | TI Feed Sync | ID within source feed |
-| `org_id` | BIGINT FK → organisations | TI Feed Sync | Source attribution |
-| `first_seen` | TIMESTAMPTZ | TI Feed Sync | First observation |
-| `last_seen` | TIMESTAMPTZ | TI Feed Sync / URL Analysis | Last observation |
+| `threat_type` | TEXT | URL Analysis | Classification |
+| `target_brand` | TEXT | URL Analysis | Targeted brand name (legacy; use `brand_id`) |
+| `threat_tags` | TEXT[] | URL Analysis | Classification tags |
+| `source_feed` | TEXT | (deprecated) | Legacy: feed name — use `feed_id` |
+| `feed_id` | BIGINT FK → feeds | URL Analysis | Optional: feed that independently confirmed this indicator |
+| `source_id` | TEXT | URL Analysis | ID within source feed (if any) |
+| `org_id` | BIGINT FK → organisations | URL Analysis | Tenant attribution |
+| `first_seen` | TIMESTAMPTZ | URL Analysis | First email observation |
+| `last_seen` | TIMESTAMPTZ | URL Analysis | Last email observation |
 | `last_checked` | TIMESTAMPTZ | URL Analysis (enrichment) | Last enrichment run |
 | `notes` | TEXT | Analyst via API | Human notes |
 | `analysis_metadata` | JSONB | URL Analysis | Additional analysis data |
-| `risk_score` | INT 0–100 | URL Analysis (ML) / TI Feed Sync | Threat risk level |
-| `deleted_at` | TIMESTAMPTZ | TI Feed Sync | Soft delete for stale entries |
+| `risk_score` | INT 0–100 | URL Analysis (ML) | Threat risk level |
+| `is_global` | BOOLEAN | (legacy) | Deprecated after migration 026 — new TI feed indicators go to `ti_indicators` |
+| `deleted_at` | TIMESTAMPTZ | URL Analysis | Soft delete |
 | `created_at` | TIMESTAMPTZ | auto | Row creation |
 | `updated_at` | TIMESTAMPTZ | trigger | Last modification |
+
+> **After migration 026:** `is_global` and `source_feed` are deprecated on this table. New external feed indicators must be stored in `ti_indicators`. Rows in `enriched_threats` with `is_global = TRUE` that are referenced by `email_urls` are legitimate (email-observed AND feed-confirmed) and are not moved.
 
 ---
 
@@ -148,6 +153,44 @@ Phishing campaign groupings based on shared infrastructure/tactics.
 | `deleted_at` | TIMESTAMPTZ | API/Dashboard | Soft delete |
 | `created_at` | TIMESTAMPTZ | auto | Row creation |
 | `updated_at` | TIMESTAMPTZ | trigger | Last modification |
+
+---
+
+### 1.5 `ti_indicators`
+
+Normalised store for external threat-intelligence feed indicators. Each row represents a single indicator (URL, domain, IP, CIDR block, file hash, or email address) ingested from an external TI feed. These rows are **not enriched** — they carry no WHOIS, SSL, geo, ASN, or content analysis data. They exist solely for fast matching against URLs/domains/IPs/hashes extracted from emails.
+
+> **Key distinction from `enriched_threats`:** `enriched_threats` stores email-observed URLs/domains that have been enriched (expensive external calls). `ti_indicators` stores feed-origin indicators that are cheap to ingest and used only for matching. The two tables serve orthogonal roles:
+> - `email_urls.threat_id → enriched_threats` = "here is the enrichment data for this email URL"
+> - `email_url_ti_matches → ti_indicators` = "here is which TI feed recognised this email URL"
+
+| Column | Type | Service That Writes | Purpose |
+|--------|------|-------------------|---------|
+| `id` | BIGSERIAL PK | TI Feed Sync | Auto-generated |
+| `feed_id` | BIGINT FK → feeds | TI Feed Sync | Source feed (required) |
+| `indicator_type` | ti_indicator_type ENUM | TI Feed Sync | url/domain/ip/cidr/hash/email_address |
+| `indicator_value` | TEXT | TI Feed Sync | Canonical normalised value (lowercased, scheme-normalised) |
+| `threat_type` | TEXT | TI Feed Sync | Classification (validated via threat_type_values) |
+| `brand_id` | BIGINT FK → brands | TI Feed Sync | Canonical brand reference |
+| `target_brand` | TEXT | (deprecated) | Legacy free-text brand; use `brand_id` |
+| `threat_tags` | TEXT[] | TI Feed Sync | Feed taxonomy tags |
+| `source_id` | TEXT | TI Feed Sync | Original feed identifier (e.g. PhishTank phish_id) |
+| `first_seen` | TIMESTAMPTZ | TI Feed Sync | First observation by feed |
+| `last_seen` | TIMESTAMPTZ | TI Feed Sync | Most recent feed report |
+| `confidence` | DOUBLE PRECISION 0–1 | TI Feed Sync | Feed-assigned confidence (NULL = not provided) |
+| `risk_score` | INT 0–100 | TI Feed Sync | Feed-assigned severity (matching/prioritisation only) |
+| `is_active` | BOOLEAN | TI Feed Sync | FALSE when feed removes indicator |
+| `raw_metadata` | JSONB | TI Feed Sync | Unparsed extra fields from feed response |
+| `created_at` | TIMESTAMPTZ | auto | Row creation |
+| `updated_at` | TIMESTAMPTZ | trigger | Last modification |
+
+**Unique:** `(feed_id, indicator_type, indicator_value)` — one row per indicator per feed. Same indicator across different feeds is allowed (corroboration signal).
+
+**Key indexes:**
+- `idx_ti_indicators_value` — fast lookup by indicator value (the primary matching query)
+- `idx_ti_indicators_type_value` — narrow lookup when indicator kind is known
+- `idx_ti_indicators_active_value` — partial index filtered on `is_active = TRUE`
+- GIN index on `threat_tags`
 
 ---
 
@@ -180,8 +223,10 @@ Immutable verdict history. Current verdict = latest by `created_at` per entity.
 |--------|-------------------|---------|
 | `email_id` | Email Parser | FK to emails |
 | `email_fetched_at` | Email Parser | Composite FK |
-| `threat_id` | Email Parser / URL Analysis | FK to enriched_threats |
+| `threat_id` | Email Parser / URL Analysis | FK to enriched_threats (enrichment data) |
 | `visible_text` | Email Parser | Anchor text shown to recipient |
+
+> **Two relationships on `email_urls`:** `threat_id → enriched_threats` links to enrichment data for this URL. TI feed match data is in `email_url_ti_matches` (§2.4), not here. Both can exist simultaneously for the same email URL.
 
 ### 2.2 `email_attachments`
 
@@ -207,6 +252,20 @@ Immutable verdict history. Current verdict = latest by `created_at` per entity.
 | `address` | Email Parser | Recipient email address |
 | `display_name` | Email Parser | Recipient display name |
 | `recipient_type` | Email Parser | to/cc/bcc |
+
+### 2.4 `email_url_ti_matches`
+
+Audit trail of TI feed matches against email URLs. Records which `ti_indicator` was matched for each `email_url`, how the match was determined, and when. This table is orthogonal to `email_urls.threat_id → enriched_threats` (which links to enrichment data, not feed match data).
+
+| Column | Type | Service That Writes | Purpose |
+|--------|------|-------------------|---------|
+| `id` | BIGSERIAL PK | URL Analysis | Auto-generated |
+| `email_url_id` | BIGINT FK → email_urls | URL Analysis | Which email URL matched |
+| `ti_indicator_id` | BIGINT FK → ti_indicators | URL Analysis | Which feed indicator matched |
+| `match_type` | TEXT CHECK | URL Analysis | How the match was made: `exact`, `domain`, `ip`, `cidr`, `hash` |
+| `matched_at` | TIMESTAMPTZ | URL Analysis | When the match was recorded |
+
+**Unique:** `(email_url_id, ti_indicator_id)` — one match record per (email URL, feed indicator) pair.
 
 ---
 
@@ -300,6 +359,8 @@ Written by: **API/Dashboard** (every mutating action)
 ### 5.5 `feeds`
 Written by: **TI Feed Sync** (last_fetched_at) and **API/Dashboard** (CRUD)
 
+> `feeds` rows are referenced by `ti_indicators.feed_id` (every feed indicator traces back to its source feed) and optionally by `enriched_threats.feed_id` (when an email-observed threat was independently confirmed by a feed).
+
 ---
 
 ## 6. Materialized Views
@@ -321,7 +382,8 @@ Refresh triggered by TI Feed Sync after sync cycles and by a pg_cron schedule.
 
 All indexes are defined in the migration files. Key patterns:
 - **Primary lookup paths** indexed directly (e.g., `idx_emails_fetched_at`, `idx_enriched_domain`)
-- **Partial indexes** for active records (`WHERE deleted_at IS NULL`, `WHERE status = 'active'`)
+- **TI indicator matching** indexed for fast feed lookups (`idx_ti_indicators_value`, `idx_ti_indicators_type_value`, partial index on `is_active = TRUE`)
+- **Partial indexes** for active records (`WHERE deleted_at IS NULL`, `WHERE status = 'active'`, `WHERE is_active = TRUE`)
 - **GIN indexes** on JSONB and array columns (`headers_json`, `threat_tags`)
 - **Covering indexes** on verdict lookups (`entity_type, entity_id, created_at DESC`)
-- **Composite unique** for dedup (`org_id, message_id, fetched_at`)
+- **Composite unique** for dedup (`org_id, message_id, fetched_at` on emails; `feed_id, indicator_type, indicator_value` on ti_indicators)
