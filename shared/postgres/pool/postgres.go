@@ -14,17 +14,47 @@ import (
 	"github.com/saif/cybersiren/shared/observability/tracing"
 )
 
-func New(ctx context.Context, dsn string, log zerolog.Logger) (*pgxpool.Pool, error) {
+// PoolOptions holds configurable pgxpool tuning parameters.
+// Zero values fall back to sensible defaults.
+type PoolOptions struct {
+	MaxConns          int32
+	MinConns          int32
+	MaxConnLifetime   time.Duration
+	MaxConnIdleTime   time.Duration
+	HealthCheckPeriod time.Duration
+}
+
+func (o PoolOptions) withDefaults() PoolOptions {
+	if o.MaxConns <= 0 {
+		o.MaxConns = 10
+	}
+	if o.MinConns <= 0 {
+		o.MinConns = 2
+	}
+	if o.MaxConnLifetime <= 0 {
+		o.MaxConnLifetime = time.Hour
+	}
+	if o.MaxConnIdleTime <= 0 {
+		o.MaxConnIdleTime = 30 * time.Minute
+	}
+	if o.HealthCheckPeriod <= 0 {
+		o.HealthCheckPeriod = 30 * time.Second
+	}
+	return o
+}
+
+func New(ctx context.Context, dsn string, opts PoolOptions, log zerolog.Logger) (*pgxpool.Pool, error) {
 	cfg, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
 		return nil, fmt.Errorf("parse postgres dsn: %w", err)
 	}
 
-	cfg.MaxConns = 10
-	cfg.MinConns = 2
-	cfg.MaxConnLifetime = time.Hour
-	cfg.MaxConnIdleTime = 30 * time.Minute
-	cfg.HealthCheckPeriod = 30 * time.Second
+	o := opts.withDefaults()
+	cfg.MaxConns = o.MaxConns
+	cfg.MinConns = o.MinConns
+	cfg.MaxConnLifetime = o.MaxConnLifetime
+	cfg.MaxConnIdleTime = o.MaxConnIdleTime
+	cfg.HealthCheckPeriod = o.HealthCheckPeriod
 
 	_ = tracing.Tracer("shared/postgres/pool")
 	cfg.ConnConfig.Tracer = otelpgx.NewTracer()
@@ -51,8 +81,8 @@ func New(ctx context.Context, dsn string, log zerolog.Logger) (*pgxpool.Pool, er
 	return pool, nil
 }
 
-func MustNew(ctx context.Context, dsn string, log zerolog.Logger) *pgxpool.Pool {
-	pool, err := New(ctx, dsn, log)
+func MustNew(ctx context.Context, dsn string, opts PoolOptions, log zerolog.Logger) *pgxpool.Pool {
+	pool, err := New(ctx, dsn, opts, log)
 	if err != nil {
 		log.Fatal().Err(err).Msg("failed to initialize postgres pool")
 		return nil

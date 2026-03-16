@@ -1,8 +1,9 @@
--- name: UpsertTIIndicator :execresult
+-- name: UpsertTIIndicator :one
 -- Upserts a single TI indicator. Use with batch loop from Go for chunk processing.
 -- ON CONFLICT (feed_id, indicator_type, indicator_value):
 --   update last_seen, merge threat_tags (distinct), GREATEST risk_score.
 --   Do NOT overwrite first_seen or created_at.
+-- Returns TRUE when the row was newly inserted, FALSE when an existing row was updated.
 INSERT INTO ti_indicators (
     feed_id,
     indicator_type,
@@ -50,7 +51,8 @@ SET
             ORDER BY tag
         )
     ),
-    risk_score = GREATEST(ti_indicators.risk_score, EXCLUDED.risk_score);
+    risk_score = GREATEST(ti_indicators.risk_score, EXCLUDED.risk_score)
+RETURNING (xmax = 0) AS inserted;
 
 -- name: DeactivateStaleFeedIndicators :execrows
 -- Sets is_active = FALSE for indicators belonging to feed_id

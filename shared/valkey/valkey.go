@@ -14,8 +14,16 @@ import (
 	"github.com/saif/cybersiren/shared/observability/tracing"
 )
 
-func New(addr string, log zerolog.Logger) (valkeygo.Client, error) {
-	trimmedAddr := strings.TrimSpace(addr)
+// ClientOptions holds configurable valkey/redis connection parameters.
+// Zero values mean "no auth" and "default DB (0)".
+type ClientOptions struct {
+	Addr     string
+	Password string
+	DB       int
+}
+
+func New(opts ClientOptions, log zerolog.Logger) (valkeygo.Client, error) {
+	trimmedAddr := strings.TrimSpace(opts.Addr)
 	if trimmedAddr == "" {
 		return nil, fmt.Errorf("valkey addr is empty")
 	}
@@ -23,6 +31,8 @@ func New(addr string, log zerolog.Logger) (valkeygo.Client, error) {
 	opt := valkeygo.ClientOption{
 		InitAddress:      []string{trimmedAddr},
 		ConnWriteTimeout: 3 * time.Second,
+		SelectDB:         opts.DB,
+		Password:         opts.Password,
 	}
 	opt.Dialer = net.Dialer{Timeout: 5 * time.Second}
 
@@ -48,8 +58,8 @@ func New(addr string, log zerolog.Logger) (valkeygo.Client, error) {
 	return client, nil
 }
 
-func MustNew(addr string, log zerolog.Logger) valkeygo.Client {
-	client, err := New(addr, log)
+func MustNew(opts ClientOptions, log zerolog.Logger) valkeygo.Client {
+	client, err := New(opts, log)
 	if err != nil {
 		log.Fatal().Err(err).Msg("failed to initialize valkey client")
 		return nil
