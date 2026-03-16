@@ -194,7 +194,7 @@ func (r *Runner) SyncAll(ctx context.Context) (err error) {
 
 	if refreshErr := r.repo.RefreshAllMaterializedViews(ctx); refreshErr != nil {
 		r.log.Error().Err(refreshErr).Msg("failed to refresh materialized views")
-		return refreshErr
+		return fmt.Errorf("refresh materialized views: %w", refreshErr)
 	}
 
 	return nil

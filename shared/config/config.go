@@ -91,11 +91,12 @@ func (c DBConfig) DSN() string {
 }
 
 type AuthConfig struct {
-	JWTSecret       string        `koanf:"jwt_secret"`
-	JWTExpiry       time.Duration `koanf:"jwt_expiry"`
-	BcryptCost      int           `koanf:"bcrypt_cost"`
-	APIKeyPrefix    string        `koanf:"api_key_prefix"`
-	APIKeyPrefixLen int           `koanf:"api_key_prefix_len"` // Length of random suffix after prefix (e.g., "cs_" + 8 chars = "cs_abc12345")
+	JWTSecret    string        `koanf:"jwt_secret"`
+	JWTExpiry    time.Duration `koanf:"jwt_expiry"`
+	BcryptCost   int           `koanf:"bcrypt_cost"`
+	APIKeyPrefix string        `koanf:"api_key_prefix"`
+	// Length of random suffix after prefix (e.g., "cs_" + 8 random chars).
+	APIKeyPrefixLen int `koanf:"api_key_prefix_len"`
 }
 
 type LogConfig struct {
