@@ -8,7 +8,6 @@ package db
 import (
 	"context"
 
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
@@ -82,7 +81,7 @@ func (q *Queries) ListActiveDomainIndicators(ctx context.Context) ([]ListActiveD
 	return items, nil
 }
 
-const upsertTIIndicator = `-- name: UpsertTIIndicator :execresult
+const upsertTIIndicator = `-- name: UpsertTIIndicator :one
 INSERT INTO ti_indicators (
     feed_id,
     indicator_type,
@@ -131,6 +130,7 @@ SET
         )
     ),
     risk_score = GREATEST(ti_indicators.risk_score, EXCLUDED.risk_score)
+RETURNING (xmax = 0) AS inserted
 `
 
 type UpsertTIIndicatorParams struct {
@@ -155,8 +155,10 @@ type UpsertTIIndicatorParams struct {
 //
 //	update last_seen, merge threat_tags (distinct), GREATEST risk_score.
 //	Do NOT overwrite first_seen or created_at.
-func (q *Queries) UpsertTIIndicator(ctx context.Context, arg UpsertTIIndicatorParams) (pgconn.CommandTag, error) {
-	return q.db.Exec(ctx, upsertTIIndicator,
+//
+// Returns TRUE when the row was newly inserted, FALSE when an existing row was updated.
+func (q *Queries) UpsertTIIndicator(ctx context.Context, arg UpsertTIIndicatorParams) (bool, error) {
+	row := q.db.QueryRow(ctx, upsertTIIndicator,
 		arg.FeedID,
 		arg.IndicatorType,
 		arg.IndicatorValue,
@@ -172,4 +174,7 @@ func (q *Queries) UpsertTIIndicator(ctx context.Context, arg UpsertTIIndicatorPa
 		arg.IsActive,
 		arg.RawMetadata,
 	)
+	var inserted bool
+	err := row.Scan(&inserted)
+	return inserted, err
 }

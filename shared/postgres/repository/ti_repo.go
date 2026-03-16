@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"strconv"
 	"strings"
 	"time"
 
 	db "github.com/saif/cybersiren/db/sqlc"
+	"github.com/saif/cybersiren/shared/normalization"
 	"github.com/saif/cybersiren/shared/observability/tracing"
 
 	"github.com/jackc/pgx/v5/pgtype"
@@ -89,8 +91,8 @@ func NewTIRepository(pool *pgxpool.Pool, log zerolog.Logger, metrics *prometheus
 
 	syncDuration := registerHistogram(metrics, prometheus.NewHistogram(
 		prometheus.HistogramOpts{
-			Name:    "feed_sync_duration_seconds",
-			Help:    "Duration of TI feed sync operations in seconds.",
+			Name:    "feed_sync_db_upsert_duration_seconds",
+			Help:    "Duration of TI indicator DB upsert transactions in seconds.",
 			Buckets: prometheus.DefBuckets,
 		},
 	))
@@ -175,12 +177,12 @@ func (r *PostgresTIRepository) BulkUpsertIndicators(ctx context.Context, indicat
 				return result, convErr
 			}
 
-			commandTag, upsertErr := qtx.UpsertTIIndicator(ctx, params)
+			wasInserted, upsertErr := qtx.UpsertTIIndicator(ctx, params)
 			if upsertErr != nil {
 				return result, fmt.Errorf("upsert ti indicator %q: %w", indicator.IndicatorValue, upsertErr)
 			}
 
-			if commandTag.RowsAffected() == 1 {
+			if wasInserted {
 				result.Inserted++
 			} else {
 				result.Updated++
@@ -335,13 +337,13 @@ func toUpsertParams(indicator TIIndicator, defaultSeen time.Time) (db.UpsertTIIn
 		return db.UpsertTIIndicatorParams{}, fmt.Errorf("invalid indicator feed_id: %d", indicator.FeedID)
 	}
 
-	indicatorValue := strings.TrimSpace(indicator.IndicatorValue)
-	if indicatorValue == "" {
-		return db.UpsertTIIndicatorParams{}, errors.New("indicator_value is required")
-	}
-
 	if strings.TrimSpace(string(indicator.IndicatorType)) == "" {
 		return db.UpsertTIIndicatorParams{}, errors.New("indicator_type is required")
+	}
+
+	indicatorValue, normErr := normalizeIndicatorValue(indicator.IndicatorType, indicator.IndicatorValue)
+	if normErr != nil {
+		return db.UpsertTIIndicatorParams{}, fmt.Errorf("normalize indicator_value: %w", normErr)
 	}
 
 	if indicator.RiskScore < 0 || indicator.RiskScore > 100 {
@@ -386,6 +388,52 @@ func toUpsertParams(indicator TIIndicator, defaultSeen time.Time) (db.UpsertTIIn
 	}
 
 	return params, nil
+}
+
+// normalizeIndicatorValue returns a canonical form of value for the given
+// indicator type, preventing duplicates caused by casing, trailing dots,
+// wildcard prefixes, or non-canonical IP/CIDR representations.
+func normalizeIndicatorValue(itype db.TiIndicatorType, value string) (string, error) {
+	v := strings.TrimSpace(value)
+	if v == "" {
+		return "", errors.New("indicator_value is required")
+	}
+
+	switch itype {
+	case db.TiIndicatorTypeUrl:
+		norm, err := normalization.NormalizeURL(v)
+		if err != nil {
+			return "", fmt.Errorf("invalid url %q: %w", v, err)
+		}
+		return norm, nil
+
+	case db.TiIndicatorTypeDomain:
+		return normalization.NormalizeDomain(v), nil
+
+	case db.TiIndicatorTypeIp:
+		ip := net.ParseIP(v)
+		if ip == nil {
+			return "", fmt.Errorf("invalid ip address %q", v)
+		}
+		return ip.String(), nil
+
+	case db.TiIndicatorTypeCidr:
+		_, ipNet, err := net.ParseCIDR(v)
+		if err != nil {
+			return "", fmt.Errorf("invalid cidr %q: %w", v, err)
+		}
+		return ipNet.String(), nil
+
+	case db.TiIndicatorTypeHash:
+		return strings.ToLower(v), nil
+
+	case db.TiIndicatorTypeEmailAddress:
+		return strings.ToLower(v), nil
+
+	default:
+		// Unknown future type: return trimmed value as-is.
+		return v, nil
+	}
 }
 
 func nullableText(value string) pgtype.Text {

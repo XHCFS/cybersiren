@@ -397,7 +397,7 @@ SELECT
             'domain'::ti_indicator_type
     END                                     AS indicator_type,
 
-    -- Normalise indicator_value: lowercase for domains/IPs, keep URL as-is.
+    -- Normalise indicator_value: lowercase for all indicator types (URLs, domains, IPs).
     CASE
         WHEN et.url ~* '^https?://'
             THEN lower(et.url)

@@ -85,10 +85,21 @@ func main() {
 		_ = metricsSrv.Shutdown(shutdownCtx)
 	}()
 
-	pool := pool.MustNew(ctx, cfg.DB.DSN(), log)
+	poolOpts := pool.PoolOptions{
+		MaxConns:          int32(cfg.DB.MaxConns),
+		MinConns:          int32(cfg.DB.MinConns),
+		MaxConnLifetime:   cfg.DB.MaxConnLifetime,
+		MaxConnIdleTime:   cfg.DB.MaxConnIdleTime,
+		HealthCheckPeriod: cfg.DB.HealthCheckPeriod,
+	}
+	pool := pool.MustNew(ctx, cfg.DB.DSN(), poolOpts, log)
 	defer pool.Close()
 
-	rdb := sharedvalkey.MustNew(cfg.Valkey.Addr, log)
+	rdb := sharedvalkey.MustNew(sharedvalkey.ClientOptions{
+		Addr:     cfg.Valkey.Addr,
+		Password: cfg.Valkey.Password,
+		DB:       cfg.Valkey.DB,
+	}, log)
 	defer rdb.Close()
 
 	repo := repository.NewTIRepository(pool, log, reg)
