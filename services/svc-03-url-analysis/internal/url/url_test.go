@@ -16,7 +16,7 @@ package url
 //     TestExtractFeatures_F21_F30  – Tier-3 features, exact values
 //     TestExtractFeatures_Dataset  – parity against cybersiren_lowlatency_dataset.csv
 //
-//   Integration (require URL_MODEL/model.joblib + inference_script.py):
+//   Integration (require ml/model.joblib + ml/inference_script.py):
 //     TestURLModel_LoadAndPredict    – basic smoke test
 //     TestURLModel_ScoreBounds       – score is always 0–100
 //     TestURLModel_KnownPhishing     – high-confidence phishing URL scores ≥ 70
@@ -32,6 +32,7 @@ import (
 	"io"
 	"math"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -57,31 +58,34 @@ func exact(t *testing.T, name string, got, want float64) {
 	}
 }
 
-// modelPath resolves URL_MODEL/model.joblib relative to this source file.
+// modelPath resolves ml/model.joblib relative to this source file.
 func modelPath() string {
 	_, file, _, _ := runtime.Caller(0)
 	dir := filepath.Dir(file)
-	return filepath.Join(dir, "URL_MODEL", "model.joblib")
+	return filepath.Join(dir, "..", "..", "ml", "model.joblib")
 }
 
-// scriptPath resolves inference_script.py relative to this source file.
+// scriptPath resolves ml/inference_script.py relative to this source file.
 func scriptPath() string {
 	_, file, _, _ := runtime.Caller(0)
 	dir := filepath.Dir(file)
-	return filepath.Join(dir, "inference_script.py")
+	return filepath.Join(dir, "..", "..", "ml", "inference_script.py")
 }
 
 // datasetPath resolves the pre-computed feature CSV.
 func datasetPath() string {
 	_, file, _, _ := runtime.Caller(0)
 	dir := filepath.Dir(file)
-	return filepath.Join(dir, "URL_MODEL", "cybersiren_lowlatency_dataset.csv")
+	return filepath.Join(dir, "..", "..", "ml", "data", "cybersiren_lowlatency_dataset.csv")
 }
 
 func skipIfNoModel(t *testing.T) {
 	t.Helper()
 	if _, err := os.Stat(modelPath()); os.IsNotExist(err) {
-		t.Skip("URL_MODEL/model.joblib not present — add the trained model to run integration tests")
+		t.Skip("ml/model.joblib not present — add the trained model to run integration tests")
+	}
+	if err := exec.Command("python3", "-c", "import joblib, numpy").Run(); err != nil {
+		t.Skip("Python dependencies (joblib, numpy) not available — pip install joblib numpy to run integration tests")
 	}
 }
 
