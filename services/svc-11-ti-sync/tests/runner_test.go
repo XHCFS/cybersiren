@@ -1,0 +1,280 @@
+package tests
+
+import (
+	"context"
+	"errors"
+	"testing"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/rs/zerolog"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/saif/cybersiren/services/svc-11-ti-sync/internal/ti"
+	"github.com/saif/cybersiren/shared/postgres/repository"
+)
+
+func TestRunnerSyncAll_AllFeedsSucceed(t *testing.T) {
+	repo := &mockRepo{}
+	cache := &mockCache{}
+	feeds := []ti.Feed{
+		&mockFeed{name: "phishtank", feedID: 1, indicators: []ti.TIIndicator{testIndicator(1, "https://a.example")}},
+		&mockFeed{name: "openphish", feedID: 2, indicators: []ti.TIIndicator{testIndicator(2, "https://b.example")}},
+	}
+
+	runner := ti.NewRunner(feeds, repo, cache, zerolog.Nop(), prometheus.NewRegistry())
+	err := runner.SyncAll(context.Background())
+
+	require.NoError(t, err)
+	assert.True(t, cache.refreshCalled)
+	assert.True(t, repo.refreshMVCalled)
+	assert.Len(t, repo.upsertCalls, 2)
+	assert.ElementsMatch(t, []int64{1, 2}, repo.upsertCalls)
+	assert.ElementsMatch(t, []int64{1, 2}, repo.updateFetchedCalls)
+}
+
+func TestRunnerSyncAll_OneFeedFetchFailsPartialSuccess(t *testing.T) {
+	repo := &mockRepo{}
+	cache := &mockCache{}
+	feeds := []ti.Feed{
+		&mockFeed{name: "phishtank", feedID: 1, fetchErr: errors.New("fetch failed")},
+		&mockFeed{name: "openphish", feedID: 2, indicators: []ti.TIIndicator{testIndicator(2, "https://b.example")}},
+	}
+
+	runner := ti.NewRunner(feeds, repo, cache, zerolog.Nop(), prometheus.NewRegistry())
+	err := runner.SyncAll(context.Background())
+
+	require.NoError(t, err)
+	assert.Len(t, repo.upsertCalls, 1)
+	assert.Equal(t, int64(2), repo.upsertCalls[0])
+	assert.ElementsMatch(t, []int64{1, 2}, repo.updateFetchedCalls)
+	assert.True(t, cache.refreshCalled)
+	assert.True(t, repo.refreshMVCalled)
+}
+
+func TestRunnerSyncAll_AllFeedsFailReturnsError(t *testing.T) {
+	repo := &mockRepo{}
+	cache := &mockCache{}
+	feeds := []ti.Feed{
+		&mockFeed{name: "phishtank", feedID: 1, fetchErr: errors.New("fetch failed")},
+		&mockFeed{name: "openphish", feedID: 2, fetchErr: errors.New("fetch failed")},
+	}
+
+	runner := ti.NewRunner(feeds, repo, cache, zerolog.Nop(), prometheus.NewRegistry())
+	err := runner.SyncAll(context.Background())
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "all 2 feeds failed")
+	assert.False(t, cache.refreshCalled)
+	assert.False(t, repo.refreshMVCalled)
+	assert.ElementsMatch(t, []int64{1, 2}, repo.updateFetchedCalls)
+}
+
+func TestRunnerSyncAll_UpsertErrorOnOneFeedContinues(t *testing.T) {
+	repo := &mockRepo{
+		upsertErrByFeed: map[int64]error{
+			1: errors.New("upsert failed"),
+		},
+	}
+	cache := &mockCache{}
+	feeds := []ti.Feed{
+		&mockFeed{name: "phishtank", feedID: 1, indicators: []ti.TIIndicator{testIndicator(1, "https://a.example")}},
+		&mockFeed{name: "openphish", feedID: 2, indicators: []ti.TIIndicator{testIndicator(2, "https://b.example")}},
+	}
+
+	runner := ti.NewRunner(feeds, repo, cache, zerolog.Nop(), prometheus.NewRegistry())
+	err := runner.SyncAll(context.Background())
+
+	require.NoError(t, err)
+	assert.Len(t, repo.upsertCalls, 2)
+	assert.ElementsMatch(t, []int64{1, 2}, repo.upsertCalls)
+	assert.ElementsMatch(t, []int64{1, 2}, repo.updateFetchedCalls)
+	assert.True(t, cache.refreshCalled)
+	assert.True(t, repo.refreshMVCalled)
+}
+
+func TestRunnerSyncAll_CacheRefreshErrorIsBestEffort(t *testing.T) {
+	repo := &mockRepo{}
+	cache := &mockCache{refreshErr: errors.New("cache unavailable")}
+	feeds := []ti.Feed{
+		&mockFeed{name: "urlhaus", feedID: 3, indicators: []ti.TIIndicator{testIndicator(3, "https://c.example")}},
+	}
+
+	runner := ti.NewRunner(feeds, repo, cache, zerolog.Nop(), prometheus.NewRegistry())
+	err := runner.SyncAll(context.Background())
+
+	require.NoError(t, err)
+	assert.True(t, cache.refreshCalled)
+	assert.True(t, repo.refreshMVCalled)
+}
+
+func TestRunnerSyncAll_MaterializedViewRefreshErrorReturnsError(t *testing.T) {
+	mvErr := errors.New("mv refresh failed")
+	repo := &mockRepo{refreshMVErr: mvErr}
+	cache := &mockCache{}
+	feeds := []ti.Feed{
+		&mockFeed{name: "threatfox", feedID: 4, indicators: []ti.TIIndicator{testIndicator(4, "https://d.example")}},
+	}
+
+	runner := ti.NewRunner(feeds, repo, cache, zerolog.Nop(), prometheus.NewRegistry())
+	err := runner.SyncAll(context.Background())
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, mvErr)
+	assert.True(t, cache.refreshCalled)
+	assert.True(t, repo.refreshMVCalled)
+}
+
+func TestRunnerSyncAll_UpdateLastFetchedCalledForEveryFeed(t *testing.T) {
+	repo := &mockRepo{
+		upsertErrByFeed: map[int64]error{
+			3: errors.New("upsert failed"),
+		},
+	}
+	cache := &mockCache{}
+	feeds := []ti.Feed{
+		&mockFeed{name: "phishtank", feedID: 1, fetchErr: errors.New("fetch failed")},
+		&mockFeed{name: "openphish", feedID: 2, indicators: []ti.TIIndicator{testIndicator(2, "https://b.example")}},
+		&mockFeed{name: "urlhaus", feedID: 3, indicators: []ti.TIIndicator{testIndicator(3, "https://c.example")}},
+	}
+
+	runner := ti.NewRunner(feeds, repo, cache, zerolog.Nop(), prometheus.NewRegistry())
+	err := runner.SyncAll(context.Background())
+
+	require.NoError(t, err)
+	assert.Len(t, repo.updateFetchedCalls, 3)
+	assert.ElementsMatch(t, []int64{1, 2, 3}, repo.updateFetchedCalls)
+}
+
+func TestRunnerSyncAll_ContextCancellationSkipsRemainingFeeds(t *testing.T) {
+	repo := &mockRepo{}
+	cache := &mockCache{}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	firstFeed := &mockFeed{name: "phishtank", feedID: 1, indicators: []ti.TIIndicator{testIndicator(1, "https://a.example")}}
+	secondFeed := &mockFeed{
+		name:   "openphish",
+		feedID: 2,
+		onFetch: func(ctx context.Context) ([]ti.TIIndicator, error) {
+			cancel()
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+	}
+	thirdFeed := &mockFeed{name: "urlhaus", feedID: 3, indicators: []ti.TIIndicator{testIndicator(3, "https://c.example")}}
+
+	runner := ti.NewRunner([]ti.Feed{firstFeed, secondFeed, thirdFeed}, repo, cache, zerolog.Nop(), prometheus.NewRegistry())
+	err := runner.SyncAll(ctx)
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, context.Canceled)
+	assert.Equal(t, 0, thirdFeed.fetchCalls)
+	assert.ElementsMatch(t, []int64{1, 2}, repo.updateFetchedCalls)
+	assert.False(t, cache.refreshCalled)
+	assert.False(t, repo.refreshMVCalled)
+}
+
+type mockFeed struct {
+	name       string
+	feedID     int64
+	indicators []ti.TIIndicator
+	fetchErr   error
+	onFetch    func(ctx context.Context) ([]ti.TIIndicator, error)
+	fetchCalls int
+}
+
+func (m *mockFeed) Name() string {
+	if m == nil {
+		return ""
+	}
+	return m.name
+}
+
+func (m *mockFeed) FeedID() int64 {
+	if m == nil {
+		return 0
+	}
+	return m.feedID
+}
+
+func (m *mockFeed) Fetch(ctx context.Context) ([]ti.TIIndicator, error) {
+	m.fetchCalls++
+	if m.onFetch != nil {
+		return m.onFetch(ctx)
+	}
+	if m.fetchErr != nil {
+		return nil, m.fetchErr
+	}
+
+	return append([]ti.TIIndicator(nil), m.indicators...), nil
+}
+
+type mockRepo struct {
+	upsertCalled       bool
+	upsertErr          error
+	upsertErrByFeed    map[int64]error
+	upsertCalls        []int64
+	updateFetchedCalls []int64
+	refreshMVCalled    bool
+	refreshMVErr       error
+}
+
+func (m *mockRepo) BulkUpsertIndicators(_ context.Context, indicators []repository.TIIndicator) (repository.UpsertResult, error) {
+	m.upsertCalled = true
+
+	feedID := int64(0)
+	if len(indicators) > 0 {
+		feedID = indicators[0].FeedID
+	}
+	m.upsertCalls = append(m.upsertCalls, feedID)
+
+	if m.upsertErrByFeed != nil {
+		if upsertErr, ok := m.upsertErrByFeed[feedID]; ok && upsertErr != nil {
+			return repository.UpsertResult{}, upsertErr
+		}
+	}
+	if m.upsertErr != nil {
+		return repository.UpsertResult{}, m.upsertErr
+	}
+
+	return repository.UpsertResult{Inserted: len(indicators)}, nil
+}
+
+func (m *mockRepo) UpdateFeedLastFetched(_ context.Context, feedID int64) error {
+	m.updateFetchedCalls = append(m.updateFetchedCalls, feedID)
+	return nil
+}
+
+func (m *mockRepo) ListActiveDomainIndicators(_ context.Context) ([]repository.DomainIndicator, error) {
+	return nil, nil
+}
+
+func (m *mockRepo) RefreshAllMaterializedViews(_ context.Context) error {
+	m.refreshMVCalled = true
+	return m.refreshMVErr
+}
+
+type mockCache struct {
+	refreshCalled bool
+	refreshErr    error
+}
+
+func (m *mockCache) RefreshDomainCache(_ context.Context) error {
+	m.refreshCalled = true
+	return m.refreshErr
+}
+
+func testIndicator(feedID int64, indicatorValue string) ti.TIIndicator {
+	return ti.TIIndicator{
+		FeedID:         feedID,
+		IndicatorType:  ti.URLIndicatorType,
+		IndicatorValue: indicatorValue,
+		ThreatType:     "phishing",
+		ThreatTags:     []string{"test"},
+		RiskScore:      80,
+		Confidence:     0.9,
+		SourceID:       "source",
+	}
+}

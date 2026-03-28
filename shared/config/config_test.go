@@ -46,6 +46,9 @@ func validConfig() *Config {
 			Level:  "info",
 			Pretty: false,
 		},
+		MetricsPort:         9090,
+		FeedPhishTankAPIKey: "test-phishtank-key",
+		SyncIntervalSeconds: 21600,
 		Enrichment: EnrichmentConfig{
 			WorkerCount: 10,
 			JobTimeout:  30 * time.Second,
