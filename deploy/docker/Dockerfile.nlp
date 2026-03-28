@@ -1,0 +1,17 @@
+# ── svc-06-nlp ───────────────────────────────────────────────────────────────
+# NLP-based email text analysis service (Python).
+# Source code lives in python/svc-06-nlp/.
+
+FROM python:3.12-slim
+
+WORKDIR /app
+
+COPY python/svc-06-nlp/requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY python/svc-06-nlp/ ./
+
+ENV PORT=8001
+EXPOSE 8001
+
+ENTRYPOINT ["python", "app.py"]

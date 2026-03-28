@@ -36,7 +36,7 @@ type ParsedEmail struct {
 	Precedence     string `json:"precedence"`
 	ListID         string `json:"list_id"`
 
-	URLs        []string          `json:"urls"`
+	URLs        []string           `json:"urls"`
 	Attachments []ParsedAttachment `json:"attachments"`
 	// VendorSecurityTags carries X-MS-Exchange-Organization-* and similar headers extracted
 	// by the parser. Mapped to the vendor_security_tags JSONB column on Email.

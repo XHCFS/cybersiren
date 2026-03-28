@@ -1,0 +1,93 @@
+# =============================================================================
+# CyberSiren — golangci-lint configuration
+# =============================================================================
+# Single source of truth for the entire repo. No service-specific overrides.
+# Run with: make lint   or   golangci-lint run ./...
+# =============================================================================
+
+run:
+  timeout: 5m
+
+output:
+  formats:
+    - format: colored-line-number
+
+linters:
+  enable:
+    - gofmt          # Enforces standard Go formatting
+    - govet          # Reports suspicious constructs (shadow, printf, etc.)
+    - errcheck       # Checks that error return values are used
+    - staticcheck    # Advanced static analysis (SA* checks)
+    - gosimple       # Suggests code simplifications (S* checks)
+    - unused         # Finds unused constants, variables, functions, types
+    - misspell       # Catches common English misspellings in comments/strings
+    - goimports      # Enforces goimports formatting (superset of gofmt)
+    - revive         # Extensible linter — replaces golint
+    - godot          # Checks that comments end in a period
+    - noctx          # Flags HTTP requests sent without context.Context
+    - wrapcheck      # Ensures errors crossing package boundaries are wrapped
+
+linters-settings:
+  revive:
+    rules:
+      # Exported symbols must have a doc comment
+      - name: exported
+        severity: warning
+        arguments:
+          - "checkPrivateReceivers"
+          - "disableStutteringCheck"
+      # Maximum line length
+      - name: line-length-limit
+        severity: warning
+        arguments:
+          - 140
+
+  wrapcheck:
+    # Errors from these packages must be wrapped with fmt.Errorf or similar
+    # when they cross package boundaries.
+    ignoreSigs:
+      - ".Errorf("
+      - "errors.New("
+      - "errors.Unwrap("
+      - ".Wrap("
+      - ".Wrapf("
+      - ".WithMessage("
+      - ".WithMessagef("
+      - ".WithStack("
+    ignorePackageGlobs:
+      - "context"
+      - "net/http"
+      - "bufio"
+      - "io"
+
+  misspell:
+    # Do not enforce US-only spelling — the codebase uses British English
+    # in some places (e.g., "analyse", "serialise").
+    locale: ""
+
+  godot:
+    scope: declarations
+    capital: false
+
+  staticcheck:
+    checks:
+      - "all"
+      - "-SA9004"  # Allow implicit types in const blocks
+
+issues:
+  # Don't limit the number of issues per linter
+  max-issues-per-linter: 0
+  max-same-issues: 0
+
+  # Skip generated code
+  exclude-dirs:
+    - db/sqlc
+
+  exclude-rules:
+    # Test files: allow dot imports and unchecked errors
+    - path: _test\.go
+      linters:
+        - errcheck
+        - wrapcheck
+        - godot
+        - revive
