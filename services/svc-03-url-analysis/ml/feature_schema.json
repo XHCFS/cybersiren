@@ -1,0 +1,46 @@
+{
+  "model_name": "LightGBM",
+  "feature_names": [
+    "url_length",
+    "num_dots",
+    "num_subdomains",
+    "num_hyphens_url",
+    "num_hyphens_hostname",
+    "https_flag",
+    "entropy_url",
+    "num_numeric_chars",
+    "num_sensitive_words",
+    "hostname_length",
+    "path_length",
+    "url_char_prob",
+    "char_continuation_rate",
+    "tld_legit_prob",
+    "entropy_domain",
+    "num_query_params",
+    "num_special_chars",
+    "at_symbol_present",
+    "pct_numeric_chars",
+    "suspicious_file_ext",
+    "path_depth",
+    "num_underscores",
+    "query_length",
+    "has_fragment",
+    "has_repeated_digits",
+    "avg_subdomain_length",
+    "tld_length",
+    "token_count"
+  ],
+  "feature_count": 28,
+  "needs_scaling": false,
+  "production_threshold": 0.85,
+  "label_encoding": {
+    "0": "legitimate",
+    "1": "phishing"
+  },
+  "paper_ref": "PhiUSIIL Table 3: 99.99%, fastest training",
+  "export_metrics": {
+    "accuracy": 0.99824,
+    "f1": 0.998393,
+    "mcc": 0.99645
+  }
+}
