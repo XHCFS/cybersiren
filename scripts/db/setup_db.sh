@@ -11,7 +11,9 @@ DB_PORT="${DB_PORT:-5432}"
 DB_USER="${DB_USER:-postgres}"
 DB_PASSWORD="${DB_PASSWORD:-postgres}"
 DB_NAME="${DB_NAME:-cybersiren}"
-MIGRATIONS_DIR="${MIGRATIONS_DIR:-$(git -C "$(dirname "$0")" rev-parse --show-toplevel)/db/migrations}"
+REPO_ROOT="${REPO_ROOT:-$(git -C "$(dirname "$0")" rev-parse --show-toplevel)}"
+MIGRATIONS_DIR="${MIGRATIONS_DIR:-${REPO_ROOT}/db/migrations}"
+FEEDS_SEED_FILE="${FEEDS_SEED_FILE:-${REPO_ROOT}/db/seeds/feeds.sql}"
 
 # Construct database URL
 DB_URL="postgres://${DB_USER}:${DB_PASSWORD}@${DB_HOST}:${DB_PORT}/${DB_NAME}?sslmode=disable"
@@ -51,6 +53,23 @@ echo ""
 # Run migrations
 echo "Running migrations..."
 $MIGRATE_CMD -path "${MIGRATIONS_DIR}" -database "${DB_URL}" up
+
+# Seed feeds table (idempotent: each INSERT uses ON CONFLICT on feeds.name)
+echo "Seeding feeds table (idempotent)..."
+if [ ! -f "${FEEDS_SEED_FILE}" ]; then
+    echo "Error: feeds seed file not found at ${FEEDS_SEED_FILE}"
+    exit 1
+fi
+
+PGPASSWORD="${DB_PASSWORD}" psql \
+    -h "${DB_HOST}" \
+    -p "${DB_PORT}" \
+    -U "${DB_USER}" \
+    -d "${DB_NAME}" \
+    -v ON_ERROR_STOP=1 \
+    -f "${FEEDS_SEED_FILE}"
+
+echo "Feeds seed complete."
 
 echo ""
 echo "============================================================"
