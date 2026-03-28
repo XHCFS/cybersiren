@@ -1,7 +1,8 @@
 # ── svc-03-url-analysis ──────────────────────────────────────────────────────
 # Analyses URLs extracted from emails against TI feeds and ML models.
+# Requires Python 3 + joblib + numpy at runtime for the LightGBM subprocess.
 
-# Stage 1: builder
+# Stage 1: Go builder
 FROM golang:1.25-alpine AS builder
 WORKDIR /app
 COPY go.mod go.sum ./
@@ -10,8 +11,20 @@ COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" \
     -o /bin/service ./services/svc-03-url-analysis/cmd/url-analysis/
 
-# Stage 2: final
-FROM alpine:3.19
-RUN apk --no-cache add ca-certificates tzdata
+# Stage 2: final — python3-slim + ML deps
+FROM python:3.12-slim
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates tzdata \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN pip install --no-cache-dir joblib numpy lightgbm
+
 COPY --from=builder /bin/service /bin/service
+
+# ML artifacts: inference script and trained model
+COPY services/svc-03-url-analysis/ml/inference_script.py /app/ml/inference_script.py
+COPY services/svc-03-url-analysis/ml/model.joblib        /app/ml/model.joblib
+
+ENV MODEL_PATH=/app/ml/model.joblib
+
 ENTRYPOINT ["/bin/service"]
