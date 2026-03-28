@@ -1,1 +1,12 @@
+# Deployment workflow — placeholder, not yet implemented.
+# Remove this comment and add steps when deployment is ready.
+name: Deploy
 
+on:
+  workflow_dispatch:
+
+jobs:
+  placeholder:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Deployment not yet configured"
