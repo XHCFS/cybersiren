@@ -1,0 +1,118 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-and-test:
+    name: Build & Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache: true
+
+      - name: Verify dependencies
+        run: go mod verify
+
+      - name: Build all packages
+        run: go build ./...
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: Run tests (short mode)
+        run: go test -short -race -timeout 120s -coverprofile=coverage.out ./...
+
+      - name: Upload coverage
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage.out
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache: true
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+          args: --timeout 5m
+
+  integration:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: pgvector/pgvector:pg15
+        env:
+          POSTGRES_USER: cybersiren
+          POSTGRES_PASSWORD: cybersiren
+          POSTGRES_DB: cybersiren_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      valkey:
+        image: valkey/valkey:8
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "valkey-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache: true
+
+      - name: Install migrate
+        run: |
+          curl -L https://github.com/golang-migrate/migrate/releases/download/v4.18.1/migrate.linux-amd64.tar.gz | tar xz
+          sudo mv migrate /usr/local/bin/migrate
+
+      - name: Run migrations
+        env:
+          DATABASE_URL: postgres://cybersiren:cybersiren@localhost:5432/cybersiren_test?sslmode=disable
+        run: migrate -path db/migrations -database "$DATABASE_URL" up
+
+      - name: Run integration tests
+        env:
+          CYBERSIREN_DB__HOST: localhost
+          CYBERSIREN_DB__PORT: "5432"
+          CYBERSIREN_DB__NAME: cybersiren_test
+          CYBERSIREN_DB__USER: cybersiren
+          CYBERSIREN_DB__PASSWORD: cybersiren
+          CYBERSIREN_DB__SSLMODE: disable
+          CYBERSIREN_AUTH__JWT_SECRET: ci-test-secret-not-for-production
+          VALKEY_ADDR: localhost:6379
+        run: go test -race -timeout 120s ./...
