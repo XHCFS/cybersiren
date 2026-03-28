@@ -1,5 +1,5 @@
-# ── svc-11-ti-sync ───────────────────────────────────────────────────────────
-# Synchronises threat intelligence feeds into the local database.
+# ── svc-02-parser ────────────────────────────────────────────────────────────
+# Parses raw emails into structured components (headers, body, attachments).
 
 # Stage 1: builder
 FROM golang:1.25-alpine AS builder
@@ -8,7 +8,7 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" \
-    -o /bin/service ./services/svc-11-ti-sync/cmd/ti-sync/
+    -o /bin/service ./services/svc-02-parser/cmd/parser/
 
 # Stage 2: final
 FROM alpine:3.19
