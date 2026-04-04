@@ -1,6 +1,6 @@
 # ── svc-03-url-analysis ──────────────────────────────────────────────────────
 # Analyses URLs extracted from emails against TI feeds and ML models.
-# Requires Python 3 + joblib + numpy at runtime for the LightGBM subprocess.
+# Requires Python 3 + joblib + numpy + catboost + pandas at runtime for the CatBoost subprocess.
 
 # Stage 1: Go builder
 FROM golang:1.25-alpine AS builder
@@ -17,14 +17,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates tzdata \
     && rm -rf /var/lib/apt/lists/*
 
-RUN pip install --no-cache-dir joblib numpy lightgbm
+RUN pip install --no-cache-dir joblib numpy catboost pandas
 
 COPY --from=builder /bin/service /bin/service
 
 # ML artifacts: inference script and trained model
-COPY services/svc-03-url-analysis/ml/inference_script.py /app/ml/inference_script.py
-COPY services/svc-03-url-analysis/ml/model.joblib        /app/ml/model.joblib
+COPY services/svc-03-url-analysis/internal/url/inference_script.py /app/ml/inference_script.py
+COPY services/svc-03-url-analysis/internal/url/URL_MODEL           /app/ml/url_model
 
-ENV MODEL_PATH=/app/ml/model.joblib
+ENV CYBERSIREN_ML__URL_MODEL_PATH=/app/ml/url_model/model.bin
 
 ENTRYPOINT ["/bin/service"]
