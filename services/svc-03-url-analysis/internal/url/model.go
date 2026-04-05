@@ -44,6 +44,10 @@ func (p *workerProcess) kill() {
 	_ = p.cmd.Wait()
 }
 
+// LogFunc is an optional callback for error logging within the model pool.
+// If nil, errors are silently discarded.
+type LogFunc func(msg string, err error)
+
 // URLModel maintains a pool of pre-spawned Python inference subprocesses.
 // Each subprocess runs inference_script.py and communicates via JSON over
 // stdin/stdout (one request/response pair per line).
@@ -54,6 +58,7 @@ func (p *workerProcess) kill() {
 type URLModel struct {
 	scriptPath string
 	pool       chan *workerProcess
+	logFn      LogFunc
 	mu         sync.Mutex
 	closed     bool
 }
@@ -61,13 +66,15 @@ type URLModel struct {
 // NewURLModel creates a URLModel with poolSize pre-spawned Python processes.
 // scriptPath must point to inference_script.py.
 // poolSize <= 0 defaults to defaultPoolSize (3).
-func NewURLModel(scriptPath string, poolSize int) (*URLModel, error) {
+// logFn is an optional error logger; pass nil to discard errors.
+func NewURLModel(scriptPath string, poolSize int, logFn LogFunc) (*URLModel, error) {
 	if poolSize <= 0 {
 		poolSize = defaultPoolSize
 	}
 	m := &URLModel{
 		scriptPath: scriptPath,
 		pool:       make(chan *workerProcess, poolSize),
+		logFn:      logFn,
 	}
 	for i := 0; i < poolSize; i++ {
 		p, err := m.spawn()
@@ -78,6 +85,12 @@ func NewURLModel(scriptPath string, poolSize int) (*URLModel, error) {
 		m.pool <- p
 	}
 	return m, nil
+}
+
+func (m *URLModel) logError(msg string, err error) {
+	if m.logFn != nil {
+		m.logFn(msg, err)
+	}
 }
 
 func (m *URLModel) spawn() (*workerProcess, error) {
@@ -132,6 +145,7 @@ func (m *URLModel) replaceAsync() {
 	go func() {
 		p, err := m.spawn()
 		if err != nil {
+			m.logError("url model: failed to replace crashed worker", err)
 			return
 		}
 		m.mu.Lock()
@@ -146,10 +160,12 @@ func (m *URLModel) replaceAsync() {
 
 // Predict sends features to a Python subprocess and returns (score, probability).
 //
-// On timeout or subprocess crash, returns (50, 0.5, nil) — the neutral "unknown
-// risk" score defined in DECISIONS.MD. The pipeline is never hard-failed.
+// The provided context controls the overall deadline. If ctx has no deadline,
+// a default 5-second timeout is applied. On timeout or subprocess crash,
+// returns (50, 0.5, nil) — the neutral "unknown risk" score defined in
+// DECISIONS.MD. The pipeline is never hard-failed.
 // Calling Predict on a closed URLModel returns neutral immediately.
-func (m *URLModel) Predict(features []float64) (score int, probability float64, err error) {
+func (m *URLModel) Predict(ctx context.Context, features []float64) (score int, probability float64, err error) {
 	m.mu.Lock()
 	closed := m.closed
 	m.mu.Unlock()
@@ -157,12 +173,16 @@ func (m *URLModel) Predict(features []float64) (score int, probability float64, 
 		return neutralScore, neutralProbability, nil
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), inferenceTimeout)
-	defer cancel()
+	// Apply default timeout if the caller's context has none.
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, inferenceTimeout)
+		defer cancel()
+	}
 
 	p, ok := m.acquire(ctx)
 	if !ok {
-		// Pool fully occupied; timed out waiting — return neutral.
+		// Pool fully occupied or ctx cancelled — return neutral.
 		return neutralScore, neutralProbability, nil
 	}
 
@@ -203,7 +223,7 @@ func (m *URLModel) Predict(features []float64) (score int, probability float64, 
 		return resp.Score, resp.Probability, nil
 
 	case <-ctx.Done():
-		// 5-second inference timeout — kill subprocess, return neutral.
+		// Inference timeout — kill subprocess, return neutral.
 		p.kill()
 		m.replaceAsync()
 		return neutralScore, neutralProbability, nil

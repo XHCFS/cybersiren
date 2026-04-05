@@ -33,6 +33,8 @@
   "feature_count": 28,
   "needs_scaling": false,
   "production_threshold": 0.85,
+  "classification_threshold": 0.5,
+  "threshold_note": "production_threshold (0.85) is for high-confidence alerting; classification_threshold (0.5) is the model's phishing/legitimate boundary used in inference_script.py",
   "label_encoding": {
     "0": "legitimate",
     "1": "phishing"
