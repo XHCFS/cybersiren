@@ -223,6 +223,10 @@ def main() -> None:
         raise ValueError(
             f"invalid classification_threshold {raw_threshold!r} in config.json; expected float in [0.0, 1.0]"
         )
+    if not (0.0 <= threshold <= 1.0):
+        raise ValueError(
+            f"invalid classification_threshold {threshold!r} in config.json; expected value in [0.0, 1.0]"
+        )
 
     print(f"INFO: model loaded from {model_dir}", file=sys.stderr, flush=True)
     print(f"INFO: features={feature_count}, champion={config.get('champion_name', 'unknown')}", file=sys.stderr, flush=True)
