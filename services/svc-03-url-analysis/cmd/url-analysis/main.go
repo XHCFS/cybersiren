@@ -216,6 +216,17 @@ func scanHandler(model *urlpkg.URLModel, tiChecker *urlpkg.TIChecker, log zerolo
 		label := classifyLabel(mlScore, tiResult)
 		degraded := mlScore == 50 && mlProb == 0.5
 
+		log.Debug().
+			Str("url", normalized).
+			Int("ml_score", mlScore).
+			Float64("ml_prob", mlProb).
+			Bool("ti_match", tiResult.Matched).
+			Str("ti_threat", tiResult.ThreatType).
+			Int("ti_risk", tiResult.RiskScore).
+			Str("label", label).
+			Bool("degraded", degraded).
+			Msg("scan complete")
+
 		_ = ctx.OK(scanResponse{
 			URL:          normalized,
 			Score:        mlScore,

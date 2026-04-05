@@ -190,6 +190,7 @@ services:
         condition: service_healthy
     ports:
       - "8083:8083"
+      - "9091:9090"
     environment:
       CYBERSIREN_ENV: development
       CYBERSIREN_LOG__LEVEL: debug
