@@ -5,11 +5,14 @@ CyberSiren — URL Inference Subprocess (svc-03)
 Subprocess stdin/stdout protocol for Go process pool.
 
 Protocol (one JSON object per line, newline-delimited):
-  stdin:
+  stdin (one of):
     {"url": "<raw-url-string>"}
     {"features": [<numeric-feature>, ...]}  # legacy precomputed-features request
   stdout: {"score": <int 0-100>, "probability": <float>, "label": "phishing"|"legitimate"}
   stderr: error/diagnostic messages
+
+Label decision threshold:
+  classification_threshold from config.json (default: 0.5 if absent)
 
 Exit codes:
   0 — normal shutdown (stdin closed / EOF)
