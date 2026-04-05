@@ -1,7 +1,9 @@
 package url
 
 import (
+	"fmt"
 	"math"
+	"net"
 	"net/url"
 	"strings"
 	"unicode"
@@ -358,6 +360,11 @@ func splitTLDParts(hostname string) (domain, subdomain, tld string) {
 		return "", "", ""
 	}
 
+	// IP addresses have no TLD structure — match tldextract behaviour.
+	if net.ParseIP(hostname) != nil {
+		return hostname, "", ""
+	}
+
 	eTLD, icann := publicsuffix.PublicSuffix(hostname)
 	if !icann {
 		// Private domain — simple single-part TLD split.
@@ -507,8 +514,11 @@ func ExtractFeatures(rawURL string) ([]float64, error) {
 		parseStr = "http://" + urlStr
 	}
 	parsed, parseErr := url.Parse(parseStr)
-	if parseErr != nil || parsed == nil {
-		return make([]float64, FeatureCount), parseErr
+	if parseErr != nil {
+		return make([]float64, FeatureCount), fmt.Errorf("extract features: parse URL: %w", parseErr)
+	}
+	if parsed == nil {
+		return make([]float64, FeatureCount), nil
 	}
 
 	hostname := strings.ToLower(parsed.Hostname())

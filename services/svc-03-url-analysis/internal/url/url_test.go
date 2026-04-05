@@ -28,6 +28,7 @@ package url
 // ══════════════════════════════════════════════════════════════════════════════
 
 import (
+	"context"
 	"encoding/csv"
 	"io"
 	"math"
@@ -84,8 +85,8 @@ func skipIfNoModel(t *testing.T) {
 	if _, err := os.Stat(modelPath()); os.IsNotExist(err) {
 		t.Skip("ml/model.joblib not present — add the trained model to run integration tests")
 	}
-	if err := exec.Command("python3", "-c", "import joblib, numpy").Run(); err != nil {
-		t.Skip("Python dependencies (joblib, numpy) not available — pip install joblib numpy to run integration tests")
+	if err := exec.Command("python3", "-c", "import joblib, numpy, lightgbm").Run(); err != nil {
+		t.Skip("Python dependencies (joblib, numpy, lightgbm) not available — pip install joblib numpy lightgbm to run integration tests")
 	}
 }
 
@@ -176,6 +177,12 @@ func TestSplitTLDParts(t *testing.T) {
 		// and EffectiveTLDPlusOne fails, so we get domain=hostname, tld=hostname.
 		// The feature extractor handles this without panic.
 
+		// IP addresses — no TLD structure, domain = full IP.
+		{"192.168.1.1", "192.168.1.1", "", ""},
+		{"10.0.0.1", "10.0.0.1", "", ""},
+		{"127.0.0.1", "127.0.0.1", "", ""},
+		{"::1", "::1", "", ""},
+		{"2001:db8::1", "2001:db8::1", "", ""},
 	}
 	for _, tc := range cases {
 		d, s, tld := splitTLDParts(tc.hostname)
@@ -593,7 +600,7 @@ func TestExtractFeatures_Dataset(t *testing.T) {
 func TestURLModel_LoadAndPredict(t *testing.T) {
 	skipIfNoModel(t)
 
-	m, err := NewURLModel(scriptPath(), 1)
+	m, err := NewURLModel(scriptPath(), 1, nil)
 	if err != nil {
 		t.Fatalf("NewURLModel: %v", err)
 	}
@@ -601,7 +608,7 @@ func TestURLModel_LoadAndPredict(t *testing.T) {
 
 	// Use a known-phishing URL's feature vector (row 1 of dataset).
 	feats := make([]float64, 28) // neutral zero vector
-	score, prob, err := m.Predict(feats)
+	score, prob, err := m.Predict(context.Background(), feats)
 	if err != nil {
 		t.Fatalf("Predict: %v", err)
 	}
@@ -620,7 +627,7 @@ func TestURLModel_LoadAndPredict(t *testing.T) {
 func TestURLModel_ScoreBounds(t *testing.T) {
 	skipIfNoModel(t)
 
-	m, err := NewURLModel(scriptPath(), 2)
+	m, err := NewURLModel(scriptPath(), 2, nil)
 	if err != nil {
 		t.Fatalf("NewURLModel: %v", err)
 	}
@@ -632,7 +639,7 @@ func TestURLModel_ScoreBounds(t *testing.T) {
 		for j := range feats {
 			feats[j] = float64((i*7 + j*3) % 10) // deterministic variation
 		}
-		score, prob, err := m.Predict(feats)
+		score, prob, err := m.Predict(context.Background(), feats)
 		if err != nil {
 			t.Fatalf("Predict iteration %d: %v", i, err)
 		}
@@ -648,7 +655,7 @@ func TestURLModel_ScoreBounds(t *testing.T) {
 func TestURLModel_KnownPhishing(t *testing.T) {
 	skipIfNoModel(t)
 
-	m, err := NewURLModel(scriptPath(), 1)
+	m, err := NewURLModel(scriptPath(), 1, nil)
 	if err != nil {
 		t.Fatalf("NewURLModel: %v", err)
 	}
@@ -661,7 +668,7 @@ func TestURLModel_KnownPhishing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ExtractFeatures: %v", err)
 	}
-	score, _, err := m.Predict(feats)
+	score, _, err := m.Predict(context.Background(), feats)
 	if err != nil {
 		t.Fatalf("Predict: %v", err)
 	}
@@ -673,7 +680,7 @@ func TestURLModel_KnownPhishing(t *testing.T) {
 func TestURLModel_KnownLegit(t *testing.T) {
 	skipIfNoModel(t)
 
-	m, err := NewURLModel(scriptPath(), 1)
+	m, err := NewURLModel(scriptPath(), 1, nil)
 	if err != nil {
 		t.Fatalf("NewURLModel: %v", err)
 	}
@@ -685,7 +692,7 @@ func TestURLModel_KnownLegit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ExtractFeatures: %v", err)
 	}
-	score, _, err := m.Predict(feats)
+	score, _, err := m.Predict(context.Background(), feats)
 	if err != nil {
 		t.Fatalf("Predict: %v", err)
 	}
@@ -700,7 +707,7 @@ func TestURLModel_ConcurrentPredict(t *testing.T) {
 	const poolSize = 3
 	const goroutines = 20
 
-	m, err := NewURLModel(scriptPath(), poolSize)
+	m, err := NewURLModel(scriptPath(), poolSize, nil)
 	if err != nil {
 		t.Fatalf("NewURLModel: %v", err)
 	}
@@ -714,7 +721,7 @@ func TestURLModel_ConcurrentPredict(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			score, prob, err := m.Predict(feats)
+			score, prob, err := m.Predict(context.Background(), feats)
 			if err != nil {
 				errs <- err
 				return
@@ -737,7 +744,7 @@ func TestURLModel_ConcurrentPredict(t *testing.T) {
 func TestURLModel_CloseIdempotent(t *testing.T) {
 	skipIfNoModel(t)
 
-	m, err := NewURLModel(scriptPath(), 1)
+	m, err := NewURLModel(scriptPath(), 1, nil)
 	if err != nil {
 		t.Fatalf("NewURLModel: %v", err)
 	}
@@ -749,14 +756,14 @@ func TestURLModel_CloseIdempotent(t *testing.T) {
 func TestURLModel_PredictAfterClose(t *testing.T) {
 	skipIfNoModel(t)
 
-	m, err := NewURLModel(scriptPath(), 1)
+	m, err := NewURLModel(scriptPath(), 1, nil)
 	if err != nil {
 		t.Fatalf("NewURLModel: %v", err)
 	}
 	m.Close()
 
 	feats := make([]float64, 28)
-	score, prob, err := m.Predict(feats)
+	score, prob, err := m.Predict(context.Background(), feats)
 	if err != nil {
 		t.Fatalf("Predict after Close: %v", err)
 	}
@@ -772,7 +779,7 @@ func TestURLModel_PredictAfterClose(t *testing.T) {
 func TestURLModel_EndToEnd(t *testing.T) {
 	skipIfNoModel(t)
 
-	m, err := NewURLModel(scriptPath(), 2)
+	m, err := NewURLModel(scriptPath(), 2, nil)
 	if err != nil {
 		t.Fatalf("NewURLModel: %v", err)
 	}
@@ -794,7 +801,7 @@ func TestURLModel_EndToEnd(t *testing.T) {
 		if len(feats) != FeatureCount {
 			t.Fatalf("ExtractFeatures(%q): got %d features", tc.url, len(feats))
 		}
-		score, _, err := m.Predict(feats)
+		score, _, err := m.Predict(context.Background(), feats)
 		if err != nil {
 			t.Fatalf("Predict(%q): %v", tc.url, err)
 		}

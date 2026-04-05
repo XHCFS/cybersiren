@@ -12,40 +12,34 @@ CyberSiren is a phishing defense platform using a microservices monorepo archite
 
 ```bash
 # Development
-make dev-api          # Run API server
-make dev-worker       # Run aggregator/worker
-make dev-ti-sync      # Run TI sync service
-make web-dev          # Run React dashboard (npm run dev)
+make dev svc=svc-10-api-dashboard  # Start infra + run one service natively
+make up                            # Start all infra (postgres, valkey, kafka)
+make down                          # Stop containers (keep volumes)
 
 # Build
 make build            # Build all Go binaries
+make build-svc svc=svc-03-url-analysis  # Build one service
 make docker-build     # Build Docker images
-make docker-up        # Start all services
 
 # Testing
-make test             # All tests with coverage (outputs coverage.html)
-make test-short       # Short tests only
+make test             # All tests (needs infra)
+make test-short       # Unit tests only — no infra required
+make test-svc svc=svc-03-url-analysis   # Tests for one service
+make test-shared      # Tests for shared/ packages
 
 # Code quality
-make lint             # golangci-lint (5min timeout)
+make lint             # golangci-lint
 make lint-fix         # Lint with auto-fix
-make fmt              # gofmt
 make vet              # go vet
 
 # Database
-make migrate-up       # Run migrations
-make migrate-down     # Rollback last migration
-make migrate-create NAME=create_table  # New migration
-make seed-ti          # Seed TI database
+make db-setup         # Run migrations + seeds
+make db-reset         # Nuke volumes → restart infra → rerun setup
+make db-migrate       # Run migrations only
 
-# ML
-make ml-install       # Install Python ML dependencies
-make ml-train-url     # Train URL detection model
-make ml-train-nlp     # Train NLP model
-
-# Setup
-make setup            # Full dev setup (deps + migrations + seed)
-make install-tools    # Install golangci-lint, migrate
+# Code generation
+make generate         # sqlc generate && go generate ./...
+make ci               # Full local CI: tidy-check → sqlc-check → vet → lint → test-short → build
 ```
 
 ## Architecture
@@ -97,10 +91,11 @@ All services import from these shared packages:
 
 ### ML Model Integration
 
-**URL Model (LightGBM):** Go spawns a Python subprocess per inference request.
+**URL Model (LightGBM):** Go spawns Python subprocesses (process pool) for inference.
 - 28 features, JSON on stdin/stdout, 5-second timeout
 - Process pool size configurable (default: 3)
-- Model binary: `services/svc-03-url-analysis/internal/url/URL_MODEL/model.joblib`
+- Model binary: `services/svc-03-url-analysis/ml/model.joblib`
+- Inference script: `services/svc-03-url-analysis/ml/inference_script.py`
 - Fallback: default risk score of 50 on failure (never hard-fail)
 
 **NLP Model (DistilBERT):** HTTP microservice (FastAPI + ONNX Runtime)

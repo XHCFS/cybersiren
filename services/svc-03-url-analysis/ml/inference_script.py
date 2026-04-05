@@ -68,7 +68,7 @@ def main() -> None:
             resp: dict = {"score": score, "probability": prob, "label": label}
         except Exception as exc:
             print(f"ERROR: inference failed: {exc}", file=sys.stderr, flush=True)
-            resp = {"score": 50, "probability": 0.5, "label": "legitimate", "error": str(exc)}
+            resp = {"score": 50, "probability": 0.5, "label": "unknown", "error": str(exc)}
 
         print(json.dumps(resp), flush=True)
 
