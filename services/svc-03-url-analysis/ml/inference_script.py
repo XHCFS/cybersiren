@@ -216,7 +216,13 @@ def main() -> None:
     model = _load_model(model_dir)
 
     feature_count = config.get("feature_count", 28)
-    threshold = float(config.get("classification_threshold", 0.5))
+    raw_threshold = config.get("classification_threshold", 0.5)
+    try:
+        threshold = float(raw_threshold)
+    except (TypeError, ValueError):
+        raise ValueError(
+            f"invalid classification_threshold {raw_threshold!r} in config.json; expected float in [0.0, 1.0]"
+        )
 
     print(f"INFO: model loaded from {model_dir}", file=sys.stderr, flush=True)
     print(f"INFO: features={feature_count}, champion={config.get('champion_name', 'unknown')}", file=sys.stderr, flush=True)
