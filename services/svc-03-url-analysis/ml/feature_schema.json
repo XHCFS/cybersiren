@@ -33,16 +33,14 @@
   "feature_count": 28,
   "needs_scaling": false,
   "production_threshold": 0.85,
-  "classification_threshold": 0.5,
-  "threshold_note": "production_threshold (0.85) is for high-confidence alerting; classification_threshold (0.5) is the phishing/legitimate boundary",
   "label_encoding": {
     "0": "legitimate",
     "1": "phishing"
   },
   "paper_ref": "PhiUSIIL Table 3: 99.99%, fastest training",
   "export_metrics": {
-    "accuracy": 0.997917,
-    "f1": 0.998098,
-    "mcc": 0.995799
+    "accuracy": 0.99824,
+    "f1": 0.998393,
+    "mcc": 0.99645
   }
 }
