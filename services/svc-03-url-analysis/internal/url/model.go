@@ -23,7 +23,7 @@ const (
 )
 
 type inferRequest struct {
-	Features []float64 `json:"features"`
+	URL string `json:"url"`
 }
 
 type inferResponse struct {
@@ -227,14 +227,15 @@ func (m *URLModel) replaceAsync() {
 	}()
 }
 
-// Predict sends features to a Python subprocess and returns (score, probability).
+// Predict sends a raw URL to a Python subprocess which performs feature
+// extraction and inference, returning (score, probability).
 //
 // The provided context controls the overall deadline. If ctx has no deadline,
 // a default 5-second timeout is applied. On timeout or subprocess crash,
 // returns (50, 0.5, nil) — the neutral "unknown risk" score defined in
 // DECISIONS.MD. The pipeline is never hard-failed.
 // Calling Predict on a closed URLModel returns neutral immediately.
-func (m *URLModel) Predict(ctx context.Context, features []float64) (score int, probability float64, err error) {
+func (m *URLModel) Predict(ctx context.Context, rawURL string) (score int, probability float64, err error) {
 	// Fast path: if the model is already closed, return neutral without blocking.
 	select {
 	case <-m.done:
@@ -255,7 +256,7 @@ func (m *URLModel) Predict(ctx context.Context, features []float64) (score int, 
 		return neutralScore, neutralProbability, nil
 	}
 
-	req := inferRequest{Features: features}
+	req := inferRequest{URL: rawURL}
 	reqBytes, marshalErr := json.Marshal(req)
 	if marshalErr != nil {
 		m.logError("url model: marshal features", marshalErr)

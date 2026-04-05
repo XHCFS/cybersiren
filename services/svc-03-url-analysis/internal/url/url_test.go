@@ -615,9 +615,8 @@ func TestURLModel_LoadAndPredict(t *testing.T) {
 	}
 	defer m.Close()
 
-	// Use a known-phishing URL's feature vector (row 1 of dataset).
-	feats := make([]float64, 28) // neutral zero vector
-	score, prob, err := m.Predict(context.Background(), feats)
+	// Predict with a simple URL — validates the full pipeline (feature extraction + inference).
+	score, prob, err := m.Predict(context.Background(), "https://www.example.com")
 	if err != nil {
 		t.Fatalf("Predict: %v", err)
 	}
@@ -642,21 +641,24 @@ func TestURLModel_ScoreBounds(t *testing.T) {
 	}
 	defer m.Close()
 
-	// Run 20 predictions with varied feature vectors and verify bounds.
-	for i := 0; i < 20; i++ {
-		feats := make([]float64, 28)
-		for j := range feats {
-			feats[j] = float64((i*7 + j*3) % 10) // deterministic variation
-		}
-		score, prob, err := m.Predict(context.Background(), feats)
+	// Run predictions with varied URLs and verify bounds.
+	urls := []string{
+		"https://www.google.com",
+		"http://phishing-example.tk/login",
+		"https://github.com/features",
+		"http://192.168.1.1/admin",
+		"https://docs.python.org/3/library",
+	}
+	for i, u := range urls {
+		score, prob, err := m.Predict(context.Background(), u)
 		if err != nil {
-			t.Fatalf("Predict iteration %d: %v", i, err)
+			t.Fatalf("Predict iteration %d (%s): %v", i, u, err)
 		}
 		if score < 0 || score > 100 {
-			t.Errorf("iteration %d: score %d out of [0,100]", i, score)
+			t.Errorf("iteration %d (%s): score %d out of [0,100]", i, u, score)
 		}
 		if prob < 0.0 || prob > 1.0 {
-			t.Errorf("iteration %d: probability %.4f out of [0,1]", i, prob)
+			t.Errorf("iteration %d (%s): probability %.4f out of [0,1]", i, u, prob)
 		}
 	}
 }
@@ -670,14 +672,10 @@ func TestURLModel_KnownPhishing(t *testing.T) {
 	}
 	defer m.Close()
 
-	// Extract features from a highly suspicious URL and verify model rates it ≥ 70.
-	// This URL has long length, many hyphens, sensitive words, unusual TLD.
+	// Highly suspicious URL: long length, many hyphens, sensitive words, unusual TLD.
+	// Python-side feature extraction + model inference should rate it ≥ 70.
 	u := "http://secure-account-verify-login-banking.confirm-paypal.suspicious-site.tk/update/password?credential=steal&wallet=grab"
-	feats, err := ExtractFeatures(u)
-	if err != nil {
-		t.Fatalf("ExtractFeatures: %v", err)
-	}
-	score, _, err := m.Predict(context.Background(), feats)
+	score, _, err := m.Predict(context.Background(), u)
 	if err != nil {
 		t.Fatalf("Predict: %v", err)
 	}
@@ -696,17 +694,23 @@ func TestURLModel_KnownLegit(t *testing.T) {
 	defer m.Close()
 
 	// Well-formed HTTPS URL for a major domain should score ≤ 30.
-	u := "https://www.microsoft.com/en-us/windows"
-	feats, err := ExtractFeatures(u)
-	if err != nil {
-		t.Fatalf("ExtractFeatures: %v", err)
+	// Tests both www-prefixed and naked domain to verify the model handles both.
+	urls := []struct {
+		url  string
+		desc string
+	}{
+		{"https://www.microsoft.com/en-us/windows", "www-prefixed domain"},
+		{"https://google.com", "naked domain (previously misclassified)"},
+		{"https://meet.google.com", "subdomain of major domain"},
 	}
-	score, _, err := m.Predict(context.Background(), feats)
-	if err != nil {
-		t.Fatalf("Predict: %v", err)
-	}
-	if score > 30 {
-		t.Errorf("known legitimate URL scored %d, expected ≤ 30", score)
+	for _, tc := range urls {
+		score, _, err := m.Predict(context.Background(), tc.url)
+		if err != nil {
+			t.Fatalf("Predict(%s): %v", tc.desc, err)
+		}
+		if score > 30 {
+			t.Errorf("known legitimate URL (%s) %q scored %d, expected ≤ 30", tc.desc, tc.url, score)
+		}
 	}
 }
 
@@ -723,6 +727,7 @@ func TestURLModel_ConcurrentPredict(t *testing.T) {
 	defer m.Close()
 
 	feats, _ := ExtractFeatures("https://www.example.com")
+	_ = feats // Go feature extraction still works; model now accepts URLs
 
 	var wg sync.WaitGroup
 	errs := make(chan error, goroutines)
@@ -730,7 +735,7 @@ func TestURLModel_ConcurrentPredict(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			score, prob, err := m.Predict(context.Background(), feats)
+			score, prob, err := m.Predict(context.Background(), "https://www.example.com")
 			if err != nil {
 				errs <- err
 				return
@@ -772,8 +777,7 @@ func TestURLModel_PredictAfterClose(t *testing.T) {
 	}
 	m.Close()
 
-	feats := make([]float64, 28)
-	score, prob, err := m.Predict(context.Background(), feats)
+	score, prob, err := m.Predict(context.Background(), "https://www.example.com")
 	if err != nil {
 		t.Fatalf("Predict after Close: %v", err)
 	}
@@ -804,14 +808,7 @@ func TestURLModel_EndToEnd(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		feats, err := ExtractFeatures(tc.url)
-		if err != nil {
-			t.Fatalf("ExtractFeatures(%q): %v", tc.url, err)
-		}
-		if len(feats) != FeatureCount {
-			t.Fatalf("ExtractFeatures(%q): got %d features", tc.url, len(feats))
-		}
-		score, _, err := m.Predict(context.Background(), feats)
+		score, _, err := m.Predict(context.Background(), tc.url)
 		if err != nil {
 			t.Fatalf("Predict(%q): %v", tc.url, err)
 		}
@@ -869,7 +866,7 @@ for line in sys.stdin:
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 
-	score, prob, err := m.Predict(ctx, make([]float64, 28))
+	score, prob, err := m.Predict(ctx, "https://test.example.com")
 	if err != nil {
 		t.Fatalf("Predict: %v", err)
 	}
@@ -910,7 +907,7 @@ for line in sys.stdin:
 	defer m.Close()
 
 	// First prediction succeeds (worker answers then crashes).
-	score, _, predErr := m.Predict(context.Background(), make([]float64, 28))
+	score, _, predErr := m.Predict(context.Background(), "https://test.example.com")
 	if predErr != nil {
 		t.Fatalf("first Predict: %v", predErr)
 	}
@@ -927,7 +924,7 @@ for line in sys.stdin:
 			t.Fatal("pool never recovered after worker crash within 5s")
 		default:
 		}
-		s, _, e := m.Predict(context.Background(), make([]float64, 28))
+		s, _, e := m.Predict(context.Background(), "https://test.example.com")
 		if e != nil {
 			t.Fatalf("Predict during recovery: %v", e)
 		}
@@ -960,7 +957,7 @@ for line in sys.stdin:
 	go func() {
 		defer close(occupyDone)
 		// This Predict grabs the only worker and blocks on the slow read.
-		_, _, _ = m.Predict(context.Background(), make([]float64, 28))
+		_, _, _ = m.Predict(context.Background(), "https://test.example.com")
 	}()
 
 	// Give the occupying goroutine time to acquire the worker.
@@ -970,7 +967,7 @@ for line in sys.stdin:
 	blockedDone := make(chan struct{})
 	go func() {
 		defer close(blockedDone)
-		_, _, _ = m.Predict(context.Background(), make([]float64, 28))
+		_, _, _ = m.Predict(context.Background(), "https://test.example.com")
 	}()
 
 	// Give the blocked goroutine time to enter acquire().
@@ -1012,7 +1009,7 @@ for line in sys.stdin:
 	}
 	defer m.Close()
 
-	score, prob, predErr := m.Predict(context.Background(), make([]float64, 28))
+	score, prob, predErr := m.Predict(context.Background(), "https://test.example.com")
 	if predErr != nil {
 		t.Fatalf("Predict: %v", predErr)
 	}
