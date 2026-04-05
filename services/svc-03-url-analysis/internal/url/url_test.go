@@ -25,11 +25,19 @@ package url
 //     TestURLModel_CloseIdempotent   – double Close() does not panic
 //     TestURLModel_PredictAfterClose – returns neutral, does not block
 //     TestURLModel_EndToEnd          – ExtractFeatures → Predict pipeline
+//
+//   Mock-script (require python3 only, no model):
+//     TestURLModel_TimeoutReturnsNeutral    – short deadline → neutral score
+//     TestURLModel_WorkerCrashReplacesPool  – crash triggers pool replacement
+//     TestURLModel_ConcurrentCloseAndPredict – Close during Predict returns promptly
+//     TestURLModel_ErrorResponseReturnsNeutral – resp.Error → neutral + logged
+//     TestURLModel_SpawnFailsOnBadScript    – bad script → NewURLModel error
 // ══════════════════════════════════════════════════════════════════════════════
 
 import (
 	"context"
 	"encoding/csv"
+	"fmt"
 	"io"
 	"math"
 	"os"
@@ -39,6 +47,7 @@ import (
 	"strconv"
 	"sync"
 	"testing"
+	"time"
 )
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
@@ -727,7 +736,8 @@ func TestURLModel_ConcurrentPredict(t *testing.T) {
 				return
 			}
 			if score < 0 || score > 100 {
-				errs <- nil // signal bad score via different means below
+				errs <- fmt.Errorf("score %d out of [0,100]", score)
+				return
 			}
 			_ = prob
 		}()
@@ -811,5 +821,222 @@ func TestURLModel_EndToEnd(t *testing.T) {
 		if !tc.wantHighScore && score > 50 {
 			t.Errorf("E2E %q: expected score ≤ 50 (legit), got %d", tc.url, score)
 		}
+	}
+}
+
+// ─── Mock-script tests (no model required, just python3) ─────────────────────
+
+// writeMockScript writes a temporary Python script and returns its path.
+func writeMockScript(t *testing.T, code string) string {
+	t.Helper()
+	f, err := os.CreateTemp(t.TempDir(), "mock_infer_*.py")
+	if err != nil {
+		t.Fatalf("create temp script: %v", err)
+	}
+	if _, err := f.WriteString(code); err != nil {
+		t.Fatalf("write temp script: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("close temp script: %v", err)
+	}
+	return f.Name()
+}
+
+// skipIfNoPython3 skips if python3 is not on PATH.
+func skipIfNoPython3(t *testing.T) {
+	t.Helper()
+	if err := exec.Command("python3", "-c", "pass").Run(); err != nil {
+		t.Skip("python3 not available")
+	}
+}
+
+func TestURLModel_TimeoutReturnsNeutral(t *testing.T) {
+	skipIfNoPython3(t)
+
+	// Mock script: sends READY, then sleeps forever on each request.
+	script := writeMockScript(t, `
+import sys, time, json
+print("READY", flush=True)
+for line in sys.stdin:
+    time.sleep(60)
+`)
+	m, err := NewURLModel(script, 1, nil)
+	if err != nil {
+		t.Fatalf("NewURLModel: %v", err)
+	}
+	defer m.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	score, prob, err := m.Predict(ctx, make([]float64, 28))
+	if err != nil {
+		t.Fatalf("Predict: %v", err)
+	}
+	if score != neutralScore {
+		t.Errorf("score: got %d want %d (neutral)", score, neutralScore)
+	}
+	if prob != neutralProbability {
+		t.Errorf("prob: got %.2f want %.2f (neutral)", prob, neutralProbability)
+	}
+}
+
+func TestURLModel_WorkerCrashReplacesPool(t *testing.T) {
+	skipIfNoPython3(t)
+
+	// Mock script: sends READY, answers every request, then crashes after responding.
+	// replaceAsync will spawn a new instance of the same script, which also works.
+	script := writeMockScript(t, `
+import sys, json
+print("READY", flush=True)
+count = 0
+for line in sys.stdin:
+    count += 1
+    data = json.loads(line)
+    resp = {"score": 42, "probability": 0.42, "label": "phishing"}
+    print(json.dumps(resp), flush=True)
+    if count >= 1:
+        sys.exit(1)
+`)
+	var logged []string
+	logFn := func(msg string, err error) {
+		logged = append(logged, msg)
+	}
+
+	m, err := NewURLModel(script, 1, logFn)
+	if err != nil {
+		t.Fatalf("NewURLModel: %v", err)
+	}
+	defer m.Close()
+
+	// First prediction succeeds (worker answers then crashes).
+	score, _, predErr := m.Predict(context.Background(), make([]float64, 28))
+	if predErr != nil {
+		t.Fatalf("first Predict: %v", predErr)
+	}
+	if score != 42 {
+		t.Errorf("first score: got %d want 42", score)
+	}
+
+	// Poll until pool recovery: a successful score of 42 proves replaceAsync worked.
+	deadline := time.After(5 * time.Second)
+	recovered := false
+	for !recovered {
+		select {
+		case <-deadline:
+			t.Fatal("pool never recovered after worker crash within 5s")
+		default:
+		}
+		s, _, e := m.Predict(context.Background(), make([]float64, 28))
+		if e != nil {
+			t.Fatalf("Predict during recovery: %v", e)
+		}
+		if s == 42 {
+			recovered = true
+		}
+		// Neutral means replacement not ready yet — retry after brief pause.
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+func TestURLModel_ConcurrentCloseAndPredict(t *testing.T) {
+	skipIfNoPython3(t)
+
+	// Mock script: sends READY, then waits forever before replying (blocks the worker).
+	script := writeMockScript(t, `
+import sys, json, time
+print("READY", flush=True)
+for line in sys.stdin:
+    time.sleep(300)
+`)
+	// Pool size = 1 so we can deterministically exhaust it.
+	m, err := NewURLModel(script, 1, nil)
+	if err != nil {
+		t.Fatalf("NewURLModel: %v", err)
+	}
+
+	// Occupy the single worker so the pool is empty.
+	occupyDone := make(chan struct{})
+	go func() {
+		defer close(occupyDone)
+		// This Predict grabs the only worker and blocks on the slow read.
+		_, _, _ = m.Predict(context.Background(), make([]float64, 28))
+	}()
+
+	// Give the occupying goroutine time to acquire the worker.
+	time.Sleep(100 * time.Millisecond)
+
+	// This Predict will block in acquire() because the pool is empty.
+	blockedDone := make(chan struct{})
+	go func() {
+		defer close(blockedDone)
+		_, _, _ = m.Predict(context.Background(), make([]float64, 28))
+	}()
+
+	// Give the blocked goroutine time to enter acquire().
+	time.Sleep(100 * time.Millisecond)
+
+	// Close must unblock the goroutine waiting in acquire() via the done channel.
+	m.Close()
+
+	select {
+	case <-blockedDone:
+		// Good — blocked Predict returned promptly after Close.
+	case <-time.After(2 * time.Second):
+		t.Fatal("Predict blocked in acquire() for >2s after Close — done channel not working")
+	}
+
+	// Also wait for the occupying goroutine to finish (it will get killed by Close).
+	<-occupyDone
+}
+
+func TestURLModel_ErrorResponseReturnsNeutral(t *testing.T) {
+	skipIfNoPython3(t)
+
+	// Mock script: sends READY, then returns an error response for every request.
+	script := writeMockScript(t, `
+import sys, json
+print("READY", flush=True)
+for line in sys.stdin:
+    resp = {"score": 0, "probability": 0.0, "label": "phishing", "error": "feature shape mismatch"}
+    print(json.dumps(resp), flush=True)
+`)
+	var logged []string
+	logFn := func(msg string, err error) {
+		logged = append(logged, fmt.Sprintf("%s: %v", msg, err))
+	}
+
+	m, err := NewURLModel(script, 1, logFn)
+	if err != nil {
+		t.Fatalf("NewURLModel: %v", err)
+	}
+	defer m.Close()
+
+	score, prob, predErr := m.Predict(context.Background(), make([]float64, 28))
+	if predErr != nil {
+		t.Fatalf("Predict: %v", predErr)
+	}
+	if score != neutralScore {
+		t.Errorf("score: got %d want %d (neutral on error)", score, neutralScore)
+	}
+	if prob != neutralProbability {
+		t.Errorf("prob: got %.2f want %.2f (neutral on error)", prob, neutralProbability)
+	}
+	if len(logged) == 0 {
+		t.Error("expected logFn to be called on resp.Error, but no logs recorded")
+	}
+}
+
+func TestURLModel_SpawnFailsOnBadScript(t *testing.T) {
+	skipIfNoPython3(t)
+
+	// Script that exits immediately without printing READY.
+	script := writeMockScript(t, `
+import sys
+sys.exit(1)
+`)
+	_, err := NewURLModel(script, 1, nil)
+	if err == nil {
+		t.Fatal("expected NewURLModel to fail when worker exits without READY signal")
 	}
 }

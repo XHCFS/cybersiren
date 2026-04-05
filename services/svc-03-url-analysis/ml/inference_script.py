@@ -48,6 +48,7 @@ def main() -> None:
         sys.exit(1)
 
     print(f"INFO: model loaded from {model_path}", file=sys.stderr, flush=True)
+    print("READY", flush=True)  # Signal readiness to Go process pool.
 
     for raw_line in sys.stdin:
         raw_line = raw_line.strip()
