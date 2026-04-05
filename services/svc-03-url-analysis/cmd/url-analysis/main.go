@@ -197,13 +197,7 @@ func scanHandler(model *urlpkg.URLModel, tiChecker *urlpkg.TIChecker, log zerolo
 
 		go func() {
 			defer wg.Done()
-			features, fErr := urlpkg.ExtractFeatures(normalized)
-			if fErr != nil {
-				log.Warn().Err(fErr).Str("url", normalized).Msg("feature extraction failed")
-				mlScore, mlProb = 50, 0.5
-				return
-			}
-			mlScore, mlProb, _ = model.Predict(ctx.Request().Context(), features)
+			mlScore, mlProb, _ = model.Predict(ctx.Request().Context(), normalized)
 		}()
 
 		go func() {
