@@ -5,7 +5,9 @@ CyberSiren — URL Inference Subprocess (svc-03)
 Subprocess stdin/stdout protocol for Go process pool.
 
 Protocol (one JSON object per line, newline-delimited):
-  stdin:  {"url": "<raw-url-string>"}
+  stdin:
+    {"url": "<raw-url-string>"}
+    {"features": [<numeric-feature>, ...]}  # legacy precomputed-features request
   stdout: {"score": <int 0-100>, "probability": <float>, "label": "phishing"|"legitimate"}
   stderr: error/diagnostic messages
 
@@ -33,7 +35,6 @@ from urllib.parse import urlparse
 
 import joblib
 import numpy as np
-import pandas as pd
 
 # Suppress sklearn version mismatch warnings (model trained on slightly
 # different sklearn version — predictions are unaffected).
@@ -212,7 +213,7 @@ def main() -> None:
     model = _load_model(model_dir)
 
     feature_count = config.get("feature_count", 28)
-    feature_names = config["feature_names"]
+    threshold = float(config.get("classification_threshold", 0.5))
 
     print(f"INFO: model loaded from {model_dir}", file=sys.stderr, flush=True)
     print(f"INFO: features={feature_count}, champion={config.get('champion_name', 'unknown')}", file=sys.stderr, flush=True)
@@ -242,11 +243,10 @@ def main() -> None:
             else:
                 raise ValueError("request must contain 'url' or 'features' key")
 
-            # Use DataFrame with feature names for proper model alignment.
-            X = pd.DataFrame([features], columns=feature_names)
+            X = np.asarray([features], dtype=float)
             prob = float(model.predict_proba(X)[0, 1])
             score = round(prob * 100)
-            label = "phishing" if prob >= 0.5 else "legitimate"
+            label = "phishing" if prob >= threshold else "legitimate"
             resp: dict = {"score": score, "probability": prob, "label": label}
         except Exception as exc:
             print(f"ERROR: inference failed: {exc}", file=sys.stderr, flush=True)
