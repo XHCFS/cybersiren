@@ -206,6 +206,7 @@ services:
       CYBERSIREN_AUTH__JWT_SECRET: demo-secret-not-for-production-use!!
       CYBERSIREN_ML__URL_MODEL_PATH: /app/ml/inference_script.py
       CYBERSIREN_METRICS_PORT: "9090"
+      CYBERSIREN_JAEGER_ENDPOINT: http://jaeger:4318
     networks:
       - cybersiren
     restart: unless-stopped
@@ -216,7 +217,7 @@ services:
   # No persistence — traces are lost on restart.
   jaeger:
     image: jaegertracing/all-in-one:latest
-    profiles: ["observability"]
+    profiles: ["observability", "demo"]
     container_name: cybersiren-jaeger
     environment:
       COLLECTOR_OTLP_ENABLED: "true"
@@ -251,6 +252,48 @@ services:
       timeout: 5s
       retries: 10
       start_period: 30s
+    restart: unless-stopped
+
+  # ── Prometheus (metrics scraper) ──────────────────────────────────────────
+  # Scrapes /metrics from svc-03 every 10 s. UI at http://localhost:9092.
+  prometheus:
+    image: prom/prometheus:latest
+    profiles: ["demo"]
+    container_name: cybersiren-prometheus
+    ports:
+      - "9092:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    depends_on:
+      svc-03-url-analysis:
+        condition: service_started
+    networks:
+      - cybersiren
+    restart: unless-stopped
+
+  # ── Grafana (metrics dashboards) ───────────────────────────────────────────
+  # Auto-provisioned with Prometheus datasource + svc-03 dashboard.
+  # UI at http://localhost:3000. Login: admin / admin (skip password change).
+  grafana:
+    image: grafana/grafana:latest
+    profiles: ["demo"]
+    container_name: cybersiren-grafana
+    ports:
+      - "3001:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/svc-03-url-analysis.json
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      prometheus:
+        condition: service_started
+    networks:
+      - cybersiren
     restart: unless-stopped
 
   # ── Kafka UI ───────────────────────────────────────────────────────────────

@@ -22,7 +22,7 @@ via the JSON API.
 |-------------|-------|
 | **Docker** + **Docker Compose v2** | `docker compose version` should print v2.x |
 | **~2 GB disk** | Python ML dependencies (NumPy, LightGBM, joblib) + model file |
-| **Free ports** | `5432` (Postgres), `6379` (Valkey), `8083` (svc-03 HTTP), `9091` (Prometheus metrics) |
+| **Free ports** | `5432` (Postgres), `6379` (Valkey), `8083` (svc-03 HTTP), `9091` (svc-03 metrics), `9092` (Prometheus), `3001` (Grafana), `16686` (Jaeger UI), `4318` (OTLP) |
 
 ---
 
@@ -44,7 +44,7 @@ defaults automatically.
 
 ## What Happens on Startup
 
-The demo profile launches **four containers**:
+The demo profile launches **seven containers**:
 
 | Container | Purpose |
 |-----------|---------|
@@ -52,6 +52,9 @@ The demo profile launches **four containers**:
 | **valkey** | Redis-compatible in-memory cache for TI domain lookups |
 | **demo-seed** | One-shot init container — runs migrations and seeds 20 real threat-indicator domains |
 | **svc-03-url-analysis** | The URL scanner service (Go + Python ML) |
+| **jaeger** | Distributed tracing — collects OpenTelemetry spans from svc-03 |
+| **prometheus** | Metrics scraper — polls svc-03's `/metrics` endpoint every 10 s |
+| **grafana** | Dashboards — auto-provisioned with a svc-03 dashboard |
 
 ### Startup sequence
 
@@ -66,6 +69,19 @@ The demo profile launches **four containers**:
    svc-03-url-analysis started  port=8083  metrics_port=9090
    ```
 4. Open **<http://localhost:8083>** in your browser.
+
+### All demo URLs
+
+Once startup is complete, these URLs are available:
+
+| URL | Service |
+|-----|---------|
+| <http://localhost:8083> | **Web UI** — URL scanner page |
+| <http://localhost:8083/healthz> | Health check |
+| <http://localhost:9091/metrics> | **Raw Prometheus metrics** (svc-03 exporter) |
+| <http://localhost:9092> | **Prometheus UI** — query & graph metrics |
+| <http://localhost:3001> | **Grafana** — auto-provisioned svc-03 dashboard (login: `admin`/`admin`) |
+| <http://localhost:16686> | **Jaeger UI** — distributed traces |
 
 The first build takes 2–4 minutes (downloading Go/Python deps). Subsequent
 starts reuse the Docker layer cache and are much faster.
@@ -125,21 +141,32 @@ mode.
 
 ## Web UI Testing Walkthrough
 
-Open **<http://localhost:8083>** and try these four tests in order:
+Open **<http://localhost:8083>** and try these six tests in order:
 
-### Test 1 — ML-only scan (no TI match)
+### Test 1 — Legitimate domain (www.google.com)
 
-Paste `https://google.com` and click **Scan**.
+Paste `https://www.google.com` and click **Scan**.
 
-![ML-only scan result](docs/screenshots/02-ml-scan.png)
+![Legitimate scan — www.google.com](docs/screenshots/13-www-google-legitimate.png)
 
+- **ML Score** = 0, **Probability** ≈ 0.001, **Label** = legitimate.
 - **TI Match** = No (google.com is not in the seed data).
-- **ML Score** ≈ 90, **Probability** ≈ 0.90, **Label** = phishing.
-- The ML model scores purely on URL lexical features; google.com's short
-  structure happens to trigger a high score. This is a known model quirk and is
-  fine for the demo — it shows the ML engine working independently.
+- The `www.` prefix matters — see [Known Limitations](#known-limitations) for why
+  naked `google.com` scores differently.
 
-### Test 2 — Phishing TI match + ML
+### Test 2 — ML-only phishing detection (no TI match)
+
+Paste `https://secure-login-paypal-verification.com/account/verify` and click **Scan**.
+
+![ML phishing detection — no TI](docs/screenshots/14-ml-phishing-no-ti.png)
+
+- **ML Score** = 100, **Probability** ≈ 1.00, **Label** = phishing.
+- **TI Match** = No — this domain is **not** in the TI seed data.
+- The ML model flags it purely on lexical features: sensitive keywords (`login`,
+  `verification`, `account`), excessive hyphens, long hostname, and deep path.
+- This demonstrates the ML engine catching phishing URLs **independently** of TI.
+
+### Test 3 — Phishing TI match + ML
 
 Paste `https://dpd.parcelstahdu.bond` and click **Scan**.
 
@@ -151,7 +178,7 @@ Paste `https://dpd.parcelstahdu.bond` and click **Scan**.
 - The verdict is **PHISHING** because the TI risk (95) is ≥ 80, even though the
   ML score alone is low.
 
-### Test 3 — Malware TI match
+### Test 4 — Malware TI match
 
 Paste `https://adobe-viewer.iziliang.com` and click **Scan**.
 
@@ -161,7 +188,7 @@ Paste `https://adobe-viewer.iziliang.com` and click **Scan**.
 - **Threat Type** = malware.
 - The verdict badge turns red regardless of ML score.
 
-### Test 4 — Error handling
+### Test 5 — Error handling
 
 Leave the input field **empty** and click Scan (or type random junk like
 `not a url`).
@@ -234,21 +261,45 @@ Analyse a single URL.
 
 ## curl Examples
 
-#### 1. Scan a well-known URL (ML-only, no TI match)
+#### 1. Legitimate domain (www.google.com)
 
 ```bash
 curl -s http://localhost:8083/scan \
   -H 'Content-Type: application/json' \
-  -d '{"url": "https://google.com"}' | jq .
+  -d '{"url": "https://www.google.com"}' | jq .
 ```
 
 ```json
 {
   "success": true,
   "data": {
-    "url": "https://google.com",
-    "score": 90,
-    "probability": 0.9019,
+    "url": "https://www.google.com",
+    "score": 0,
+    "probability": 0.001,
+    "label": "legitimate",
+    "ti_match": false,
+    "ti_threat_type": "",
+    "ti_risk_score": 0,
+    "degraded": false
+  }
+}
+```
+
+#### 2. ML-only phishing detection (not in TI database)
+
+```bash
+curl -s http://localhost:8083/scan \
+  -H 'Content-Type: application/json' \
+  -d '{"url": "https://secure-login-paypal-verification.com/account/verify"}' | jq .
+```
+
+```json
+{
+  "success": true,
+  "data": {
+    "url": "https://secure-login-paypal-verification.com/account/verify",
+    "score": 100,
+    "probability": 1.0,
     "label": "phishing",
     "ti_match": false,
     "ti_threat_type": "",
@@ -258,11 +309,11 @@ curl -s http://localhost:8083/scan \
 }
 ```
 
-> **Note:** The ML model scores purely on lexical URL features. A high score for
-> `google.com` is a known model quirk — it demonstrates the ML engine working
-> independently of TI.
+> The ML model scores 100 purely on lexical features: sensitive keywords
+> (`login`, `verification`, `account`), excessive hyphens, and deep path — no TI
+> data needed.
 
-#### 2. Scan a seeded phishing domain (TI match)
+#### 3. Seeded phishing domain (TI match)
 
 ```bash
 curl -s http://localhost:8083/scan \
@@ -289,7 +340,7 @@ curl -s http://localhost:8083/scan \
 > The label is `"phishing"` because the TI risk score (95) is ≥ 80, even though
 > the ML score alone (17) would rate it as `"legitimate"`.
 
-#### 3. Scan a seeded malware domain
+#### 4. Seeded malware domain
 
 ```bash
 curl -s http://localhost:8083/scan \
@@ -316,7 +367,7 @@ curl -s http://localhost:8083/scan \
 > The `label` is `"phishing"` even for malware TI matches because the
 > TI risk score (98) is ≥ 80 — see the verdict rules above.
 
-#### 4. Scan a seeded botnet C2 domain
+#### 5. Seeded botnet C2 domain
 
 ```bash
 curl -s http://localhost:8083/scan \
@@ -340,7 +391,7 @@ curl -s http://localhost:8083/scan \
 }
 ```
 
-#### 5. Invalid URL (error case)
+#### 6. Invalid URL (error case)
 
 ```bash
 curl -s http://localhost:8083/scan \
@@ -359,7 +410,7 @@ curl -s http://localhost:8083/scan \
 }
 ```
 
-#### 6. Missing URL (error case)
+#### 7. Missing URL (error case)
 
 ```bash
 curl -s http://localhost:8083/scan \
@@ -437,7 +488,7 @@ carries a `service=cybersiren` field automatically.
 docker compose -f deploy/compose/docker-compose.yml --profile demo \
   logs -f svc-03-url-analysis
 
-# Follow ALL demo containers (postgres, valkey, demo-seed, svc-03)
+# Follow ALL demo containers
 docker compose -f deploy/compose/docker-compose.yml --profile demo logs -f
 ```
 
@@ -446,12 +497,9 @@ docker compose -f deploy/compose/docker-compose.yml --profile demo logs -f
 Each scan emits a DEBUG-level line with all result fields:
 
 ```
-02:54:47 DBG scan complete degraded=false label=phishing ml_prob=0.9018710388347376 ml_score=90 service=cybersiren ti_match=false ti_risk=0 ti_threat= url=https://google.com
-02:54:47 DBG scan complete degraded=false label=phishing ml_prob=0.16677812442809192 ml_score=17 service=cybersiren ti_match=true ti_risk=95 ti_threat=phishing url=https://dpd.parcelstahdu.bond
+03:30:48 DBG scan complete degraded=false label=phishing ml_prob=0.9018710388347376 ml_score=90 service=cybersiren ti_match=false ti_risk=0 ti_threat= url=https://google.com
+03:30:48 DBG scan complete degraded=false label=phishing ml_prob=0.16677812442809192 ml_score=17 service=cybersiren ti_match=true ti_risk=95 ti_threat=phishing url=https://dpd.parcelstahdu.bond
 ```
-
-This is useful for verifying that both engines are running and producing the
-expected results without needing to parse JSON API responses.
 
 #### Startup logs
 
@@ -476,8 +524,7 @@ READY
 | `connected to valkey` | Valkey client connected |
 | `svc-03-url-analysis started` | HTTP server listening; the service is ready for requests |
 
-If the TI cache refresh fails (e.g. empty `ti_indicators` table), you'll also
-see:
+If the TI cache refresh fails (e.g. empty `ti_indicators` table), you'll see:
 
 ```
 10:32:01 ERR initial TI domain cache refresh failed error="..." service=cybersiren
@@ -493,11 +540,8 @@ Each scan produces two kinds of log output:
 **1. Gin access log** — printed by Gin's built-in `Logger()` middleware:
 
 ```
-[GIN] 2025/06/15 - 10:33:45 | 200 |   48.291ms |    172.17.0.1 | POST     "/scan"
+[GIN] 2026/04/05 - 03:30:48 | 200 |   5.04ms |    172.17.0.1 | POST     "/scan"
 ```
-
-This shows the HTTP status, latency, client IP, and route. A `400` here means
-the request body was rejected (missing/invalid URL).
 
 **2. zerolog application logs** — emitted by the scan handler, TI checker, or
 ML model when something noteworthy happens:
@@ -514,34 +558,12 @@ ML model when something noteworthy happens:
 
 # Python subprocess crashed (worker is auto-respawned)
 10:33:45 ERR url model: write to worker stdin error="broken pipe" component=url_model service=cybersiren
-
-# Inference timed out (5s deadline exceeded)
-10:33:45 ERR url model: inference timeout error="context deadline exceeded" component=url_model service=cybersiren
 ```
-
-> **Note:** Successful scans at the default `debug` level also produce the
-> structured `DBG scan complete` line shown above. At `info` level and above,
-> successful scans produce only the Gin access log line.
-
-#### Shutdown logs
-
-When you press `Ctrl-C` or run `docker compose down`, svc-03 logs a clean
-shutdown sequence:
-
-```
-10:45:00 INF shutting down... service=cybersiren
-10:45:00 INF shutdown complete service=cybersiren
-```
-
-If shutdown takes longer than 10 seconds (e.g. in-flight requests still
-draining), you may see timeout errors before the final message.
 
 #### Filtering logs
 
-Pipe through `grep` to isolate specific events:
-
 ```bash
-# Only TI-related messages (matches & lookup errors)
+# Only TI-related messages
 docker compose -f deploy/compose/docker-compose.yml --profile demo \
   logs -f svc-03-url-analysis 2>&1 | grep -E "TI|ti_"
 
@@ -552,77 +574,125 @@ docker compose -f deploy/compose/docker-compose.yml --profile demo \
 # Only Gin access logs for /scan requests
 docker compose -f deploy/compose/docker-compose.yml --profile demo \
   logs -f svc-03-url-analysis 2>&1 | grep 'POST.*"/scan"'
-
-# ML model issues only
-docker compose -f deploy/compose/docker-compose.yml --profile demo \
-  logs -f svc-03-url-analysis 2>&1 | grep "url_model\|url model"
-
-# Startup sequence (connection messages)
-docker compose -f deploy/compose/docker-compose.yml --profile demo \
-  logs svc-03-url-analysis 2>&1 | grep -E "connected to|started"
 ```
 
 #### Log levels
 
 Control verbosity by changing `CYBERSIREN_LOG__LEVEL` in the svc-03 environment
-block of `docker-compose.yml` (or pass it as an override):
+block of `docker-compose.yml`:
 
-| Level | What it shows | Use when… |
-|-------|---------------|-----------|
-| `debug` | Everything — including `scan complete` lines with all fields | Investigating a specific bug |
-| `info` | Startup, connections, operational events | **Day-to-day demo use (default)** |
-| `warn` | Graceful degradation events (feature extraction failures, TI lookup errors) | Monitoring for partial failures |
-| `error` | ML subprocess crashes, cache command failures, shutdown errors | Alerting on things that need fixing |
-
-To change the level without editing the compose file:
+| Level | What it shows |
+|-------|---------------|
+| `debug` | Everything — including `scan complete` lines with all fields |
+| `info` | Startup, connections, operational events **(default)** |
+| `warn` | Graceful degradation events (feature extraction failures, TI lookup errors) |
+| `error` | ML subprocess crashes, cache command failures, shutdown errors |
 
 ```bash
+# Override without editing compose:
 CYBERSIREN_LOG__LEVEL=warn \
   docker compose -f deploy/compose/docker-compose.yml --profile demo up
 ```
 
-> **Tip:** Gin's access logger is independent of zerolog and always prints
-> regardless of the `CYBERSIREN_LOG__LEVEL` setting. To silence Gin, set
-> `GIN_MODE=release` in the environment.
+### Distributed Tracing (Jaeger)
+
+svc-03 sends OpenTelemetry traces to Jaeger. Every `/scan` request creates a
+trace with spans for TI cache lookup, Valkey commands, and model inference.
+
+#### Viewing traces
+
+Open **<http://localhost:16686>** in your browser.
+
+1. Select **svc-03-url-analysis** from the Service dropdown.
+2. Click **Find Traces**.
+3. You'll see all recent scans with their duration and span count.
+
+![Jaeger trace list](docs/screenshots/08-jaeger-traces.png)
+
+4. Click any trace to see the span waterfall — the hierarchical breakdown of
+   each operation:
+
+![Jaeger trace detail](docs/screenshots/09-jaeger-trace-detail.png)
+
+#### What the spans show
+
+| Span | Description |
+|------|-------------|
+| `TIChecker.Check` | Top-level TI lookup span |
+| `ti_cache.IsBlocklisted` | Valkey hash lookup for the domain |
+| `HGETALL` | Raw Valkey command |
+| `valkey.dial` | Connection to Valkey (first request only) |
+| `ti_cache.RefreshDomainCache` | Startup cache refresh from Postgres (7 sub-spans) |
 
 ### Prometheus Metrics
 
-svc-03 exposes Prometheus metrics on port **9091** on the host (mapped to the
-container's internal port 9090).
+svc-03 exposes Prometheus metrics on port **9091** (host). The demo also runs a
+**Prometheus server** on port **9092** that scrapes svc-03 every 10 seconds.
 
-#### Accessing metrics
-
-Open **<http://localhost:9091/metrics>** in your browser, or use curl:
+#### Raw metrics endpoint
 
 ```bash
-curl -s http://localhost:9091/metrics
+curl -s http://localhost:9091/metrics | grep ti_cache
 ```
+
+#### Prometheus UI
+
+Open **<http://localhost:9092>** and query metrics directly.
+
+**Targets page** — verify svc-03 is being scraped:
+
+![Prometheus targets](docs/screenshots/10-prometheus-targets.png)
+
+**Graph page** — query TI cache hit/miss rates:
+
+![Prometheus TI metrics](docs/screenshots/11-prometheus-ti-metrics.png)
 
 #### Key metrics
 
 | Metric | Type | Description |
 |--------|------|-------------|
-| `ti_cache_blocklist_lookups_total{hit="true"}` | counter | TI cache hits (domain found in Valkey) |
-| `ti_cache_blocklist_lookups_total{hit="false"}` | counter | TI cache misses (domain not found) |
-| `ti_cache_refresh_keys_total` | gauge | Number of domains loaded into the Valkey TI cache |
-| `ti_cache_refresh_duration_seconds` | histogram | Time taken to refresh the TI domain cache |
-| `feed_sync_db_upsert_duration_seconds` | histogram | DB upsert latency (registered by shared code) |
+| `ti_cache_blocklist_lookups_total{hit="true\|false"}` | counter | TI cache hits vs misses |
+| `ti_cache_refresh_keys_total` | gauge | Domains loaded into Valkey TI cache |
+| `ti_cache_refresh_duration_seconds` | histogram | Cache refresh latency |
+| `go_goroutines` | gauge | Active goroutines |
+| `go_memstats_alloc_bytes` | gauge | Allocated heap memory |
+| `process_open_fds` | gauge | Open file descriptors |
 
-#### Querying specific metrics
+#### Example queries
 
 ```bash
-# Check TI cache hit/miss counts
+# TI hit/miss counts
 curl -s http://localhost:9091/metrics | grep ti_cache_blocklist_lookups_total
 
-# See how many domains were loaded into the cache
+# Domains in cache
 curl -s http://localhost:9091/metrics | grep ti_cache_refresh_keys_total
-
-# Check cache refresh timing
-curl -s http://localhost:9091/metrics | grep ti_cache_refresh_duration_seconds
 ```
 
-After scanning a few seeded domains, you should see `hit="true"` counters
-increment. Scanning domains not in the seed data increments `hit="false"`.
+### Grafana Dashboard
+
+The demo includes a **pre-configured Grafana** instance with an auto-provisioned
+dashboard for svc-03.
+
+#### Accessing Grafana
+
+Open **<http://localhost:3001>** in your browser. Anonymous viewing is enabled —
+no login required. To edit dashboards, sign in with `admin` / `admin`.
+
+![Grafana dashboard](docs/screenshots/12-grafana-dashboard.png)
+
+The **svc-03 URL Analysis** dashboard includes six panels:
+
+| Panel | What it shows |
+|-------|---------------|
+| **TI Cache — Blocklist Lookups** | Time-series of hit vs miss lookup rates |
+| **TI Cache — Keys Refreshed** | Total domains loaded into the cache (stat) |
+| **Go Runtime — Goroutines** | Active goroutine count over time |
+| **Go Runtime — Memory** | Heap allocation and system memory (MiB) |
+| **Process — Open FDs** | File descriptor usage |
+| **HTTP Scan Requests** | Metrics handler request rates by status code |
+
+> **Tip:** Generate some traffic first (scan 5–10 URLs in the web UI), then
+> refresh the Grafana dashboard to see data populate the graphs.
 
 ---
 
@@ -765,7 +835,7 @@ See the full reference in
 | `CYBERSIREN_ML__URL_MODEL_PATH` | `./ml/inference_script.py` | Path to the Python inference script |
 | `CYBERSIREN_METRICS_PORT` | `9090` | Prometheus metrics port (inside container) |
 | `CYBERSIREN_AUTH__JWT_SECRET` | `demo-secret-not-for-production-use!!` | JWT signing secret (demo only) |
-| `CYBERSIREN_JAEGER_ENDPOINT` | *(empty)* | OTLP endpoint; leave empty to disable tracing |
+| `CYBERSIREN_JAEGER_ENDPOINT` | `http://jaeger:4318` | OTLP endpoint for distributed tracing (Jaeger) |
 | `CYBERSIREN_LOG__LEVEL` | `debug` | Log level (`debug`, `info`, `warn`, `error`) |
 | `CYBERSIREN_LOG__PRETTY` | `true` | Human-readable log output |
 
@@ -778,11 +848,54 @@ See the full reference in
 
 ## Other Endpoints
 
-| Endpoint | Port | Method | Description |
-|----------|------|--------|-------------|
-| `/` | 8083 | GET | Serves the web UI (`static/index.html`) |
-| `/healthz` | 8083 | GET | Returns `200 ok` — useful for readiness probes |
-| `/metrics` | 9091 (host) | GET | Prometheus metrics (container port 9090 → host 9091) |
+| Endpoint | Port | Description |
+|----------|------|-------------|
+| `/` | 8083 | Web UI — URL scanner page |
+| `/scan` | 8083 | POST — Analyse a URL (JSON API) |
+| `/healthz` | 8083 | GET — Returns `200 ok` (readiness probe) |
+| `/metrics` | 9091 | GET — Raw Prometheus metrics (svc-03 exporter) |
+| Prometheus UI | 9092 | Query and graph Prometheus metrics |
+| Grafana | 3001 | Pre-configured dashboards (admin/admin) |
+| Jaeger UI | 16686 | Distributed trace viewer |
+
+---
+
+## Known Limitations
+
+### ML false positives for well-known domains
+
+The LightGBM model may flag well-known legitimate domains like `google.com` as
+phishing (score ≈ 90). This is a **training data bias**, not a code bug:
+
+- The model was trained on ~300 K URLs where legitimate samples predominantly
+  include a `www.` subdomain prefix (sourced from Cisco Umbrella).
+- Naked domains without `www.` (like `google.com`) appear as outliers to the
+  model because features like `num_subdomains=0` and high
+  `char_continuation_rate` deviate from the training distribution.
+- The proper fix is model retraining with balanced data including naked domains
+  and major brands.
+
+**For the demo**, this actually demonstrates an important point: ML-only
+detection has blind spots, which is why the TI engine exists as a complementary
+signal. A TI match with risk ≥ 80 overrides ML scoring.
+
+### Exact-domain TI matching only
+
+TI lookup uses exact domain matching. `login.evil.com` will **not** match a TI
+entry for `evil.com`. Suffix-walking (parent domain matching) is a planned
+follow-up.
+
+### svc-03 startup couples to Postgres
+
+In the demo, svc-03 does a one-shot `RefreshDomainCache()` from Postgres at
+startup. In production, svc-11-ti-sync handles cache refresh and svc-03 is
+Valkey-read-only.
+
+### No Kafka integration
+
+The demo skips the full pipeline. `/scan` is a synchronous HTTP endpoint. In
+production, URLs flow through Kafka topics (see the Architecture section in the
+main README).
 
 ---
 
