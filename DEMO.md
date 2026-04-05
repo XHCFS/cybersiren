@@ -74,6 +74,11 @@ starts reuse the Docker layer cache and are much faster.
 
 ## Using the Web UI
 
+Open **<http://localhost:8083>** in your browser. You'll see the scanner landing
+page:
+
+![Landing page](docs/screenshots/01-landing.png)
+
 1. **Enter a URL** in the input field (e.g. `https://google.com` or
    `https://dpd.parcelstahdu.bond`).
 2. Click **Scan** (or press Enter).
@@ -126,6 +131,8 @@ Open **<http://localhost:8083>** and try these four tests in order:
 
 Paste `https://google.com` and click **Scan**.
 
+![ML-only scan result](docs/screenshots/02-ml-scan.png)
+
 - **TI Match** = No (google.com is not in the seed data).
 - **ML Score** ≈ 90, **Probability** ≈ 0.90, **Label** = phishing.
 - The ML model scores purely on URL lexical features; google.com's short
@@ -135,6 +142,8 @@ Paste `https://google.com` and click **Scan**.
 ### Test 2 — Phishing TI match + ML
 
 Paste `https://dpd.parcelstahdu.bond` and click **Scan**.
+
+![Phishing TI match result](docs/screenshots/03-ti-match.png)
 
 - **TI Match** = Yes (red) — this domain is seeded as an OpenPhish phishing
   indicator with risk score 95.
@@ -146,6 +155,8 @@ Paste `https://dpd.parcelstahdu.bond` and click **Scan**.
 
 Paste `https://adobe-viewer.iziliang.com` and click **Scan**.
 
+![Malware TI match result](docs/screenshots/04-malware-match.png)
+
 - **TI Match** = Yes — seeded as a URLhaus malware indicator with risk score 98.
 - **Threat Type** = malware.
 - The verdict badge turns red regardless of ML score.
@@ -154,6 +165,8 @@ Paste `https://adobe-viewer.iziliang.com` and click **Scan**.
 
 Leave the input field **empty** and click Scan (or type random junk like
 `not a url`).
+
+![Error handling](docs/screenshots/05-error.png)
 
 - The UI shows an error message: **"url is required"** or
   **"invalid URL: invalid url"**.
