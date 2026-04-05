@@ -694,8 +694,8 @@ func TestURLModel_KnownLegit(t *testing.T) {
 	defer m.Close()
 
 	// Well-formed HTTPS URL for a major domain should score ≤ 30.
-	// Keep this test scoped to a stable canonical URL. Known model bias may
-	// misclassify some naked/subdomain forms and is covered separately.
+	// Keep this test scoped to a stable canonical URL to avoid known bias on
+	// some naked/subdomain variants until model retraining lands.
 	urls := []struct {
 		url  string
 		desc string
