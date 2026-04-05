@@ -34,7 +34,7 @@ services:
   # Primary relational store for all services that need persistence.
   postgres:
     image: postgres:15-alpine
-    profiles: ["postgres"]
+    profiles: ["postgres", "demo"]
     container_name: cybersiren-postgres
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-cybersiren}
@@ -57,7 +57,7 @@ services:
   # Used for rate-limiting, caching TI lookups, and deduplication.
   valkey:
     image: valkey/valkey:7-alpine
-    profiles: ["valkey"]
+    profiles: ["valkey", "demo"]
     container_name: cybersiren-valkey
     ports:
       - "${VALKEY_PORT:-6379}:6379"
@@ -142,6 +142,71 @@ services:
     networks:
       - cybersiren
     restart: "no"
+
+  # ── Demo seed (one-shot migrations + seed data) ──────────────────────────
+  demo-seed:
+    image: postgres:15-alpine
+    profiles: ["demo"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGHOST: postgres
+      PGPORT: "5432"
+      PGUSER: cybersiren
+      PGPASSWORD: cybersiren
+      PGDATABASE: cybersiren
+    volumes:
+      - ../../db/migrations:/migrations:ro
+      - ../../db/seeds:/seeds:ro
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        echo "Running migrations..."
+        for f in /migrations/*.up.sql; do
+          echo "  Applying $$(basename $$f)..."
+          psql -f "$$f" 2>&1 || true
+        done
+        echo "Seeding feeds..."
+        psql -f /seeds/feeds.sql
+        echo "Seeding TI demo data..."
+        psql -f /seeds/ti_demo_seed.sql
+        echo "Demo seed complete."
+    networks:
+      - cybersiren
+    restart: "no"
+
+  # ── svc-03-url-analysis ───────────────────────────────────────────────────
+  svc-03-url-analysis:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.url_analysis
+    profiles: ["demo"]
+    depends_on:
+      demo-seed:
+        condition: service_completed_successfully
+      valkey:
+        condition: service_healthy
+    ports:
+      - "8083:8083"
+    environment:
+      CYBERSIREN_ENV: development
+      CYBERSIREN_LOG__LEVEL: debug
+      CYBERSIREN_LOG__PRETTY: "true"
+      CYBERSIREN_SERVER__PORT: "8083"
+      CYBERSIREN_DB__HOST: postgres
+      CYBERSIREN_DB__PORT: "5432"
+      CYBERSIREN_DB__NAME: cybersiren
+      CYBERSIREN_DB__USER: cybersiren
+      CYBERSIREN_DB__PASSWORD: cybersiren
+      CYBERSIREN_DB__SSL_MODE: disable
+      CYBERSIREN_VALKEY__ADDR: valkey:6379
+      CYBERSIREN_ML__URL_MODEL_PATH: /app/ml/inference_script.py
+      CYBERSIREN_METRICS_PORT: "9090"
+    networks:
+      - cybersiren
+    restart: unless-stopped
 
   # ── Jaeger (distributed tracing) ───────────────────────────────────────────
   # All-in-one Jaeger instance for local development.

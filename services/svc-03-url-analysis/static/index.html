@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CyberSiren — URL Scanner</title>
+<style>
+  *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+  :root{
+    --bg:#0f0f23;--surface:#1a1a2e;--border:#2a2a4a;
+    --text:#e0e0ff;--text-dim:#8888aa;
+    --green:#00ff41;--yellow:#ffaa00;--red:#ff4444;
+    --accent:#00bfff;--radius:8px;
+  }
+  body{
+    font-family:'Courier New',Courier,monospace;
+    background:var(--bg);color:var(--text);
+    min-height:100vh;display:flex;flex-direction:column;align-items:center;
+    padding:2rem 1rem;
+  }
+
+  /* ── Header ── */
+  .header{text-align:center;margin-bottom:2.5rem}
+  .header h1{font-size:clamp(1.6rem,4vw,2.4rem);letter-spacing:.05em}
+  .header .icon{font-size:1.4em;margin-right:.3em}
+  .header .brand{color:var(--accent)}
+  .header .tagline{color:var(--text-dim);font-size:.85rem;margin-top:.4rem}
+
+  /* ── Card ── */
+  .card{
+    background:var(--surface);border:1px solid var(--border);
+    border-radius:var(--radius);padding:1.5rem;width:100%;max-width:640px;
+    margin-bottom:1.5rem;
+  }
+
+  /* ── Input area ── */
+  .input-group{display:flex;gap:.6rem}
+  .input-group input{
+    flex:1;padding:.7rem 1rem;font-size:.95rem;
+    font-family:inherit;color:var(--text);
+    background:var(--bg);border:1px solid var(--border);
+    border-radius:var(--radius);outline:none;transition:border-color .2s;
+  }
+  .input-group input:focus{border-color:var(--accent)}
+  .input-group input::placeholder{color:var(--text-dim)}
+
+  .btn{
+    padding:.7rem 1.6rem;font-family:inherit;font-size:.95rem;font-weight:700;
+    border:none;border-radius:var(--radius);cursor:pointer;
+    background:var(--accent);color:var(--bg);transition:opacity .2s;
+    white-space:nowrap;
+  }
+  .btn:disabled{opacity:.45;cursor:not-allowed}
+
+  /* ── Spinner ── */
+  .spinner{
+    display:none;justify-content:center;align-items:center;
+    padding:2rem 0;
+  }
+  .spinner.active{display:flex}
+  .spinner::after{
+    content:'';width:32px;height:32px;
+    border:3px solid var(--border);border-top-color:var(--accent);
+    border-radius:50%;animation:spin .7s linear infinite;
+  }
+  @keyframes spin{to{transform:rotate(360deg)}}
+
+  /* ── Error ── */
+  .error-box{
+    display:none;padding:1rem;border-radius:var(--radius);
+    background:rgba(255,68,68,.12);border:1px solid var(--red);
+    color:var(--red);word-break:break-word;
+  }
+  .error-box.active{display:block}
+
+  /* ── Results ── */
+  .results{display:none}
+  .results.active{display:block}
+  .results h2{font-size:1.05rem;margin-bottom:1rem;color:var(--accent)}
+
+  .field{
+    display:flex;justify-content:space-between;align-items:center;
+    padding:.55rem 0;border-bottom:1px solid var(--border);
+    font-size:.88rem;gap:.5rem;
+  }
+  .field:last-child{border-bottom:none}
+  .field-label{color:var(--text-dim);flex-shrink:0}
+  .field-value{text-align:right;word-break:break-all}
+
+  .section-title{
+    font-size:.78rem;text-transform:uppercase;letter-spacing:.1em;
+    color:var(--text-dim);padding:.8rem 0 .3rem;border-bottom:none;
+  }
+
+  /* ── Score bar ── */
+  .score-bar-track{
+    width:100%;height:10px;background:var(--bg);
+    border-radius:5px;overflow:hidden;margin-top:.3rem;
+  }
+  .score-bar-fill{height:100%;border-radius:5px;transition:width .5s ease}
+
+  /* ── Badge ── */
+  .badge{
+    display:inline-block;padding:.2rem .7rem;border-radius:4px;
+    font-weight:700;font-size:.85rem;text-transform:uppercase;letter-spacing:.05em;
+  }
+  .badge-green{background:rgba(0,255,65,.15);color:var(--green);border:1px solid var(--green)}
+  .badge-yellow{background:rgba(255,170,0,.15);color:var(--yellow);border:1px solid var(--yellow)}
+  .badge-red{background:rgba(255,68,68,.15);color:var(--red);border:1px solid var(--red)}
+
+  /* ── Degraded warning ── */
+  .degraded-warning{
+    display:none;padding:.7rem 1rem;border-radius:var(--radius);
+    background:rgba(255,170,0,.1);border:1px solid var(--yellow);
+    color:var(--yellow);font-size:.82rem;margin-bottom:1rem;
+  }
+  .degraded-warning.active{display:block}
+
+  .url-display{
+    font-size:.82rem;color:var(--text-dim);word-break:break-all;
+    padding-bottom:.6rem;border-bottom:1px solid var(--border);
+    margin-bottom:.3rem;
+  }
+
+  /* ── Footer ── */
+  .footer{margin-top:auto;padding-top:2rem;color:var(--text-dim);font-size:.72rem;text-align:center}
+</style>
+</head>
+<body>
+
+<header class="header">
+  <h1><span class="icon">🛡️</span><span class="brand">CyberSiren</span> — URL Scanner</h1>
+  <p class="tagline">Real-time phishing detection powered by ML &amp; threat intelligence</p>
+</header>
+
+<div class="card">
+  <form id="scan-form" class="input-group" autocomplete="off">
+    <input id="url-input" type="text" placeholder="Enter a URL to scan…" aria-label="URL" required>
+    <button id="scan-btn" class="btn" type="submit">Scan</button>
+  </form>
+</div>
+
+<div id="spinner" class="spinner"></div>
+<div id="error-box" class="error-box"></div>
+
+<div id="results" class="card results">
+  <h2>Scan Results</h2>
+
+  <div id="degraded-warning" class="degraded-warning">
+    ⚠️ Some analysis components were unavailable. Results may be incomplete.
+  </div>
+
+  <div id="url-display" class="url-display"></div>
+
+  <!-- ML Analysis -->
+  <div class="section-title">ML Analysis</div>
+  <div class="field">
+    <span class="field-label">Score</span>
+    <span class="field-value" id="ml-score">—</span>
+  </div>
+  <div class="score-bar-track"><div id="score-bar" class="score-bar-fill"></div></div>
+  <div class="field">
+    <span class="field-label">Probability</span>
+    <span class="field-value" id="ml-prob">—</span>
+  </div>
+  <div class="field">
+    <span class="field-label">Label</span>
+    <span class="field-value" id="ml-label">—</span>
+  </div>
+
+  <!-- Threat Intelligence -->
+  <div class="section-title">Threat Intelligence</div>
+  <div class="field">
+    <span class="field-label">TI Match</span>
+    <span class="field-value" id="ti-match">—</span>
+  </div>
+  <div class="field">
+    <span class="field-label">Threat Type</span>
+    <span class="field-value" id="ti-type">—</span>
+  </div>
+  <div class="field">
+    <span class="field-label">TI Risk Score</span>
+    <span class="field-value" id="ti-risk">—</span>
+  </div>
+
+  <!-- Verdict -->
+  <div class="section-title">Combined Verdict</div>
+  <div class="field">
+    <span class="field-label">Verdict</span>
+    <span class="field-value" id="verdict">—</span>
+  </div>
+</div>
+
+<footer class="footer">CyberSiren &copy; 2025 — Phishing Detection Platform</footer>
+
+<script>
+(function () {
+  const form     = document.getElementById('scan-form');
+  const input    = document.getElementById('url-input');
+  const btn      = document.getElementById('scan-btn');
+  const spinner  = document.getElementById('spinner');
+  const errorBox = document.getElementById('error-box');
+  const results  = document.getElementById('results');
+
+  form.addEventListener('submit', async function (e) {
+    e.preventDefault();
+    const url = input.value.trim();
+    if (!url) { showError('url is required'); return; }
+    await scan(url);
+  });
+
+  async function scan(url) {
+    hideAll();
+    setLoading(true);
+
+    try {
+      const res = await fetch('/scan', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: url }),
+      });
+
+      let body;
+      try { body = await res.json(); } catch (_) {
+        showError('Invalid response from server (non-JSON).');
+        return;
+      }
+
+      if (!res.ok || body.success === false) {
+        const msg = (body.error && body.error.message) ? body.error.message : 'Request failed (status ' + res.status + ')';
+        showError(msg);
+        return;
+      }
+
+      showResults(body.data);
+    } catch (err) {
+      showError('Network error — is the server running? (' + err.message + ')');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function showResults(d) {
+    // URL
+    document.getElementById('url-display').textContent = d.url || '—';
+
+    // ML
+    const score = typeof d.score === 'number' ? d.score : 0;
+    document.getElementById('ml-score').textContent = score;
+    document.getElementById('ml-prob').textContent = typeof d.probability === 'number' ? d.probability.toFixed(4) : '—';
+    document.getElementById('ml-label').textContent = d.label || '—';
+
+    // Score bar
+    const bar = document.getElementById('score-bar');
+    bar.style.width = Math.min(score, 100) + '%';
+    bar.style.background = scoreColor(score);
+
+    // TI
+    const tiMatch = Boolean(d.ti_match);
+    document.getElementById('ti-match').textContent = tiMatch ? 'Yes' : 'No';
+    document.getElementById('ti-match').style.color = tiMatch ? 'var(--red)' : 'var(--green)';
+    document.getElementById('ti-type').textContent = d.ti_threat_type || '—';
+    document.getElementById('ti-risk').textContent = typeof d.ti_risk_score === 'number' ? d.ti_risk_score : '—';
+
+    // Verdict badge
+    const verdict = document.getElementById('verdict');
+    const label = (d.label || 'unknown').toLowerCase();
+    verdict.innerHTML = '';
+    const badge = document.createElement('span');
+    badge.className = 'badge ' + badgeClass(label);
+    badge.textContent = d.label || 'unknown';
+    verdict.appendChild(badge);
+
+    // Degraded
+    const dw = document.getElementById('degraded-warning');
+    dw.classList.toggle('active', Boolean(d.degraded));
+
+    results.classList.add('active');
+  }
+
+  function scoreColor(s) {
+    if (s < 40) return 'var(--green)';
+    if (s < 70) return 'var(--yellow)';
+    return 'var(--red)';
+  }
+
+  function badgeClass(label) {
+    if (label === 'legitimate' || label === 'safe') return 'badge-green';
+    if (label === 'suspicious') return 'badge-yellow';
+    return 'badge-red';
+  }
+
+  function showError(msg) {
+    errorBox.textContent = msg;
+    errorBox.classList.add('active');
+  }
+
+  function hideAll() {
+    errorBox.classList.remove('active');
+    results.classList.remove('active');
+  }
+
+  function setLoading(on) {
+    spinner.classList.toggle('active', on);
+    btn.disabled = on;
+  }
+})();
+</script>
+</body>
+</html>
