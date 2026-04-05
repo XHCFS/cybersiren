@@ -34,6 +34,7 @@
   "needs_scaling": false,
   "production_threshold": 0.85,
   "classification_threshold": 0.5,
+  "classification_threshold_note": "Probability cutoff for phishing label in inference_script.py (range 0.0-1.0).",
   "label_encoding": {
     "0": "legitimate",
     "1": "phishing"
