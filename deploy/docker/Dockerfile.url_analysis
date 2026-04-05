@@ -14,13 +14,14 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" \
 FROM alpine:3.19
 RUN apk --no-cache add ca-certificates tzdata
 RUN apk add --no-cache python3 py3-pip libgomp gcc g++ cmake make musl-dev python3-dev \
-    && pip3 install --no-cache-dir --break-system-packages joblib numpy lightgbm scikit-learn \
+    && pip3 install --no-cache-dir --break-system-packages joblib numpy lightgbm scikit-learn tldextract pandas \
     && apk del gcc g++ cmake make musl-dev python3-dev
 
 WORKDIR /app
 COPY --from=builder /bin/service /bin/service
 COPY services/svc-03-url-analysis/ml/inference_script.py /app/ml/inference_script.py
 COPY services/svc-03-url-analysis/ml/model.joblib /app/ml/model.joblib
+COPY services/svc-03-url-analysis/ml/config.json /app/ml/config.json
 COPY services/svc-03-url-analysis/static/ /app/static/
 
 ENV CYBERSIREN_ML__URL_MODEL_PATH=/app/ml/inference_script.py
