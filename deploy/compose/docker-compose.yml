@@ -153,9 +153,9 @@ services:
     environment:
       PGHOST: postgres
       PGPORT: "5432"
-      PGUSER: cybersiren
-      PGPASSWORD: cybersiren
-      PGDATABASE: cybersiren
+      PGUSER: ${POSTGRES_USER:-postgres}
+      PGPASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      PGDATABASE: ${POSTGRES_DB:-cybersiren}
     volumes:
       - ../../db/migrations:/migrations:ro
       - ../../db/seeds:/seeds:ro
@@ -198,10 +198,11 @@ services:
       CYBERSIREN_DB__HOST: postgres
       CYBERSIREN_DB__PORT: "5432"
       CYBERSIREN_DB__NAME: cybersiren
-      CYBERSIREN_DB__USER: cybersiren
-      CYBERSIREN_DB__PASSWORD: cybersiren
+      CYBERSIREN_DB__USER: ${POSTGRES_USER:-postgres}
+      CYBERSIREN_DB__PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       CYBERSIREN_DB__SSL_MODE: disable
       CYBERSIREN_VALKEY__ADDR: valkey:6379
+      CYBERSIREN_AUTH__JWT_SECRET: demo-secret-not-for-production-use!!
       CYBERSIREN_ML__URL_MODEL_PATH: /app/ml/inference_script.py
       CYBERSIREN_METRICS_PORT: "9090"
     networks:
