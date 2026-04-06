@@ -266,6 +266,10 @@ func (m *mockCache) RefreshDomainCache(_ context.Context) error {
 	return m.refreshErr
 }
 
+func (m *mockCache) IsBlocklisted(_ context.Context, _ string) (bool, int, string, error) {
+	return false, 0, "", nil
+}
+
 func testIndicator(feedID int64, indicatorValue string) ti.TIIndicator {
 	return ti.TIIndicator{
 		FeedID:         feedID,

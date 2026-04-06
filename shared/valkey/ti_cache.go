@@ -14,6 +14,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 
+	"github.com/saif/cybersiren/shared/normalization"
 	"github.com/saif/cybersiren/shared/observability/tracing"
 	"github.com/saif/cybersiren/shared/postgres/repository"
 )
@@ -25,8 +26,11 @@ const (
 
 var tiCacheTracer = tracing.Tracer("shared/valkey/ti_cache")
 
+// TICache provides read and write access to the threat-intelligence domain cache.
 type TICache interface {
 	RefreshDomainCache(ctx context.Context) error
+	// IsBlocklisted checks whether the given domain appears in the TI domain cache.
+	IsBlocklisted(ctx context.Context, domain string) (bool, int, string, error)
 }
 
 type ValkeyTICache struct {
@@ -36,6 +40,7 @@ type ValkeyTICache struct {
 
 	refreshKeysTotal prometheus.Gauge
 	refreshDuration  prometheus.Histogram
+	blocklistLookups *prometheus.CounterVec
 }
 
 var _ TICache = (*ValkeyTICache)(nil)
@@ -56,12 +61,18 @@ func NewTICache(client valkeygo.Client, repo repository.TIRepository, log zerolo
 		Buckets: prometheus.DefBuckets,
 	}))
 
+	blocklistLookups := registerCounterVec(metrics, prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "ti_cache_blocklist_lookups_total",
+		Help: "Total blocklist lookups against the TI domain cache.",
+	}, []string{"hit"}))
+
 	return &ValkeyTICache{
 		client:           client,
 		repo:             repo,
 		log:              log,
 		refreshKeysTotal: refreshKeysTotal,
 		refreshDuration:  refreshDuration,
+		blocklistLookups: blocklistLookups,
 	}
 }
 
@@ -201,6 +212,52 @@ func (c *ValkeyTICache) RefreshDomainCache(ctx context.Context) (err error) {
 	return nil
 }
 
+// IsBlocklisted checks whether the given domain appears in the TI domain cache.
+func (c *ValkeyTICache) IsBlocklisted(ctx context.Context, domain string) (blocked bool, riskScore int, threatType string, err error) {
+	ctx, span := tiCacheTracer.Start(ctx, "ti_cache.IsBlocklisted")
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+		}
+		span.End()
+	}()
+
+	normalized := normalization.NormalizeDomain(domain)
+	key := fmt.Sprintf("ti_domain:{%s}", normalized)
+
+	span.SetAttributes(attribute.String("domain", normalized))
+
+	cmd := c.client.Do(ctx, c.client.B().Hgetall().Key(key).Build())
+	if err = cmd.Error(); err != nil {
+		return false, 0, "", fmt.Errorf("ti cache IsBlocklisted: %w", err)
+	}
+
+	result, err := cmd.AsStrMap()
+	if err != nil {
+		return false, 0, "", fmt.Errorf("ti cache IsBlocklisted: %w", err)
+	}
+
+	hit := len(result) > 0
+	if c.blocklistLookups != nil {
+		c.blocklistLookups.WithLabelValues(strconv.FormatBool(hit)).Inc()
+	}
+
+	if !hit {
+		return false, 0, "", nil
+	}
+
+	if scoreStr, ok := result["risk_score"]; ok {
+		riskScore, err = strconv.Atoi(scoreStr)
+		if err != nil {
+			return false, 0, "", fmt.Errorf("ti cache IsBlocklisted: parse risk_score: %w", err)
+		}
+	}
+	threatType = result["threat_type"]
+
+	return true, riskScore, threatType, nil
+}
+
 func (c *ValkeyTICache) ensureReady() error {
 	if c == nil {
 		return errors.New("ti cache is nil")
@@ -256,4 +313,21 @@ func registerHistogram(registry *prometheus.Registry, histogram prometheus.Histo
 	}
 
 	return histogram
+}
+
+func registerCounterVec(registry *prometheus.Registry, counterVec *prometheus.CounterVec) *prometheus.CounterVec {
+	err := registry.Register(counterVec)
+	if err == nil {
+		return counterVec
+	}
+
+	var alreadyRegistered prometheus.AlreadyRegisteredError
+	if errors.As(err, &alreadyRegistered) {
+		existing, ok := alreadyRegistered.ExistingCollector.(*prometheus.CounterVec)
+		if ok {
+			return existing
+		}
+	}
+
+	return counterVec
 }
