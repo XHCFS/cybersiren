@@ -108,10 +108,10 @@ func TestShannonEntropy(t *testing.T) {
 		tol   float64
 	}{
 		{"", 0.0, 0},
-		{"a", 0.0, 0},             // single symbol → entropy = 0
-		{"ab", 1.0, 1e-9},         // two equal-prob symbols → 1 bit
-		{"aab", 0.9183, 0.0001},   // -(2/3·log2(2/3) + 1/3·log2(1/3))
-		{"abcd", 2.0, 1e-9},       // 4 equal-prob → 2 bits
+		{"a", 0.0, 0},              // single symbol → entropy = 0
+		{"ab", 1.0, 1e-9},          // two equal-prob symbols → 1 bit
+		{"aab", 0.9183, 0.0001},    // -(2/3·log2(2/3) + 1/3·log2(1/3))
+		{"abcd", 2.0, 1e-9},        // 4 equal-prob → 2 bits
 		{"aaabbc", 1.4591, 0.0001}, // mixed
 	}
 	for _, tc := range cases {
@@ -127,9 +127,9 @@ func TestCharContinuationRate(t *testing.T) {
 		tol   float64
 	}{
 		{"", 0.0, 0},
-		{"abc", 1.0, 1e-9},    // max_alpha=3, len=3 → 1.0
-		{"---", 1.0, 1e-9},    // max_special=3, len=3 → 1.0
-		{"111", 1.0, 1e-9},    // max_digit=3, len=3 → 1.0
+		{"abc", 1.0, 1e-9}, // max_alpha=3, len=3 → 1.0
+		{"---", 1.0, 1e-9}, // max_special=3, len=3 → 1.0
+		{"111", 1.0, 1e-9}, // max_digit=3, len=3 → 1.0
 		// "a1a": max_alpha=1, max_digit=1, max_special=0 → (1+1+0)/3
 		{"a1a", 0.6667, 0.0001},
 		// "aabb11--": max_alpha=4, max_digit=2, max_special=2 → (4+2+2)/8 = 1.0
@@ -146,15 +146,15 @@ func TestHasRepeatedDigits(t *testing.T) {
 		input string
 		want  bool
 	}{
-		{"111", true},       // three identical
-		{"1111", true},      // four identical
-		{"11", false},       // only two
-		{"1122", false},     // runs of 2, not 3
+		{"111", true},   // three identical
+		{"1111", true},  // four identical
+		{"11", false},   // only two
+		{"1122", false}, // runs of 2, not 3
 		{"112", false},
-		{"a000b", true},     // embedded run of 3
-		{"abcdef", false},   // no digits
+		{"a000b", true},   // embedded run of 3
+		{"abcdef", false}, // no digits
 		{"", false},
-		{"123", false},      // consecutive but not identical
+		{"123", false}, // consecutive but not identical
 		{"http://bank000.com", true},
 	}
 	for _, tc := range cases {
@@ -167,8 +167,8 @@ func TestHasRepeatedDigits(t *testing.T) {
 
 func TestSplitTLDParts(t *testing.T) {
 	cases := []struct {
-		hostname          string
-		domain, sub, tld  string
+		hostname         string
+		domain, sub, tld string
 	}{
 		// Single-part TLD
 		{"example.com", "example", "", "com"},
@@ -255,7 +255,7 @@ func TestExtractFeatures_F01_F10(t *testing.T) {
 		f, _ := ExtractFeatures(u)
 		exact(t, "url_length[0]", f[0], 34)
 		exact(t, "num_dots[1]", f[1], 2)
-		exact(t, "num_subdomains[2]", f[2], 1)   // www → 1 sub
+		exact(t, "num_subdomains[2]", f[2], 1) // www → 1 sub
 		exact(t, "num_hyphens_url[3]", f[3], 0)
 		exact(t, "num_hyphens_hostname[4]", f[4], 0)
 		exact(t, "https_flag[5]", f[5], 1)
@@ -467,9 +467,9 @@ func TestExtractFeatures_F21_F30(t *testing.T) {
 			url string
 			tld float64
 		}{
-			{"http://example.com", 3},    // "com"
-			{"http://example.co.uk", 5},  // "co.uk"
-			{"http://example.io", 2},     // "io"
+			{"http://example.com", 3},         // "com"
+			{"http://example.co.uk", 5},       // "co.uk"
+			{"http://example.io", 2},          // "io"
 			{"http://example.technology", 10}, // "technology"
 		}
 		for _, tc := range cases {
@@ -500,7 +500,8 @@ func TestExtractFeatures_F21_F30(t *testing.T) {
 // dataset CSV and validates that the Go extractor agrees within floatTol.
 //
 // Features exempt from strict parity (depend on tldextract PSL version):
-//   tld_legit_prob (idx 13), url_char_prob (idx 11)
+//
+//	tld_legit_prob (idx 13), url_char_prob (idx 11)
 //
 // These two have a wider tolerance (0.01) due to TLD classification differences
 // between tldextract and the simple suffix extractor used in Go.

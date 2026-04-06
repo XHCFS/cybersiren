@@ -528,11 +528,11 @@ var (
 )
 
 // specialChars is the set of characters counted by F18 num_special_chars.
-// Matches Python: "!@#$%^&*~`|\\<>{}"
+// Matches Python: "!@#$%^&*~`|\\<>{}".
 const specialChars = "!@#$%^&*~`|\\<>{}"
 
 // tokenSplitters is the set of runes used to split URL tokens for F30 token_count.
-// Matches Python: re.split(r"[/\?&=\-\_\.\:\@\#\+\~\%]", url_str)
+// Matches Python: re.split(r"[/\?&=\-\_\.\:\@\#\+\~\%]", url_str).
 const tokenSplitters = "/?&=-_.:@#+~%"
 
 // splitTLDParts returns (domain, subdomain, tld) for a lower-cased hostname.
@@ -859,33 +859,33 @@ func ExtractFeatures(rawURL string) ([]float64, error) {
 	})))
 
 	return []float64{
-		urlLength,         // F01
-		numDots,           // F02
-		numSubdomains,     // F03
-		numHyphensURL,     // F05
+		urlLength,          // F01
+		numDots,            // F02
+		numSubdomains,      // F03
+		numHyphensURL,      // F05
 		numHyphensHostname, // F06
-		httpsFlag,         // F07
-		entropyURL,        // F08
-		numNumeric,        // F09
-		numSensitiveWords, // F10
-		hostnameLength,    // F11
-		pathLength,        // F12
-		urlCharProbVal,    // F13
-		charContRate,      // F14
-		tldLegitProbVal,   // F15
-		entropyDomain,     // F16
-		numQueryParams,    // F17
-		numSpecialChars,   // F18
-		atSymbol,          // F19
-		pctNumeric,        // F20
-		suspFileExt,       // F21
-		pathDepth,         // F22
-		numUnderscores,    // F23
-		queryLength,       // F25
-		hasFragment,       // F26
-		hasRepDigits,      // F27
-		avgSubdomainLen,   // F28
-		tldLength,         // F29
-		tokenCount,        // F30
+		httpsFlag,          // F07
+		entropyURL,         // F08
+		numNumeric,         // F09
+		numSensitiveWords,  // F10
+		hostnameLength,     // F11
+		pathLength,         // F12
+		urlCharProbVal,     // F13
+		charContRate,       // F14
+		tldLegitProbVal,    // F15
+		entropyDomain,      // F16
+		numQueryParams,     // F17
+		numSpecialChars,    // F18
+		atSymbol,           // F19
+		pctNumeric,         // F20
+		suspFileExt,        // F21
+		pathDepth,          // F22
+		numUnderscores,     // F23
+		queryLength,        // F25
+		hasFragment,        // F26
+		hasRepDigits,       // F27
+		avgSubdomainLen,    // F28
+		tldLength,          // F29
+		tokenCount,         // F30
 	}, nil
 }
