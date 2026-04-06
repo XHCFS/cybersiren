@@ -1,7 +1,8 @@
 # ── svc-03-url-analysis ──────────────────────────────────────────────────────
 # Analyses URLs extracted from emails against TI feeds and ML models.
+# Requires Python 3 + joblib + numpy + catboost + pandas at runtime for the CatBoost subprocess.
 
-# Stage 1: builder
+# Stage 1: Go builder
 FROM golang:1.25-alpine AS builder
 WORKDIR /app
 COPY go.mod go.sum ./

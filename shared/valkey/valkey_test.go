@@ -15,7 +15,7 @@ func TestNew_Ping(t *testing.T) {
 		t.Skip("VALKEY_ADDR not set; skipping valkey integration test")
 	}
 
-	client, err := New(addr, zerolog.Nop())
+	client, err := New(ClientOptions{Addr: addr}, zerolog.Nop())
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
