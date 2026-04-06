@@ -132,6 +132,7 @@ jobs:
       packages: write
 
     strategy:
+      fail-fast: false
       matrix:
         service:
           - { name: ti-sync,              dockerfile: deploy/docker/Dockerfile.ti_sync }
