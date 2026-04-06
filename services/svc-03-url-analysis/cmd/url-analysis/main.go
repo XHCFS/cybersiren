@@ -111,7 +111,7 @@ func main() {
 
 	tiChecker := urlpkg.NewTIChecker(tiCache, log)
 
-	model, err := urlpkg.NewURLModel(cfg.ML.URLModelPath, 2, func(msg string, modelErr error) {
+	model, err := urlpkg.NewURLModel(cfg.ML.URLModelPath, cfg.ML.URLModelPoolSize, func(msg string, modelErr error) {
 		log.Error().Err(modelErr).Str("component", "url_model").Msg(msg)
 	})
 	if err != nil {
