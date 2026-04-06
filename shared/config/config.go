@@ -125,8 +125,9 @@ type CORSConfig struct {
 }
 
 type MLConfig struct {
-	NLPServiceURL string `koanf:"nlp_service_url"`
-	URLModelPath  string `koanf:"url_model_path"`
+	NLPServiceURL    string `koanf:"nlp_service_url"`
+	URLModelPath     string `koanf:"url_model_path"`
+	URLModelPoolSize int    `koanf:"url_model_pool_size"`
 }
 
 type EnrichmentConfig struct {
@@ -247,8 +248,9 @@ func Load() (*Config, error) {
 			AllowCredentials: true,
 		},
 		ML: MLConfig{
-			NLPServiceURL: "http://localhost:8001",
-			URLModelPath:  "./ml/url_model/model.bin",
+			NLPServiceURL:    "http://localhost:8001",
+			URLModelPath:     "./ml/inference_script.py",
+			URLModelPoolSize: 3,
 		},
 		Enrichment: EnrichmentConfig{
 			WorkerCount: 10,
