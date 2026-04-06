@@ -1,99 +1,142 @@
 # CyberSiren
-The hybrid detection engine that integrates 4+ TI feeds, and an ensemble ML model. Part of a of a commercial-grade, full-cycle Phishing Defense and Resiliance Platform
 
-**ASER [TI]:** Threat intel feeds + URL enrichment  
-**SAIF [LEAD]:** Database, ML models, API, orchestration  
-**OMAR [NLP]:** Email content analysis
+A commercial-grade phishing defense platform. Ingests raw emails, runs them through a multi-stage detection pipeline combining threat intelligence feeds, a LightGBM URL classifier, and a DistilBERT NLP model, then produces a structured verdict with confidence scores.
+
+**Tech stack:** Go 1.25, Python 3.12, PostgreSQL 15, Valkey, Kafka, React
 
 ---
 
+## Pipeline
+
+Emails move through 11 services in sequence:
+
 ```
-PhishGuard/
-│
-├── cmd/                                    # Service entry points
-│   ├── api/main.go                         # [LEAD] API server bootstrap
-│   ├── worker/main.go                      # [LEAD] Background job processor
-│   └── ti_sync/main.go                     # [TI] Threat intel sync service
-│
-├── internal/
-│   ├── api/
-│   │   ├── handlers/                       # [LEAD] All API endpoints
-│   │   ├── middleware/                     # [LEAD] Auth, rate limiting, logging
-│   │   └── routes.go                       # [LEAD] Route definitions
-│   │
-│   ├── detection/
-│   │   ├── url/
-│   │   │   ├── ti_checker.go              # [TI] Check if URL in TI database
-│   │   │   ├── enricher.go                # [TI] SSL/WHOIS/redirects
-│   │   │   ├── feature_extractor.go       # [LEAD] Extract URL features for model
-│   │   │   └── model.go                   # [LEAD] XGBoost inference wrapper
-│   │   │
-│   │   ├── nlp/
-│   │   │   ├── preprocessor.go            # [NLP] Clean email text for model
-│   │   │   └── classifier.go              # [NLP] Call NLP model
-│   │   │
-│   │   ├── domain/
-│   │   │   ├── typosquatting.go           # [LEAD] Check domain similarity (computing distance metric)
-│   │   │   └── reputation.go              # [LEAD] Domain age checks?
-│   │   │
-│   │   └── aggregator.go                  # [LEAD] Combine all risk scores
-│   │
-│   ├── email/
-│   │   ├── parser.go                       # [LEAD + NLP] Extract URLs/body/headers
-│   │   └── sanitizer.go                    # [NLP] Strip HTML, clean text
-│   │
-│   ├── ti/
-│   │   ├── feeds.go                        # [TI] Define feed structs (PhishTank, etc)
-│   │   └── sync.go                         # [TI] Fetch feeds, dedupe, insert to DB
-│   │
-│   ├── storage/
-│   │   ├── postgres.go                     # [LEAD] DB connection
-│   │   └── repository/                     # Data access layer
-│   │       ├── email_repo.go              # [LEAD] Email CRUD
-│   │       ├── url_repo.go                # [LEAD] URL CRUD
-│   │       ├── ti_repo.go                 # [TI] TI database operations
-│   │       ├── enrichment_repo.go         # [TI] Enrichment cache
-│   │       └── user_repo.go               # [LEAD] Users/orgs/API keys
-│   │
-│   └── worker/
-│       ├── jobs.go                         # [LEAD] Job definitions
-│       └── orchestrator.go                 # [LEAD] Scan workflow: parse→TI→enrich→ML→NLP→aggregate
-│
-├── pkg/                                    # [LEAD] Shared utilities
-│   ├── config/config.go                    # Config loader (Viper)
-│   ├── logger/logger.go                    # Structured logging (zerolog)
-│   ├── queue/redis.go                      # Redis queue wrapper
-│   ├── httputil/                           # HTTP helpers
-│   └── models/                             # Data structures (Email, URL, Verdict, User)
-│
-├── ml/                                     # Python ML code
-│   ├── url_model/
-│   │   ├── train.py                        # [LEAD] Train XGBoost on URL features
-│   │   ├── feature_engineering.py         # [LEAD] Feature extraction (Python version)
-│   │   └── inference.py                   # [LEAD] CLI script for Go to call
-│   │
-│   ├── nlp_model/
-│   │   ├── train.py                        # [NLP] Fine-tune DistilBERT
-│   │   ├── inference.py                   # [NLP] CLI or Flask service
-│   │   └── app.py                         # [NLP] Optional Flask API
-│   │
-│   └── datasets/                           # [NLP] Find phishing email datasets
-│
-├── web/                                    # [LEAD - later] React dashboard
-│   └── src/components/                     # Login, scan submission, results display
-│
-├── migrations/                             # [LEAD] SQL schema files
-│   ├── 001_initial_schema.sql             # All tables (emails, urls, ti_entries, users, etc)
-│   ├── 002_add_users_orgs.sql
-│   ├── 003_add_enrichments.sql
-│   └── 004_add_materialized_view.sql      # Fast TI lookup view
-│
-├── deploy/
-│   ├── docker-compose.yml                  # [LEAD] All services (postgres, redis, api, worker, ti_sync)
-│   └── Dockerfile.*                        # [LEAD] One per service
-│
-└── scripts/
-    ├── setup_db.sh                         # [LEAD] Run migrations
-    └── seed_ti.sh                          # [TI] Initial TI feed sync
+svc-01-ingestion
+  svc-02-parser
+    svc-03-url-analysis      TI blocklist + LightGBM (29 features)
+    svc-04-header-analysis   SPF / DKIM / DMARC / routing hops
+    svc-05-attachment-analysis
+    svc-06-nlp               DistilBERT via FastAPI + ONNX Runtime
+      svc-07-aggregator      combines all scores
+        svc-08-decision      typosquatting + domain reputation
+          svc-09-notification
+            svc-10-api-dashboard
+
+svc-11-ti-sync               runs independently, 6-hour cycle
 ```
 
+---
+
+## Repository Layout
+
+```
+cybersiren/
+|
+|-- services/                        Go microservices (one directory per service)
+|   |-- svc-01-ingestion/
+|   |-- svc-02-parser/
+|   |-- svc-03-url-analysis/
+|   |   |-- cmd/url-analysis/        service entry point
+|   |   |-- internal/url/            Go feature extractor, model pool, TI checker
+|   |   |-- ml/                      LightGBM model, inference script, config, training notebook
+|   |   |   |-- data/top-1m.csv      Cisco Umbrella top-1M domain list
+|   |   |   |-- model.joblib         trained champion model (885 KB)
+|   |   |   |-- inference_script.py  Python subprocess: feature extraction + prediction
+|   |   |   `-- config.json          feature names, thresholds, lookup tables
+|   |   `-- static/                  demo web UI
+|   |-- svc-04-header-analysis/
+|   |-- svc-05-attachment-analysis/
+|   |-- svc-06-nlp/
+|   |-- svc-07-aggregator/
+|   |-- svc-08-decision/
+|   |-- svc-09-notification/
+|   |-- svc-10-api-dashboard/
+|   `-- svc-11-ti-sync/
+|
+|-- shared/                          Go packages imported by all services
+|   |-- auth/                        JWT + API key authentication
+|   |-- config/                      Koanf-based config (YAML + env vars)
+|   |-- http/                        Gin server abstraction, Resty HTTP client
+|   |-- kafka/                       Kafka producer/consumer wrappers
+|   |-- logger/                      zerolog wrapper with context enrichment
+|   |-- models/                      core data types: Email, URL, Verdict, Enrichment
+|   |-- normalization/               URL normalisation
+|   |-- observability/               OpenTelemetry tracing + Prometheus metrics
+|   |-- postgres/                    PGX connection pool, 5 repository interfaces
+|   |-- queue/                       Redis queue wrapper
+|   |-- testkit/                     test utilities
+|   `-- valkey/                      Valkey client + TI domain cache
+|
+|-- python/
+|   |-- svc-06-nlp/                  FastAPI service (DistilBERT + ONNX Runtime)
+|   `-- url-ml/                      URL model training code and experiments
+|
+|-- db/
+|   |-- migrations/                  25 SQL migration files
+|   |-- queries/                     sqlc input queries
+|   |-- seeds/                       seed data (demo TI indicators)
+|   |-- sqlc/                        generated Go database code
+|   `-- views/                       5 materialized views (TI, campaign, feed health)
+|
+|-- deploy/
+|   |-- compose/                     Docker Compose stack (demo profile)
+|   |   |-- grafana/                 auto-provisioned dashboards
+|   |   `-- prometheus/              scrape config
+|   |-- docker/                      Dockerfiles (one per service)
+|   `-- k8s/                         Kubernetes manifests
+|
+|-- docs/
+|   |-- decisions/DECISIONS.MD       architecture decision log
+|   |-- screenshots/                 demo screenshots
+|   `-- ...
+|
+`-- scripts/                         dev, CI, DB, and data utility scripts
+```
+
+---
+
+## Quick Start (Demo)
+
+Runs `svc-03-url-analysis` with Postgres, Valkey, Prometheus, Grafana, and Jaeger. No environment variables required.
+
+```bash
+docker compose -f deploy/compose/docker-compose.yml --profile demo up --build
+```
+
+Open http://localhost:8083 once the service prints `started port=8083`.
+
+| Port | Service |
+|------|---------|
+| 8083 | URL scanner (web UI + JSON API) |
+| 9092 | Prometheus |
+| 3001 | Grafana (admin / admin) |
+| 16686 | Jaeger traces |
+
+---
+
+## Development
+
+```bash
+make up                              # start infra (postgres, valkey, kafka)
+make dev svc=svc-03-url-analysis     # run one service natively
+make test-short                      # unit tests, no infra required
+make test-svc svc=svc-03-url-analysis
+make lint
+make build
+```
+
+Config loads in priority order: defaults < `config.yaml` < environment variables (`CYBERSIREN_` prefix, `__` for nesting).
+
+---
+
+## Documentation
+
+Full documentation is published at **https://xhcfs.github.io/cybersiren/**
+
+| Reference | Location |
+|-----------|----------|
+| Architecture decisions | [docs/decisions/DECISIONS.MD](docs/decisions/DECISIONS.MD) |
+| Demo walkthrough | [DEMO.md](DEMO.md) |
+| URL analysis improvements | [docs/URL_ANALYSIS_IMPROVEMENTS.md](docs/URL_ANALYSIS_IMPROVEMENTS.md) |
+| API reference | https://xhcfs.github.io/cybersiren/api |
+| Runbooks | https://xhcfs.github.io/cybersiren/runbooks |
