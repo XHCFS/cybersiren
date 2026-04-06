@@ -34,7 +34,7 @@ services:
   # Primary relational store for all services that need persistence.
   postgres:
     image: postgres:15-alpine
-    profiles: ["postgres"]
+    profiles: ["postgres", "demo"]
     container_name: cybersiren-postgres
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-cybersiren}
@@ -57,7 +57,7 @@ services:
   # Used for rate-limiting, caching TI lookups, and deduplication.
   valkey:
     image: valkey/valkey:7-alpine
-    profiles: ["valkey"]
+    profiles: ["valkey", "demo"]
     container_name: cybersiren-valkey
     ports:
       - "${VALKEY_PORT:-6379}:6379"
@@ -143,13 +143,81 @@ services:
       - cybersiren
     restart: "no"
 
+  # ── Demo seed (one-shot migrations + seed data) ──────────────────────────
+  demo-seed:
+    image: postgres:15-alpine
+    profiles: ["demo"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGHOST: postgres
+      PGPORT: "5432"
+      PGUSER: ${POSTGRES_USER:-postgres}
+      PGPASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      PGDATABASE: ${POSTGRES_DB:-cybersiren}
+    volumes:
+      - ../../db/migrations:/migrations:ro
+      - ../../db/seeds:/seeds:ro
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        echo "Running migrations..."
+        for f in /migrations/*.up.sql; do
+          echo "  Applying $$(basename $$f)..."
+          psql -f "$$f" 2>&1 || true
+        done
+        echo "Seeding feeds..."
+        psql -f /seeds/feeds.sql
+        echo "Seeding TI demo data..."
+        psql -f /seeds/ti_demo_seed.sql
+        echo "Demo seed complete."
+    networks:
+      - cybersiren
+    restart: "no"
+
+  # ── svc-03-url-analysis ───────────────────────────────────────────────────
+  svc-03-url-analysis:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.url_analysis
+    profiles: ["demo"]
+    depends_on:
+      demo-seed:
+        condition: service_completed_successfully
+      valkey:
+        condition: service_healthy
+    ports:
+      - "8083:8083"
+      - "9091:9090"
+    environment:
+      CYBERSIREN_ENV: development
+      CYBERSIREN_LOG__LEVEL: debug
+      CYBERSIREN_LOG__PRETTY: "true"
+      CYBERSIREN_SERVER__PORT: "8083"
+      CYBERSIREN_DB__HOST: postgres
+      CYBERSIREN_DB__PORT: "5432"
+      CYBERSIREN_DB__NAME: cybersiren
+      CYBERSIREN_DB__USER: ${POSTGRES_USER:-postgres}
+      CYBERSIREN_DB__PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      CYBERSIREN_DB__SSL_MODE: disable
+      CYBERSIREN_VALKEY__ADDR: valkey:6379
+      CYBERSIREN_AUTH__JWT_SECRET: demo-secret-not-for-production-use!!
+      CYBERSIREN_ML__URL_MODEL_PATH: /app/ml/inference_script.py
+      CYBERSIREN_METRICS_PORT: "9090"
+      CYBERSIREN_JAEGER_ENDPOINT: http://jaeger:4318
+    networks:
+      - cybersiren
+    restart: unless-stopped
+
   # ── Jaeger (distributed tracing) ───────────────────────────────────────────
   # All-in-one Jaeger instance for local development.
   # UI at http://localhost:16686, OTLP HTTP receiver on port 4318.
   # No persistence — traces are lost on restart.
   jaeger:
     image: jaegertracing/all-in-one:latest
-    profiles: ["observability"]
+    profiles: ["observability", "demo"]
     container_name: cybersiren-jaeger
     environment:
       COLLECTOR_OTLP_ENABLED: "true"
@@ -184,6 +252,48 @@ services:
       timeout: 5s
       retries: 10
       start_period: 30s
+    restart: unless-stopped
+
+  # ── Prometheus (metrics scraper) ──────────────────────────────────────────
+  # Scrapes /metrics from svc-03 every 10 s. UI at http://localhost:9092.
+  prometheus:
+    image: prom/prometheus:latest
+    profiles: ["demo"]
+    container_name: cybersiren-prometheus
+    ports:
+      - "9092:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    depends_on:
+      svc-03-url-analysis:
+        condition: service_started
+    networks:
+      - cybersiren
+    restart: unless-stopped
+
+  # ── Grafana (metrics dashboards) ───────────────────────────────────────────
+  # Auto-provisioned with Prometheus datasource + svc-03 dashboard.
+  # UI at http://localhost:3000. Login: admin / admin (skip password change).
+  grafana:
+    image: grafana/grafana:latest
+    profiles: ["demo"]
+    container_name: cybersiren-grafana
+    ports:
+      - "3001:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/svc-03-url-analysis.json
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      prometheus:
+        condition: service_started
+    networks:
+      - cybersiren
     restart: unless-stopped
 
   # ── Kafka UI ───────────────────────────────────────────────────────────────
