@@ -68,6 +68,27 @@ func validConfig() *Config {
 	}
 }
 
+// clearCybersirenEnv unsets CYBERSIREN_* env vars that CI may inject, so tests
+// that rely on a clean environment (e.g. YAML-wins-over-env, missing-required)
+// are not polluted by the integration job's database credentials.
+func clearCybersirenEnv(t *testing.T) {
+	t.Helper()
+	keys := []string{
+		"CYBERSIREN_DB__HOST", "CYBERSIREN_DB__PORT",
+		"CYBERSIREN_DB__NAME", "CYBERSIREN_DB__USER",
+		"CYBERSIREN_DB__PASSWORD", "CYBERSIREN_DB__SSLMODE",
+		"CYBERSIREN_AUTH__JWT_SECRET", "CYBERSIREN_CONFIG_PATH",
+	}
+	for _, k := range keys {
+		if orig, ok := os.LookupEnv(k); ok {
+			os.Unsetenv(k)
+			k := k
+			orig := orig
+			t.Cleanup(func() { os.Setenv(k, orig) })
+		}
+	}
+}
+
 // setRequiredEnv sets the minimum env vars needed for Load() to pass validation.
 func setRequiredEnv(t *testing.T) {
 	t.Helper()
@@ -390,6 +411,7 @@ func TestLoad_TopLevelEnvOverride(t *testing.T) {
 }
 
 func TestLoad_YAMLFile(t *testing.T) {
+	clearCybersirenEnv(t)
 	// Write a minimal YAML config to a temp file and verify it's loaded.
 	yamlContent := `
 env: staging
@@ -437,6 +459,7 @@ auth:
 }
 
 func TestLoad_EnvOverridesYAML(t *testing.T) {
+	clearCybersirenEnv(t)
 	yamlContent := `
 env: staging
 db:
@@ -481,6 +504,7 @@ auth:
 }
 
 func TestLoad_MissingRequiredFails(t *testing.T) {
+	clearCybersirenEnv(t)
 	t.Setenv("CYBERSIREN_CONFIG_PATH", "./nonexistent-config.yaml")
 	// Don't set any required env vars — Load should return an error.
 	_, err := Load()

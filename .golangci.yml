@@ -60,11 +60,6 @@ linters-settings:
       - "bufio"
       - "io"
 
-  misspell:
-    # Do not enforce US-only spelling — the codebase uses British English
-    # in some places (e.g., "analyse", "serialise").
-    locale: ""
-
   godot:
     scope: declarations
     capital: false
