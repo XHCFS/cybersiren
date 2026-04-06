@@ -44,9 +44,9 @@ import numpy as np
 warnings.filterwarnings("ignore", category=UserWarning, module="sklearn")
 
 # tldextract: use bundled PSL snapshot only — never try to download.
-# This avoids network failures in Docker / CI / air-gapped environments.
+# suffix_list_urls=() disables HTTP fetching.
 import tldextract as _tldextract
-_tldextract_cache = _tldextract.TLDExtract(suffix_list_urls=None)
+_tldextract_cache = _tldextract.TLDExtract(suffix_list_urls=())
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -79,6 +79,49 @@ def _load_model(model_dir: str):
     except Exception as exc:
         print(f"ERROR: failed to load model: {exc}", file=sys.stderr, flush=True)
         sys.exit(1)
+
+
+def _load_top1m_domains_from_file() -> set:
+    """Best-effort loader for top-1m exact domain matching."""
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    candidates = [
+        os.path.join(script_dir, "data", "top-1m.csv"),
+        os.path.join(script_dir, "top-1m.csv"),
+    ]
+    for path in candidates:
+        if not os.path.isfile(path):
+            continue
+        domains = set()
+        try:
+            with open(path, "r", encoding="utf-8", errors="ignore") as fh:
+                for line in fh:
+                    row = line.strip()
+                    if not row:
+                        continue
+                    parts = row.split(",", 1)
+                    dom = parts[1].strip() if len(parts) == 2 else parts[0].strip()
+                    if dom:
+                        domains.add(dom.lower())
+            if domains:
+                return domains
+        except Exception:
+            continue
+    return set()
+
+
+def _prepare_runtime_lookups(config: dict) -> None:
+    """Normalize and cache heavy lookup structures once at startup."""
+    config["_brand_domains_norm"] = [
+        str(b).lower() for b in config.get("brand_domains", []) if str(b).strip()
+    ]
+
+    top1m_raw = config.get("top1m_full_domains", [])
+    top1m_set = set()
+    if isinstance(top1m_raw, list) and top1m_raw:
+        top1m_set = {str(d).lower() for d in top1m_raw if str(d).strip()}
+    if not top1m_set:
+        top1m_set = _load_top1m_domains_from_file()
+    config["_top1m_full_domains_set"] = top1m_set
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -133,8 +176,30 @@ def char_continuation_rate(url: str) -> float:
     return (ma + md + ms) / len(url)
 
 
+def _levenshtein_distance(a: str, b: str) -> int:
+    """Compute Levenshtein distance with a small DP table."""
+    if a == b:
+        return 0
+    if not a:
+        return len(b)
+    if not b:
+        return len(a)
+    if len(a) < len(b):
+        a, b = b, a
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, start=1):
+        curr = [i]
+        for j, cb in enumerate(b, start=1):
+            ins = curr[j - 1] + 1
+            dele = prev[j] + 1
+            sub = prev[j - 1] + (0 if ca == cb else 1)
+            curr.append(min(ins, dele, sub))
+        prev = curr
+    return prev[-1]
+
+
 def extract_features(url: str, config: dict) -> list:
-    """Extract the 28 active features used by the champion LightGBM model.
+    """Extract the active feature set used by the champion model.
 
     Returns a list of floats in the exact order of config['feature_names'].
 
@@ -145,6 +210,8 @@ def extract_features(url: str, config: dict) -> list:
     char_prob_table = config["char_prob_table"]
     tld_legit_prob = config["tld_legit_prob"]
     sensitive_words = config["sensitive_words"]
+    brand_domains = config.get("_brand_domains_norm", [])
+    top1m_full_domains = config.get("_top1m_full_domains_set", set())
 
     _default_suspicious_exts = {
         ".exe", ".zip", ".rar", ".scr", ".bat", ".cmd", ".msi", ".dll",
@@ -200,6 +267,16 @@ def extract_features(url: str, config: dict) -> list:
     f["avg_subdomain_length"] = round(sum(len(p) for p in sub_parts) / max(len(sub_parts), 1), 4)
     f["tld_length"]           = len(tld)
     f["token_count"]          = len([t for t in re.split(r"[/\?\&\=\-\_\.\:\@\#\+\~\%]", url_str) if t])
+    if hostname.startswith("www."):
+        hostname_bare = hostname[4:]
+    else:
+        hostname_bare = hostname
+    if hostname_bare in top1m_full_domains:
+        f["min_brand_levenshtein"] = 0
+    elif domain and len(domain) >= 2 and brand_domains:
+        f["min_brand_levenshtein"] = min(_levenshtein_distance(domain, b) for b in brand_domains)
+    else:
+        f["min_brand_levenshtein"] = 99
 
     # Return features in the exact order the model expects.
     feature_names = config["feature_names"]
@@ -213,6 +290,7 @@ def extract_features(url: str, config: dict) -> list:
 def main() -> None:
     model_dir = _resolve_model_dir()
     config = _load_config(model_dir)
+    _prepare_runtime_lookups(config)
     model = _load_model(model_dir)
 
     feature_count = config.get("feature_count", 28)

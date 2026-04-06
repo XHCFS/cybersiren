@@ -28,9 +28,10 @@
     "has_repeated_digits",
     "avg_subdomain_length",
     "tld_length",
-    "token_count"
+    "token_count",
+    "min_brand_levenshtein"
   ],
-  "feature_count": 28,
+  "feature_count": 29,
   "needs_scaling": false,
   "production_threshold": 0.85,
   "label_encoding": {
@@ -39,8 +40,8 @@
   },
   "paper_ref": "PhiUSIIL Table 3: 99.99%, fastest training",
   "export_metrics": {
-    "accuracy": 0.99824,
-    "f1": 0.998393,
-    "mcc": 0.99645
+    "accuracy": 0.958529,
+    "f1": 0.936314,
+    "mcc": 0.907296
   }
 }
