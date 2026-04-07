@@ -13,6 +13,9 @@ import (
 
 // Feature order matches Python training column order exactly.
 // F04 (has_ip_address) and F24 (double_slash_in_path) are pruned per ML-SPEC-v1.1 §5.
+// F31 (min_brand_levenshtein) and F32 (registered_domain_top1m) are Python-only:
+// they are appended by inference_script.py at inference time and by the Kaggle
+// training notebook at training time. They are NOT returned by ExtractFeatures.
 //
 // Index → feature name:
 //
@@ -44,6 +47,8 @@ import (
 //	25  avg_subdomain_length F28
 //	26  tld_length           F29
 //	27  token_count          F30
+//	    min_brand_levenshtein F31  (Python-only)
+//	    registered_domain_top1m F32 (Python-only)
 
 // FeatureCount is the number of active features returned by ExtractFeatures.
 const FeatureCount = 28
