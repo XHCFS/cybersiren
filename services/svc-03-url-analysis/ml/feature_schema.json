@@ -1,5 +1,5 @@
 {
-  "model_name": "LightGBM",
+  "model_name": "XGBoost",
   "feature_names": [
     "url_length",
     "num_dots",
@@ -39,10 +39,10 @@
     "0": "legitimate",
     "1": "phishing"
   },
-  "paper_ref": "PhiUSIIL Table 3: 99.99%, fastest training",
+  "paper_ref": "PhiUSIIL Table 3: 99.993% \u2014 HIGHEST",
   "export_metrics": {
-    "accuracy": 0.931751,
-    "f1": 0.898583,
-    "mcc": 0.847159
+    "accuracy": 0.965806,
+    "f1": 0.968283,
+    "mcc": 0.933344
   }
 }
