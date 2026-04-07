@@ -50,7 +50,7 @@ Emails flow through 11 services in sequence:
 
 ```
 Email Input → svc-01-ingestion → svc-02-parser →
-  ├─ svc-03-url-analysis   [TI feeds + LightGBM ML]
+  ├─ svc-03-url-analysis   [TI feeds + XGBoost ML]
   ├─ svc-04-header-analysis
   ├─ svc-05-attachment-analysis
   └─ svc-06-nlp            [DistilBERT via FastAPI]
@@ -91,8 +91,8 @@ All services import from these shared packages:
 
 ### ML Model Integration
 
-**URL Model (LightGBM):** Go spawns Python subprocesses (process pool) for inference.
-- 28 features, JSON on stdin/stdout, 5-second timeout
+**URL Model (XGBoost):** Go spawns Python subprocesses (process pool) for inference.
+- 30 features, JSON on stdin/stdout, 5-second timeout
 - Process pool size configurable (default: 3)
 - Model binary: `services/svc-03-url-analysis/ml/model.joblib`
 - Inference script: `services/svc-03-url-analysis/ml/inference_script.py`
@@ -130,7 +130,7 @@ See `.env.example` for all available variables.
 
 See `DECISIONS.MD` for the full decision log. Critical decisions:
 
-- **LightGBM chosen over XGBoost** for URL model (0.99645 MCC, 1,582 μs latency, 0.8 MB size)
+- **XGBoost chosen as URL model champion** (0.933 MCC, 4,509 μs latency, 1.1 MB size) — Optuna-tuned, leakage-free training
 - **Go feature extraction must match Python within 0.001 tolerance** (verified at train time)
 - **Max 5 concurrent enrichments** to avoid WHOIS API rate limiting
 - **Default risk score 50** on ML failure — system fails gracefully, never hard-fails

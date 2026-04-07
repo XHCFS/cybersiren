@@ -1,6 +1,6 @@
 # CyberSiren
 
-A commercial-grade phishing defense platform. Ingests raw emails, runs them through a multi-stage detection pipeline combining threat intelligence feeds, a LightGBM URL classifier, and a DistilBERT NLP model, then produces a structured verdict with confidence scores.
+A commercial-grade phishing defense platform. Ingests raw emails, runs them through a multi-stage detection pipeline combining threat intelligence feeds, an XGBoost URL classifier, and a DistilBERT NLP model, then produces a structured verdict with confidence scores.
 
 **Tech stack:** Go 1.25, Python 3.12, PostgreSQL 15, Valkey, Kafka, React
 
@@ -13,7 +13,7 @@ Emails move through 11 services in sequence:
 ```
 svc-01-ingestion
   svc-02-parser
-    svc-03-url-analysis      TI blocklist + LightGBM (29 features)
+    svc-03-url-analysis      TI blocklist + XGBoost (30 features)
     svc-04-header-analysis   SPF / DKIM / DMARC / routing hops
     svc-05-attachment-analysis
     svc-06-nlp               DistilBERT via FastAPI + ONNX Runtime
@@ -38,9 +38,9 @@ cybersiren/
 |   |-- svc-03-url-analysis/
 |   |   |-- cmd/url-analysis/        service entry point
 |   |   |-- internal/url/            Go feature extractor, model pool, TI checker
-|   |   |-- ml/                      LightGBM model, inference script, config, training notebook
+|   |   |-- ml/                      XGBoost model, inference script, config, training notebook
 |   |   |   |-- data/top-1m.csv      Cisco Umbrella top-1M domain list
-|   |   |   |-- model.joblib         trained champion model (885 KB)
+|   |   |   |-- model.joblib         trained champion model (1.1 MB)
 |   |   |   |-- inference_script.py  Python subprocess: feature extraction + prediction
 |   |   |   `-- config.json          feature names, thresholds, lookup tables
 |   |   `-- static/                  demo web UI

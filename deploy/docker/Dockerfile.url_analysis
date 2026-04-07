@@ -1,6 +1,7 @@
 # ── svc-03-url-analysis ──────────────────────────────────────────────────────
 # Analyses URLs extracted from emails against TI feeds and ML models.
-# Requires Python 3 + joblib + numpy + lightgbm + scikit-learn + tldextract at runtime for the LightGBM subprocess.
+# Requires Python 3 + joblib + numpy + lightgbm + xgboost + scikit-learn + tldextract
+# at runtime for the ML model subprocess (champion may be LightGBM or XGBoost).
 
 # Stage 1: Go builder
 FROM golang:1.25-alpine AS builder
@@ -15,7 +16,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" \
 FROM alpine:3.19
 RUN apk --no-cache add ca-certificates tzdata
 RUN apk add --no-cache python3 py3-pip libgomp gcc g++ cmake make musl-dev python3-dev \
-    && pip3 install --no-cache-dir --break-system-packages joblib numpy lightgbm scikit-learn tldextract \
+    && pip3 install --no-cache-dir --break-system-packages joblib numpy lightgbm xgboost scikit-learn tldextract \
     && apk del gcc g++ cmake make musl-dev python3-dev
 
 WORKDIR /app

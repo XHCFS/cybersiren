@@ -24,23 +24,25 @@ If subprocess approach proves unreliable in production:
 
 ---
 
-## URL Model Selection: LightGBM (Champion)
+## URL Model Selection: XGBoost (Champion)
 
-**Decision:** LightGBM selected as champion model over XGBoost
+**Decision:** XGBoost selected as champion model (supersedes prior LightGBM selection)
 
-**Evidence (ML-SPEC-v1.1):**
-- Test MCC: 0.99645 (vs XGBoost 0.99542)
-- Test Accuracy: 99.824%
-- Single-inference latency: 1,582 μs (vs XGBoost 4,385 μs)
-- Model size: 0.8 MB (joblib-compressed)
-- 28 active features (F04 `has_ip_address` and F24 `double_slash_in_path` pruned — zero splits)
+**Evidence (retrained 2026-04-07, leakage-free, Optuna-tuned):**
+- Export MCC: 0.93334 (at default 0.5 threshold)
+- Test MCC: 0.85680 (at production 0.85 threshold)
+- Test Accuracy: 96.58% (default) / 92.31% (production threshold)
+- Single-inference latency: 4,509 μs
+- Model size: 1.1 MB (joblib-compressed)
+- 30 active features (F04/F24 pruned; F31 `min_brand_levenshtein` + F32 `registered_domain_top1m` added)
+- FPR: 0.054% | FNR: 13.8% | Enrichment-routed: 6.31%
+
+**Why superseded:** The prior LightGBM model (MCC 0.847 at export) was trained with data augmentation leaking into validation/test splits. After fixing leakage, moving augmentation to train-only, adding Optuna hyperparameter tuning, and class weighting, XGBoost marginally outperformed LightGBM (MCC 0.85680 vs 0.85670).
 
 **Model Artifacts:**
-- `services/svc-03-url-analysis/ml/model.joblib` — trained LightGBM classifier
-- `python/url-ml/feature_engineering.py` — Python reference implementation
-- `services/svc-03-url-analysis/internal/url/feature_extractor.go` — Go production implementation
-
-**Known Delta:** ARCH-SPEC-v2.1 Step 3a and the error handling table (§6) still reference "XGBoost". These references are superseded by ML-SPEC-v1.1 which establishes LightGBM as champion. The ARCH-SPEC will be updated in a future revision.
+- `services/svc-03-url-analysis/ml/model.joblib` — trained XGBoost classifier
+- `services/svc-03-url-analysis/ml/inference_script.py` — Python feature extraction + prediction subprocess
+- `services/svc-03-url-analysis/internal/url/feature_extractor.go` — Go production implementation (F31/F32 are Python-only)
 
 ---
 
