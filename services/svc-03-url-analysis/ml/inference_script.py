@@ -278,6 +278,12 @@ def extract_features(url: str, config: dict) -> list:
     else:
         f["min_brand_levenshtein"] = 99
 
+    # F32: registered_domain_top1m — Is the eTLD+1 in Cisco Umbrella top-1M?
+    # Catches deep-path URLs on major platforms where the full hostname isn't in
+    # top-1M (e.g. "gemini.google.com") but the registered domain IS ("google.com").
+    reg_domain = (domain + "." + tld).lower() if domain and tld else ""
+    f["registered_domain_top1m"] = 1 if (reg_domain and reg_domain in top1m_full_domains) else 0
+
     # Return features in the exact order the model expects.
     feature_names = config["feature_names"]
     return [float(f.get(name, 0)) for name in feature_names]
