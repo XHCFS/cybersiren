@@ -1,0 +1,258 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "title": "Feed Sync — Success Rate",
+      "description": "Rate of successful feed sync cycles.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "fixed", "fixedColor": "green" },
+          "custom": { "fillOpacity": 15, "lineWidth": 2 },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "rate(feed_sync_total{service=\"svc-11-ti-sync\"}[5m])",
+          "legendFormat": "syncs/s",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "title": "Feed Sync — Errors by Feed",
+      "description": "Rate of sync errors partitioned by feed name.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "fillOpacity": 20, "lineWidth": 2, "stacking": { "mode": "normal" } },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "rate(feed_sync_errors_total{service=\"svc-11-ti-sync\"}[5m])",
+          "legendFormat": "{{feed_name}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "title": "Feed Sync — Duration (p50 / p95 / p99)",
+      "description": "Histogram quantiles of end-to-end feed sync cycle duration.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "lineWidth": 2 },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, rate(feed_sync_duration_seconds_bucket{service=\"svc-11-ti-sync\"}[5m]))",
+          "legendFormat": "p50",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.95, rate(feed_sync_duration_seconds_bucket{service=\"svc-11-ti-sync\"}[5m]))",
+          "legendFormat": "p95",
+          "refId": "B"
+        },
+        {
+          "expr": "histogram_quantile(0.99, rate(feed_sync_duration_seconds_bucket{service=\"svc-11-ti-sync\"}[5m]))",
+          "legendFormat": "p99",
+          "refId": "C"
+        }
+      ]
+    },
+    {
+      "title": "DB Upsert — Duration (p50 / p95)",
+      "description": "Histogram quantiles of database upsert transaction duration.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "lineWidth": 2 },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, rate(feed_sync_db_upsert_duration_seconds_bucket{service=\"svc-11-ti-sync\"}[5m]))",
+          "legendFormat": "p50",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.95, rate(feed_sync_db_upsert_duration_seconds_bucket{service=\"svc-11-ti-sync\"}[5m]))",
+          "legendFormat": "p95",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "title": "Indicators Upserted — by Feed & Result",
+      "description": "Rate of indicator inserts, updates, and deactivations per feed.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "fillOpacity": 15, "lineWidth": 2, "stacking": { "mode": "normal" } },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "rate(feed_sync_upsert_total{service=\"svc-11-ti-sync\"}[5m])",
+          "legendFormat": "{{feed_name}} — {{result}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "title": "TI Cache — Keys Refreshed",
+      "description": "Number of keys written during the most recent cache refresh, by cache type.",
+      "type": "stat",
+      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 16 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "green", "value": 1 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "ti_cache_refresh_keys_total{service=\"svc-11-ti-sync\"}",
+          "legendFormat": "{{cache_type}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "title": "TI Cache — Refresh Duration",
+      "description": "Duration of cache refresh operations by cache type.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 16 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "lineWidth": 2 },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "rate(ti_cache_refresh_duration_seconds_sum{service=\"svc-11-ti-sync\"}[5m]) / rate(ti_cache_refresh_duration_seconds_count{service=\"svc-11-ti-sync\"}[5m])",
+          "legendFormat": "{{cache_type}} avg",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "title": "Go Runtime — Goroutines",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 24 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "fixed", "fixedColor": "blue" },
+          "custom": { "fillOpacity": 10, "lineWidth": 2 }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "go_goroutines{service=\"svc-11-ti-sync\"}",
+          "legendFormat": "goroutines",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "title": "Go Runtime — Memory (MiB)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 24 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "fillOpacity": 10, "lineWidth": 2 },
+          "unit": "decmbytes"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "go_memstats_alloc_bytes{service=\"svc-11-ti-sync\"} / 1024 / 1024",
+          "legendFormat": "alloc",
+          "refId": "A"
+        },
+        {
+          "expr": "go_memstats_sys_bytes{service=\"svc-11-ti-sync\"} / 1024 / 1024",
+          "legendFormat": "sys",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "title": "Process — Open File Descriptors",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 24 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "fixed", "fixedColor": "orange" },
+          "custom": { "fillOpacity": 10, "lineWidth": 2 }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "process_open_fds{service=\"svc-11-ti-sync\"}",
+          "legendFormat": "open fds",
+          "refId": "A"
+        }
+      ]
+    }
+  ],
+  "schemaVersion": 39,
+  "tags": ["cybersiren", "svc-11", "ti-sync"],
+  "templating": { "list": [] },
+  "time": { "from": "now-1h", "to": "now" },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "svc-11 TI Sync",
+  "uid": "cybersiren-svc11",
+  "version": 1
+}

@@ -8,14 +8,20 @@
 #   make up              — start all infra (postgres, valkey, kafka, jaeger)
 #   make up-infra        — start core infra without observability
 #   make dev svc=svc-11  — start only the infra that svc-11-ti-sync needs
+#   make demo svc=svc-03-url-analysis — full demo with monitoring stack
+#   make demo svc=svc-11-ti-sync     — full demo with monitoring stack
 #   make down            — stop all containers (preserves volumes)
 #   make down-v          — stop all and destroy volumes
 #
-# Profiles allow selective startup:
-#   postgres     — PostgreSQL 15
-#   valkey       — Valkey cache
-#   kafka        — Kafka + Zookeeper + topic init
+# Profiles:
+#   postgres      — PostgreSQL 15
+#   valkey        — Valkey cache
+#   kafka         — Kafka + Zookeeper + topic init
 #   observability — Jaeger tracing UI
+#   monitoring    — Prometheus + Grafana (metrics dashboards)
+#   svc-03        — svc-03-url-analysis container
+#   svc-11        — svc-11-ti-sync container
+#   demo          — svc-03 + monitoring + observability (backward compat)
 # =============================================================================
 
 # All env vars are sourced from deploy/compose/.env (copy .env.example first).
@@ -144,9 +150,10 @@ services:
     restart: "no"
 
   # ── Demo seed (one-shot migrations + seed data) ──────────────────────────
+  # Runs automatically when any service profile is activated.
   demo-seed:
     image: postgres:15-alpine
-    profiles: ["demo"]
+    profiles: ["demo", "svc-03", "svc-11"]
     depends_on:
       postgres:
         condition: service_healthy
@@ -182,7 +189,7 @@ services:
     build:
       context: ../..
       dockerfile: deploy/docker/Dockerfile.url_analysis
-    profiles: ["demo"]
+    profiles: ["demo", "svc-03"]
     depends_on:
       demo-seed:
         condition: service_completed_successfully
@@ -211,7 +218,45 @@ services:
       - cybersiren
     restart: unless-stopped
 
-  # ── Jaeger (distributed tracing) ───────────────────────────────────────────
+  # ── svc-11-ti-sync ──────────────────────────────────────────────────────
+  # Threat-intelligence feed synchroniser. Periodically fetches indicators
+  # from PhishTank, OpenPhish, URLhaus, ThreatFox, and MalwareBazaar,
+  # upserts them into Postgres, and refreshes the Valkey domain/hash cache.
+  svc-11-ti-sync:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.ti_sync
+    profiles: ["svc-11"]
+    depends_on:
+      demo-seed:
+        condition: service_completed_successfully
+      valkey:
+        condition: service_healthy
+    ports:
+      - "9093:9090"
+    environment:
+      CYBERSIREN_ENV: development
+      CYBERSIREN_LOG__LEVEL: debug
+      CYBERSIREN_LOG__PRETTY: "true"
+      CYBERSIREN_DB__HOST: postgres
+      CYBERSIREN_DB__PORT: "5432"
+      CYBERSIREN_DB__NAME: cybersiren
+      CYBERSIREN_DB__USER: ${POSTGRES_USER:-postgres}
+      CYBERSIREN_DB__PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      CYBERSIREN_DB__SSL_MODE: disable
+      CYBERSIREN_VALKEY__ADDR: valkey:6379
+      CYBERSIREN_AUTH__JWT_SECRET: demo-secret-not-for-production-use!!
+      CYBERSIREN_METRICS_PORT: "9090"
+      CYBERSIREN_JAEGER_ENDPOINT: http://jaeger:4318
+      CYBERSIREN_SYNC_INTERVAL_SECONDS: "3600"
+      CYBERSIREN_FEED_PHISHTANK_API_KEY: ${FEED_PHISHTANK_API_KEY:-}
+      CYBERSIREN_FEED_THREATFOX_API_KEY: ${FEED_THREATFOX_API_KEY:-}
+      CYBERSIREN_FEED_OPENPHISH_API_KEY: ${FEED_OPENPHISH_API_KEY:-}
+      CYBERSIREN_FEED_MALWAREBAZAAR_API_KEY: ${FEED_MALWAREBAZAAR_API_KEY:-}
+      CYBERSIREN_TI_HASH_CACHE_TTL_SECONDS: "7200"
+    networks:
+      - cybersiren
+    restart: unless-stopped
   # All-in-one Jaeger instance for local development.
   # UI at http://localhost:16686, OTLP HTTP receiver on port 4318.
   # No persistence — traces are lost on restart.
@@ -255,28 +300,27 @@ services:
     restart: unless-stopped
 
   # ── Prometheus (metrics scraper) ──────────────────────────────────────────
-  # Scrapes /metrics from svc-03 every 10 s. UI at http://localhost:9092.
+  # Scrapes /metrics from all CyberSiren services every 10 s.
+  # Unreachable targets are marked "down" — safe when only one service runs.
+  # UI at http://localhost:9092.
   prometheus:
     image: prom/prometheus:latest
-    profiles: ["demo"]
+    profiles: ["demo", "monitoring"]
     container_name: cybersiren-prometheus
     ports:
       - "9092:9090"
     volumes:
       - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-    depends_on:
-      svc-03-url-analysis:
-        condition: service_started
     networks:
       - cybersiren
     restart: unless-stopped
 
   # ── Grafana (metrics dashboards) ───────────────────────────────────────────
-  # Auto-provisioned with Prometheus datasource + svc-03 dashboard.
-  # UI at http://localhost:3000. Login: admin / admin (skip password change).
+  # Auto-provisioned with Prometheus datasource + per-service dashboards.
+  # UI at http://localhost:3001. Login: admin / admin (skip password change).
   grafana:
     image: grafana/grafana:latest
-    profiles: ["demo"]
+    profiles: ["demo", "monitoring"]
     container_name: cybersiren-grafana
     ports:
       - "3001:3000"
@@ -285,7 +329,6 @@ services:
       GF_SECURITY_ADMIN_PASSWORD: admin
       GF_AUTH_ANONYMOUS_ENABLED: "true"
       GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
-      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/svc-03-url-analysis.json
     volumes:
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
       - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
