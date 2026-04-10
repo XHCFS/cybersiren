@@ -297,6 +297,18 @@ demo: check-docker
 	@echo "  Jaeger:      http://localhost:16686"
 	@echo ""
 
+## demo-all: Run ALL services with full observability stack.
+demo-all: check-docker
+	$(DOCKER_COMPOSE) --profile postgres --profile valkey \
+	    --profile monitoring --profile observability \
+	    --profile svc-03 --profile svc-11 up -d --wait --build
+	@echo ""
+	@echo "  Services:    svc-03-url-analysis, svc-11-ti-sync"
+	@echo "  Grafana:     http://localhost:3001"
+	@echo "  Prometheus:  http://localhost:9092"
+	@echo "  Jaeger:      http://localhost:16686"
+	@echo ""
+
 ## jaeger: Start Jaeger standalone (use when already running infra separately)
 jaeger: check-docker
 	$(DOCKER_COMPOSE) --profile observability up -d --wait
@@ -360,7 +372,7 @@ check-docker:
         test test-svc test-shared test-short test-cover \
         vet lint lint-fix tidy \
         valkey-cli kafka-topics check-tools \
-        demo jaeger \
+        demo demo-all jaeger \
         open open-grafana open-prometheus open-jaeger open-kafka-ui open-pgadmin _open-url \
         help check-docker
 
