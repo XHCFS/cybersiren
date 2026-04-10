@@ -200,7 +200,7 @@
       ]
     },
     {
-      "title": "Go Runtime — Memory (MiB)",
+      "title": "Go Runtime — Memory",
       "type": "timeseries",
       "gridPos": { "h": 8, "w": 8, "x": 8, "y": 24 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
@@ -208,18 +208,18 @@
         "defaults": {
           "color": { "mode": "palette-classic" },
           "custom": { "fillOpacity": 10, "lineWidth": 2 },
-          "unit": "decmbytes"
+          "unit": "bytes"
         },
         "overrides": []
       },
       "targets": [
         {
-          "expr": "go_memstats_alloc_bytes{service=\"svc-11-ti-sync\"} / 1024 / 1024",
+          "expr": "go_memstats_alloc_bytes{service=\"svc-11-ti-sync\"}",
           "legendFormat": "alloc",
           "refId": "A"
         },
         {
-          "expr": "go_memstats_sys_bytes{service=\"svc-11-ti-sync\"} / 1024 / 1024",
+          "expr": "go_memstats_sys_bytes{service=\"svc-11-ti-sync\"}",
           "legendFormat": "sys",
           "refId": "B"
         }

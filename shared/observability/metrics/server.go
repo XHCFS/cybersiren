@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"time"
 
@@ -11,10 +12,22 @@ import (
 	"github.com/rs/zerolog"
 )
 
-// StartServer starts a background HTTP server that exposes /metrics (Prometheus)
-// and /healthz (liveness probe). It returns a shutdown function that gracefully
-// stops the server within 5 seconds.
-func StartServer(port int, registry *prometheus.Registry, log zerolog.Logger) func(ctx context.Context) error {
+// StartServer binds a TCP listener on the given port and starts a background
+// HTTP server that exposes /metrics (Prometheus) and /healthz (liveness probe).
+// It returns a shutdown function and an error if the port cannot be bound.
+func StartServer(port int, registry *prometheus.Registry, log zerolog.Logger) (func(ctx context.Context) error, error) {
+	ln, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
+	if err != nil {
+		return nil, fmt.Errorf("metrics listen on port %d: %w", port, err)
+	}
+
+	return StartServerOnListener(ln, registry, log), nil
+}
+
+// StartServerOnListener starts a background HTTP server on the provided listener
+// that exposes /metrics (Prometheus) and /healthz (liveness probe). It returns a
+// shutdown function that gracefully stops the server within 5 seconds.
+func StartServerOnListener(ln net.Listener, registry *prometheus.Registry, log zerolog.Logger) func(ctx context.Context) error {
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", HTTPHandler(registry))
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
@@ -23,7 +36,6 @@ func StartServer(port int, registry *prometheus.Registry, log zerolog.Logger) fu
 	})
 
 	srv := &http.Server{
-		Addr:         fmt.Sprintf(":%d", port),
 		Handler:      mux,
 		ReadTimeout:  5 * time.Second,
 		WriteTimeout: 10 * time.Second,
@@ -31,15 +43,15 @@ func StartServer(port int, registry *prometheus.Registry, log zerolog.Logger) fu
 	}
 
 	go func() {
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Error().Err(err).Int("port", port).Msg("metrics server error")
+		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Error().Err(err).Msg("metrics server error")
 		}
 	}()
 
-	log.Info().Int("port", port).Msg("metrics server started")
+	log.Info().Str("addr", ln.Addr().String()).Msg("metrics server started")
 
-	return func(_ context.Context) error {
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	return func(ctx context.Context) error {
+		shutdownCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		defer cancel()
 		return srv.Shutdown(shutdownCtx)
 	}
