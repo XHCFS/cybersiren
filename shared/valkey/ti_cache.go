@@ -22,7 +22,6 @@ import (
 const (
 	tiDomainTTLSeconds    int64 = 3600
 	tiDomainRefreshBatch        = 200
-	tiHashTTLSeconds      int64 = 3600
 	tiHashRefreshBatch          = 200
 	tiHashCacheTypeSHA256       = "sha256"
 )
@@ -39,9 +38,10 @@ type TICache interface {
 }
 
 type ValkeyTICache struct {
-	client valkeygo.Client
-	repo   repository.TIRepository
-	log    zerolog.Logger
+	client          valkeygo.Client
+	repo            repository.TIRepository
+	log             zerolog.Logger
+	hashTTLSeconds  int64
 
 	refreshKeysTotal *prometheus.GaugeVec
 	refreshDuration  *prometheus.HistogramVec
@@ -50,7 +50,7 @@ type ValkeyTICache struct {
 
 var _ TICache = (*ValkeyTICache)(nil)
 
-func NewTICache(client valkeygo.Client, repo repository.TIRepository, log zerolog.Logger, metrics *prometheus.Registry) *ValkeyTICache {
+func NewTICache(client valkeygo.Client, repo repository.TIRepository, log zerolog.Logger, metrics *prometheus.Registry, hashTTLSeconds int64) *ValkeyTICache {
 	if metrics == nil {
 		metrics = prometheus.NewRegistry()
 	}
@@ -71,10 +71,15 @@ func NewTICache(client valkeygo.Client, repo repository.TIRepository, log zerolo
 		Help: "Total blocklist lookups against the TI domain cache.",
 	}, []string{"hit"}))
 
+	if hashTTLSeconds <= 0 {
+		hashTTLSeconds = 7200
+	}
+
 	return &ValkeyTICache{
 		client:           client,
 		repo:             repo,
 		log:              log,
+		hashTTLSeconds:   hashTTLSeconds,
 		refreshKeysTotal: refreshKeysTotal,
 		refreshDuration:  refreshDuration,
 		blocklistLookups: blocklistLookups,
@@ -279,7 +284,7 @@ func (c *ValkeyTICache) RefreshHashCache(ctx context.Context) (err error) {
 				FieldValue("tags", tags).
 				FieldValue("updated_at", updatedAt).
 				Build()
-			expireCmd := c.client.B().Expire().Key(key).Seconds(tiHashTTLSeconds).Build()
+			expireCmd := c.client.B().Expire().Key(key).Seconds(c.hashTTLSeconds).Build()
 
 			cmds = append(cmds, hsetCmd, expireCmd)
 			metas = append(metas,
@@ -420,23 +425,6 @@ type cacheKeyState struct {
 	ExpireOK bool
 }
 
-func registerGauge(registry *prometheus.Registry, gauge prometheus.Gauge) prometheus.Gauge {
-	err := registry.Register(gauge)
-	if err == nil {
-		return gauge
-	}
-
-	var alreadyRegistered prometheus.AlreadyRegisteredError
-	if errors.As(err, &alreadyRegistered) {
-		existing, ok := alreadyRegistered.ExistingCollector.(prometheus.Gauge)
-		if ok {
-			return existing
-		}
-	}
-
-	return gauge
-}
-
 func registerGaugeVec(registry *prometheus.Registry, gaugeVec *prometheus.GaugeVec) *prometheus.GaugeVec {
 	err := registry.Register(gaugeVec)
 	if err == nil {
@@ -452,23 +440,6 @@ func registerGaugeVec(registry *prometheus.Registry, gaugeVec *prometheus.GaugeV
 	}
 
 	return gaugeVec
-}
-
-func registerHistogram(registry *prometheus.Registry, histogram prometheus.Histogram) prometheus.Histogram {
-	err := registry.Register(histogram)
-	if err == nil {
-		return histogram
-	}
-
-	var alreadyRegistered prometheus.AlreadyRegisteredError
-	if errors.As(err, &alreadyRegistered) {
-		existing, ok := alreadyRegistered.ExistingCollector.(prometheus.Histogram)
-		if ok {
-			return existing
-		}
-	}
-
-	return histogram
 }
 
 func registerHistogramVec(registry *prometheus.Registry, histogramVec *prometheus.HistogramVec) *prometheus.HistogramVec {

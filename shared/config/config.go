@@ -32,6 +32,7 @@ type Config struct {
 	FeedOpenPhishAPIKey     string `koanf:"feed_openphish_api_key"`
 	FeedMalwareBazaarAPIKey string `koanf:"feed_malwarebazaar_api_key"`
 	SyncIntervalSeconds     int    `koanf:"sync_interval_seconds"`
+	TIHashCacheTTLSeconds   int    `koanf:"ti_hash_cache_ttl_seconds"`
 
 	Valkey     ValkeyConfig     `koanf:"valkey"`
 	Worker     WorkerConfig     `koanf:"worker"`
@@ -232,6 +233,7 @@ func Load() (*Config, error) {
 		JaegerEndpoint:      "",
 		MetricsPort:         9090,
 		SyncIntervalSeconds: 21600,
+		TIHashCacheTTLSeconds: 7200,
 		Valkey: ValkeyConfig{
 			Addr: "localhost:6379",
 			DB:   0,
