@@ -14,6 +14,8 @@ endif
 
 DOCKER_COMPOSE := docker compose -f deploy/compose/docker-compose.yml \
                   --env-file deploy/compose/.env
+COMPOSE_ENV_FILE := deploy/compose/.env
+COMPOSE_ENV_EXAMPLE := deploy/compose/.env.example
 
 # Git SHA for image tagging — short SHA, falls back to "dev" if not in a git repo
 GIT_SHA := $(shell git rev-parse --short HEAD 2>/dev/null || echo "dev")
@@ -286,7 +288,7 @@ svc-short-profile = $(shell echo $(1) | sed 's/^\(svc-[0-9]*\).*/\1/')
 ##       Uses cached images — fast on repeat runs. Force a rebuild with: make demo-build svc=<name>
 ##       Usage: make demo svc=svc-03-url-analysis
 ##              make demo svc=svc-11-ti-sync
-demo: check-docker
+demo: check-docker check-compose-env
 	@[ "$(svc)" ] || (echo "Usage: make demo svc=<service-name>"; exit 1)
 	$(DOCKER_COMPOSE) --profile postgres --profile valkey \
 	    --profile monitoring --profile observability \
@@ -300,7 +302,7 @@ demo: check-docker
 
 ## demo-build: Like demo but force-rebuilds the service image first.
 ##             Use after code changes. Usage: make demo-build svc=svc-11-ti-sync
-demo-build: check-docker
+demo-build: check-docker check-compose-env
 	@[ "$(svc)" ] || (echo "Usage: make demo-build svc=<service-name>"; exit 1)
 	$(DOCKER_COMPOSE) --profile postgres --profile valkey \
 	    --profile monitoring --profile observability \
@@ -314,7 +316,7 @@ demo-build: check-docker
 
 ## demo-all: Run ALL services with full observability stack.
 ##           Uses cached images — fast on repeat runs. Force a rebuild with: make demo-all-build
-demo-all: check-docker
+demo-all: check-docker check-compose-env
 	$(DOCKER_COMPOSE) --profile postgres --profile valkey \
 	    --profile monitoring --profile observability \
 	    --profile svc-03 --profile svc-11 up -d --wait
@@ -327,7 +329,7 @@ demo-all: check-docker
 
 ## demo-all-build: Like demo-all but force-rebuilds all service images first.
 ##                 Use after code changes.
-demo-all-build: check-docker
+demo-all-build: check-docker check-compose-env
 	$(DOCKER_COMPOSE) --profile postgres --profile valkey \
 	    --profile monitoring --profile observability \
 	    --profile svc-03 --profile svc-11 up -d --wait --build
@@ -392,6 +394,10 @@ check-docker:
 	@docker info > /dev/null 2>&1 || \
 		(echo "Docker is not running — start Docker and retry"; exit 1)
 
+check-compose-env:
+	@test -f $(COMPOSE_ENV_FILE) || \
+		(echo "Missing $(COMPOSE_ENV_FILE). Copy $(COMPOSE_ENV_EXAMPLE) to $(COMPOSE_ENV_FILE) and retry."; exit 1)
+
 .PHONY: ci ci-integration check-tidy generate-check \
         docker-build docker-push docker-build-all \
         dev _db-setup-if-needed \
@@ -403,6 +409,6 @@ check-docker:
         valkey-cli kafka-topics check-tools \
         demo demo-build demo-all demo-all-build jaeger \
         open open-grafana open-prometheus open-jaeger open-kafka-ui open-pgadmin _open-url \
-        help check-docker
+        help check-docker check-compose-env
 
 .DEFAULT_GOAL := help

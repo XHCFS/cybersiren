@@ -17,6 +17,20 @@ import (
 	"github.com/saif/cybersiren/shared/observability/metrics"
 )
 
+const testRequestTimeout = 200 * time.Millisecond
+
+func getWithTimeout(url string, client *http.Client) (*http.Response, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), testRequestTimeout)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return client.Do(req)
+}
+
 func TestStartServer_MetricsEndpoint(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
@@ -30,10 +44,10 @@ func TestStartServer_MetricsEndpoint(t *testing.T) {
 
 	metricsURL := fmt.Sprintf("http://127.0.0.1:%d/metrics", port)
 	healthzURL := fmt.Sprintf("http://127.0.0.1:%d/healthz", port)
+	client := &http.Client{Timeout: testRequestTimeout}
 
 	require.Eventually(t, func() bool {
-		req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, healthzURL, nil)
-		resp, reqErr := http.DefaultClient.Do(req)
+		resp, reqErr := getWithTimeout(healthzURL, client)
 		if reqErr != nil {
 			return false
 		}
@@ -41,10 +55,7 @@ func TestStartServer_MetricsEndpoint(t *testing.T) {
 		return resp.StatusCode == http.StatusOK
 	}, 2*time.Second, 10*time.Millisecond, "server did not become ready")
 
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, metricsURL, nil)
-	require.NoError(t, err)
-
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := getWithTimeout(metricsURL, client)
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
@@ -67,10 +78,10 @@ func TestStartServer_HealthzEndpoint(t *testing.T) {
 	t.Cleanup(func() { _ = shutdown(context.Background()) })
 
 	healthzURL := fmt.Sprintf("http://127.0.0.1:%d/healthz", port)
+	client := &http.Client{Timeout: testRequestTimeout}
 
 	require.Eventually(t, func() bool {
-		req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, healthzURL, nil)
-		resp, reqErr := http.DefaultClient.Do(req)
+		resp, reqErr := getWithTimeout(healthzURL, client)
 		if reqErr != nil {
 			return false
 		}
@@ -78,10 +89,7 @@ func TestStartServer_HealthzEndpoint(t *testing.T) {
 		return resp.StatusCode == http.StatusOK
 	}, 2*time.Second, 10*time.Millisecond, "server did not become ready")
 
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, healthzURL, nil)
-	require.NoError(t, err)
-
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := getWithTimeout(healthzURL, client)
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
@@ -103,10 +111,10 @@ func TestStartServer_Shutdown(t *testing.T) {
 	shutdown := metrics.StartServerOnListener(ln, reg, log)
 
 	healthzURL := fmt.Sprintf("http://127.0.0.1:%d/healthz", port)
+	client := &http.Client{Timeout: testRequestTimeout}
 
 	require.Eventually(t, func() bool {
-		req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, healthzURL, nil)
-		resp, reqErr := http.DefaultClient.Do(req)
+		resp, reqErr := getWithTimeout(healthzURL, client)
 		if reqErr != nil {
 			return false
 		}
@@ -118,8 +126,10 @@ func TestStartServer_Shutdown(t *testing.T) {
 	require.NoError(t, err)
 
 	require.Eventually(t, func() bool {
-		req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, healthzURL, nil)
-		_, reqErr := http.DefaultClient.Do(req)
+		resp, reqErr := getWithTimeout(healthzURL, client)
+		if resp != nil {
+			resp.Body.Close()
+		}
 		return reqErr != nil
 	}, 2*time.Second, 10*time.Millisecond, "server did not shut down")
 }
