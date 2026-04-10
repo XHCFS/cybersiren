@@ -283,10 +283,25 @@ svc-short-profile = $(shell echo $(1) | sed 's/^\(svc-[0-9]*\).*/\1/')
 # =============================================================================
 
 ## demo: Run a service with full observability stack (Prometheus, Grafana, Jaeger).
+##       Uses cached images — fast on repeat runs. Force a rebuild with: make demo-build svc=<name>
 ##       Usage: make demo svc=svc-03-url-analysis
 ##              make demo svc=svc-11-ti-sync
 demo: check-docker
 	@[ "$(svc)" ] || (echo "Usage: make demo svc=<service-name>"; exit 1)
+	$(DOCKER_COMPOSE) --profile postgres --profile valkey \
+	    --profile monitoring --profile observability \
+	    --profile $(call svc-short-profile,$(svc)) up -d --wait
+	@echo ""
+	@echo "  Service:     $(svc)"
+	@echo "  Grafana:     http://localhost:3001"
+	@echo "  Prometheus:  http://localhost:9092"
+	@echo "  Jaeger:      http://localhost:16686"
+	@echo ""
+
+## demo-build: Like demo but force-rebuilds the service image first.
+##             Use after code changes. Usage: make demo-build svc=svc-11-ti-sync
+demo-build: check-docker
+	@[ "$(svc)" ] || (echo "Usage: make demo-build svc=<service-name>"; exit 1)
 	$(DOCKER_COMPOSE) --profile postgres --profile valkey \
 	    --profile monitoring --profile observability \
 	    --profile $(call svc-short-profile,$(svc)) up -d --wait --build
@@ -298,7 +313,21 @@ demo: check-docker
 	@echo ""
 
 ## demo-all: Run ALL services with full observability stack.
+##           Uses cached images — fast on repeat runs. Force a rebuild with: make demo-all-build
 demo-all: check-docker
+	$(DOCKER_COMPOSE) --profile postgres --profile valkey \
+	    --profile monitoring --profile observability \
+	    --profile svc-03 --profile svc-11 up -d --wait
+	@echo ""
+	@echo "  Services:    svc-03-url-analysis, svc-11-ti-sync"
+	@echo "  Grafana:     http://localhost:3001"
+	@echo "  Prometheus:  http://localhost:9092"
+	@echo "  Jaeger:      http://localhost:16686"
+	@echo ""
+
+## demo-all-build: Like demo-all but force-rebuilds all service images first.
+##                 Use after code changes.
+demo-all-build: check-docker
 	$(DOCKER_COMPOSE) --profile postgres --profile valkey \
 	    --profile monitoring --profile observability \
 	    --profile svc-03 --profile svc-11 up -d --wait --build
@@ -372,7 +401,7 @@ check-docker:
         test test-svc test-shared test-short test-cover \
         vet lint lint-fix tidy \
         valkey-cli kafka-topics check-tools \
-        demo demo-all jaeger \
+        demo demo-build demo-all demo-all-build jaeger \
         open open-grafana open-prometheus open-jaeger open-kafka-ui open-pgadmin _open-url \
         help check-docker
 
