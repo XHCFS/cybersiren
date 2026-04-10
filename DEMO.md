@@ -652,8 +652,8 @@ Open **<http://localhost:9092>** and query metrics directly.
 | Metric | Type | Description |
 |--------|------|-------------|
 | `ti_cache_blocklist_lookups_total{hit="true\|false"}` | counter | TI cache hits vs misses |
-| `ti_cache_refresh_keys_total` | gauge | Domains loaded into Valkey TI cache |
-| `ti_cache_refresh_duration_seconds` | histogram | Cache refresh latency |
+| `ti_cache_refresh_keys_total{cache_type="domain\|hash"}` | gauge | TI cache keys loaded into Valkey by cache type |
+| `ti_cache_refresh_duration_seconds{cache_type="domain\|hash"}` | histogram | TI cache refresh latency by cache type |
 | `go_goroutines` | gauge | Active goroutines |
 | `go_memstats_alloc_bytes` | gauge | Allocated heap memory |
 | `process_open_fds` | gauge | Open file descriptors |

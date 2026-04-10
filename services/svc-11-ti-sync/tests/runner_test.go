@@ -27,6 +27,7 @@ func TestRunnerSyncAll_AllFeedsSucceed(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.True(t, cache.refreshCalled)
+	assert.True(t, cache.hashRefreshCalled)
 	assert.True(t, repo.refreshMVCalled)
 	assert.Len(t, repo.upsertCalls, 2)
 	assert.ElementsMatch(t, []int64{1, 2}, repo.upsertCalls)
@@ -49,6 +50,7 @@ func TestRunnerSyncAll_OneFeedFetchFailsPartialSuccess(t *testing.T) {
 	assert.Equal(t, int64(2), repo.upsertCalls[0])
 	assert.ElementsMatch(t, []int64{1, 2}, repo.updateFetchedCalls)
 	assert.True(t, cache.refreshCalled)
+	assert.True(t, cache.hashRefreshCalled)
 	assert.True(t, repo.refreshMVCalled)
 }
 
@@ -90,6 +92,7 @@ func TestRunnerSyncAll_UpsertErrorOnOneFeedContinues(t *testing.T) {
 	assert.ElementsMatch(t, []int64{1, 2}, repo.upsertCalls)
 	assert.ElementsMatch(t, []int64{1, 2}, repo.updateFetchedCalls)
 	assert.True(t, cache.refreshCalled)
+	assert.True(t, cache.hashRefreshCalled)
 	assert.True(t, repo.refreshMVCalled)
 }
 
@@ -105,6 +108,7 @@ func TestRunnerSyncAll_CacheRefreshErrorIsBestEffort(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.True(t, cache.refreshCalled)
+	assert.True(t, cache.hashRefreshCalled)
 	assert.True(t, repo.refreshMVCalled)
 }
 
@@ -122,6 +126,7 @@ func TestRunnerSyncAll_MaterializedViewRefreshErrorReturnsError(t *testing.T) {
 	require.Error(t, err)
 	assert.ErrorIs(t, err, mvErr)
 	assert.True(t, cache.refreshCalled)
+	assert.True(t, cache.hashRefreshCalled)
 	assert.True(t, repo.refreshMVCalled)
 }
 
@@ -144,6 +149,57 @@ func TestRunnerSyncAll_UpdateLastFetchedCalledForEveryFeed(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, repo.updateFetchedCalls, 3)
 	assert.ElementsMatch(t, []int64{1, 2, 3}, repo.updateFetchedCalls)
+}
+
+func TestRunnerSyncAll_HashIndicatorsBypassTIUpsertAndRefreshHashCache(t *testing.T) {
+	repo := &mockRepo{}
+	cache := &mockCache{}
+	feeds := []ti.Feed{
+		&mockFeed{
+			name:   "threatfox",
+			feedID: 7,
+			indicators: []ti.TIIndicator{
+				testIndicator(7, "https://evil.example"),
+				testHashIndicator(7, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+			},
+		},
+	}
+
+	runner := ti.NewRunner(feeds, repo, cache, zerolog.Nop(), prometheus.NewRegistry())
+	err := runner.SyncAll(context.Background())
+
+	require.NoError(t, err)
+	require.Len(t, repo.upsertIndicatorBatches, 1)
+	require.Len(t, repo.upsertIndicatorBatches[0], 1)
+	assert.Equal(t, ti.URLIndicatorType, string(repo.upsertIndicatorBatches[0][0].IndicatorType))
+	require.Len(t, repo.malwareHashBatches, 1)
+	require.Len(t, repo.malwareHashBatches[0], 1)
+	assert.Equal(t, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", repo.malwareHashBatches[0][0].SHA256)
+	assert.True(t, cache.refreshCalled)
+	assert.True(t, cache.hashRefreshCalled)
+	assert.True(t, repo.refreshMVCalled)
+}
+
+func TestRunnerSyncAll_HashUpsertAndHashCacheErrorsAreBestEffort(t *testing.T) {
+	repo := &mockRepo{malwareHashErr: errors.New("hash upsert failed")}
+	cache := &mockCache{hashRefreshErr: errors.New("hash cache unavailable")}
+	feeds := []ti.Feed{
+		&mockFeed{
+			name:       "malwarebazaar",
+			feedID:     8,
+			indicators: []ti.TIIndicator{testHashIndicator(8, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")},
+		},
+	}
+
+	runner := ti.NewRunner(feeds, repo, cache, zerolog.Nop(), prometheus.NewRegistry())
+	err := runner.SyncAll(context.Background())
+
+	require.NoError(t, err)
+	assert.Empty(t, repo.upsertIndicatorBatches[0])
+	assert.Len(t, repo.malwareHashBatches, 1)
+	assert.True(t, cache.refreshCalled)
+	assert.True(t, cache.hashRefreshCalled)
+	assert.True(t, repo.refreshMVCalled)
 }
 
 func TestRunnerSyncAll_ContextCancellationSkipsRemainingFeeds(t *testing.T) {
@@ -212,13 +268,16 @@ func (m *mockFeed) Fetch(ctx context.Context) ([]ti.TIIndicator, error) {
 }
 
 type mockRepo struct {
-	upsertCalled       bool
-	upsertErr          error
-	upsertErrByFeed    map[int64]error
-	upsertCalls        []int64
-	updateFetchedCalls []int64
-	refreshMVCalled    bool
-	refreshMVErr       error
+	upsertCalled           bool
+	upsertErr              error
+	upsertErrByFeed        map[int64]error
+	upsertCalls            []int64
+	upsertIndicatorBatches [][]repository.TIIndicator
+	malwareHashBatches     [][]repository.MalwareHash
+	malwareHashErr         error
+	updateFetchedCalls     []int64
+	refreshMVCalled        bool
+	refreshMVErr           error
 }
 
 func (m *mockRepo) BulkUpsertIndicators(_ context.Context, indicators []repository.TIIndicator) (repository.UpsertResult, error) {
@@ -229,6 +288,7 @@ func (m *mockRepo) BulkUpsertIndicators(_ context.Context, indicators []reposito
 		feedID = indicators[0].FeedID
 	}
 	m.upsertCalls = append(m.upsertCalls, feedID)
+	m.upsertIndicatorBatches = append(m.upsertIndicatorBatches, append([]repository.TIIndicator(nil), indicators...))
 
 	if m.upsertErrByFeed != nil {
 		if upsertErr, ok := m.upsertErrByFeed[feedID]; ok && upsertErr != nil {
@@ -251,8 +311,12 @@ func (m *mockRepo) ListActiveDomainIndicators(_ context.Context) ([]repository.D
 	return nil, nil
 }
 
-func (m *mockRepo) BulkUpsertMalwareHashes(_ context.Context, _ []repository.MalwareHash) (repository.UpsertResult, error) {
-	return repository.UpsertResult{}, nil
+func (m *mockRepo) BulkUpsertMalwareHashes(_ context.Context, hashes []repository.MalwareHash) (repository.UpsertResult, error) {
+	m.malwareHashBatches = append(m.malwareHashBatches, append([]repository.MalwareHash(nil), hashes...))
+	if m.malwareHashErr != nil {
+		return repository.UpsertResult{}, m.malwareHashErr
+	}
+	return repository.UpsertResult{Inserted: len(hashes)}, nil
 }
 
 func (m *mockRepo) ListMaliciousHashes(_ context.Context) ([]repository.MaliciousHash, error) {
@@ -295,5 +359,18 @@ func testIndicator(feedID int64, indicatorValue string) ti.TIIndicator {
 		RiskScore:      80,
 		Confidence:     0.9,
 		SourceID:       "source",
+	}
+}
+
+func testHashIndicator(feedID int64, sha256 string) ti.TIIndicator {
+	return ti.TIIndicator{
+		FeedID:         feedID,
+		IndicatorType:  ti.HashIndicatorType,
+		IndicatorValue: sha256,
+		ThreatType:     "malware",
+		ThreatTags:     []string{"test"},
+		RiskScore:      90,
+		Confidence:     0.95,
+		SourceID:       sha256,
 	}
 }

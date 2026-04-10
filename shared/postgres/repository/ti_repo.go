@@ -80,6 +80,7 @@ type MaliciousHash struct {
 	SHA256     string
 	RiskScore  int
 	ThreatTags []string
+	UpdatedAt  time.Time
 }
 
 // PostgresTIRepository is the concrete pgx-backed implementation.
@@ -419,11 +420,17 @@ func (r *PostgresTIRepository) ListMaliciousHashes(ctx context.Context) (items [
 			tags = []string{}
 		}
 
+		updatedAt := time.Time{}
+		if row.UpdatedAt.Valid {
+			updatedAt = row.UpdatedAt.Time.UTC()
+		}
+
 		items = append(items, MaliciousHash{
 			ID:         row.ID,
 			SHA256:     row.Sha256,
 			RiskScore:  riskScore,
 			ThreatTags: tags,
+			UpdatedAt:  updatedAt,
 		})
 	}
 

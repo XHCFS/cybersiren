@@ -215,4 +215,8 @@ func warnFeedConfiguration(log zerolog.Logger, cfg *config.Config, enabledFeeds 
 	if _, ok := enabledByName["threatfox"]; ok && strings.TrimSpace(cfg.FeedThreatFoxAPIKey) == "" {
 		log.Warn().Msg("threatfox is enabled in db but no API key is configured; upstream may return 401")
 	}
+
+	if _, ok := enabledByName["malwarebazaar"]; ok && strings.TrimSpace(cfg.FeedMalwareBazaarAPIKey) == "" {
+		log.Warn().Msg("malwarebazaar is enabled in db but no API key is configured; feed may be skipped")
+	}
 }

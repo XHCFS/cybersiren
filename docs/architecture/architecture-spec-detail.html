@@ -717,7 +717,7 @@
   <tr><td><code>dedup:{org_id}:{message_id}</code></td><td>STRING (1)</td><td>7 days</td><td>SVC-01</td><td>SVC-01</td><td>Email ingestion deduplication. Value: "1". Existence check only.</td></tr>
   <tr><td><code>url_score:{sha256(url)}</code></td><td>HASH</td><td>6 hours</td><td>SVC-03</td><td>SVC-03</td><td>URL score cache. Fields: score, ti_matched, domain, cached_at. Avoids re-enrichment.</td></tr>
   <tr><td><code>ti_domain:{domain}</code></td><td>HASH</td><td>1 hour</td><td>SVC-11</td><td>SVC-03, SVC-04</td><td>TI domain cache. Fields: ti_indicator_id, risk_score, threat_type. Sourced from <code>ti_indicators</code>. Avoids DB query per URL.</td></tr>
-  <tr><td><code>ti_hash:{sha256}</code></td><td>HASH</td><td>1 hour</td><td>SVC-11</td><td>SVC-05</td><td>TI attachment hash cache. Fields: is_malicious, risk_score, source.</td></tr>
+  <tr><td><code>ti_hash:{sha256}</code></td><td>HASH</td><td>1 hour</td><td>SVC-11</td><td>SVC-05</td><td>TI attachment hash cache. Fields: type, risk_score, tags, updated_at.</td></tr>
   <tr><td><code>aggregator:{email_id}</code></td><td>HASH</td><td>120 seconds</td><td>SVC-07</td><td>SVC-07</td><td>Score aggregation state. Fields: expected (JSON), received (JSON), created_at.</td></tr>
   <tr><td><code>simhash:{org_id}:{campaign_id}</code></td><td>STRING</td><td>30 days</td><td>SVC-08</td><td>SVC-08</td><td>64-bit SimHash for campaign near-duplicate detection. Per-org scoped to prevent cross-tenant matching.</td></tr>
   <tr><td><code>notif:{org_id}:{campaign_id}</code></td><td>STRING (counter)</td><td>3600 seconds</td><td>SVC-09</td><td>SVC-09</td><td>Notification rate limiter. INCR on each alert. Block if &gt; 1.</td></tr>

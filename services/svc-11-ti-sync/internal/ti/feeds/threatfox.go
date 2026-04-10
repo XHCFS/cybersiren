@@ -160,12 +160,20 @@ func (f *ThreatFoxFeed) Fetch(ctx context.Context) (indicators []ti.TIIndicator,
 			}
 			indicatorValue = ip.String()
 
-		case strings.Contains(iocType, "hash"):
+		case iocType == "sha256_hash":
 			indicatorType = ti.HashIndicatorType
 			indicatorValue = strings.ToLower(strings.TrimSpace(entry.IOC))
 			if indicatorValue == "" {
 				continue
 			}
+
+		case strings.HasSuffix(iocType, "_hash"):
+			f.log.Warn().
+				Str("source_id", ti.RawJSONToString(entry.ID)).
+				Str("ioc_type", entry.IOCType).
+				Str("raw_ioc", entry.IOC).
+				Msg("skipping unsupported ThreatFox hash IOC type")
+			continue
 
 		default:
 			f.log.Warn().Str("ioc_type", entry.IOCType).Msg("skipping unknown ThreatFox IOC type")
