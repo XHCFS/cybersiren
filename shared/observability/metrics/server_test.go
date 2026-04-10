@@ -17,26 +17,34 @@ import (
 	"github.com/saif/cybersiren/shared/observability/metrics"
 )
 
-func freePort(t *testing.T) int {
-	t.Helper()
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err)
-	port := l.Addr().(*net.TCPAddr).Port
-	require.NoError(t, l.Close())
-	return port
-}
-
 func TestStartServer_MetricsEndpoint(t *testing.T) {
-	port := freePort(t)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+
+	port := ln.Addr().(*net.TCPAddr).Port
 	reg := metrics.Init("test-service")
 	log := zerolog.Nop()
 
-	shutdown := metrics.StartServer(port, reg, log)
+	shutdown := metrics.StartServerOnListener(ln, reg, log)
 	t.Cleanup(func() { _ = shutdown(context.Background()) })
 
-	time.Sleep(50 * time.Millisecond)
+	metricsURL := fmt.Sprintf("http://127.0.0.1:%d/metrics", port)
+	healthzURL := fmt.Sprintf("http://127.0.0.1:%d/healthz", port)
 
-	resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/metrics", port))
+	require.Eventually(t, func() bool {
+		req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, healthzURL, nil)
+		resp, reqErr := http.DefaultClient.Do(req)
+		if reqErr != nil {
+			return false
+		}
+		resp.Body.Close()
+		return resp.StatusCode == http.StatusOK
+	}, 2*time.Second, 10*time.Millisecond, "server did not become ready")
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, metricsURL, nil)
+	require.NoError(t, err)
+
+	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
@@ -48,16 +56,32 @@ func TestStartServer_MetricsEndpoint(t *testing.T) {
 }
 
 func TestStartServer_HealthzEndpoint(t *testing.T) {
-	port := freePort(t)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+
+	port := ln.Addr().(*net.TCPAddr).Port
 	reg := prometheus.NewRegistry()
 	log := zerolog.Nop()
 
-	shutdown := metrics.StartServer(port, reg, log)
+	shutdown := metrics.StartServerOnListener(ln, reg, log)
 	t.Cleanup(func() { _ = shutdown(context.Background()) })
 
-	time.Sleep(50 * time.Millisecond)
+	healthzURL := fmt.Sprintf("http://127.0.0.1:%d/healthz", port)
 
-	resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/healthz", port))
+	require.Eventually(t, func() bool {
+		req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, healthzURL, nil)
+		resp, reqErr := http.DefaultClient.Do(req)
+		if reqErr != nil {
+			return false
+		}
+		resp.Body.Close()
+		return resp.StatusCode == http.StatusOK
+	}, 2*time.Second, 10*time.Millisecond, "server did not become ready")
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, healthzURL, nil)
+	require.NoError(t, err)
+
+	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
@@ -69,19 +93,33 @@ func TestStartServer_HealthzEndpoint(t *testing.T) {
 }
 
 func TestStartServer_Shutdown(t *testing.T) {
-	port := freePort(t)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+
+	port := ln.Addr().(*net.TCPAddr).Port
 	reg := prometheus.NewRegistry()
 	log := zerolog.Nop()
 
-	shutdown := metrics.StartServer(port, reg, log)
+	shutdown := metrics.StartServerOnListener(ln, reg, log)
 
-	time.Sleep(50 * time.Millisecond)
+	healthzURL := fmt.Sprintf("http://127.0.0.1:%d/healthz", port)
 
-	err := shutdown(context.Background())
+	require.Eventually(t, func() bool {
+		req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, healthzURL, nil)
+		resp, reqErr := http.DefaultClient.Do(req)
+		if reqErr != nil {
+			return false
+		}
+		resp.Body.Close()
+		return resp.StatusCode == http.StatusOK
+	}, 2*time.Second, 10*time.Millisecond, "server did not become ready")
+
+	err = shutdown(context.Background())
 	require.NoError(t, err)
 
-	time.Sleep(50 * time.Millisecond)
-
-	_, err = http.Get(fmt.Sprintf("http://127.0.0.1:%d/healthz", port))
-	assert.Error(t, err, "server should be stopped after shutdown")
+	require.Eventually(t, func() bool {
+		req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, healthzURL, nil)
+		_, reqErr := http.DefaultClient.Do(req)
+		return reqErr != nil
+	}, 2*time.Second, 10*time.Millisecond, "server did not shut down")
 }
