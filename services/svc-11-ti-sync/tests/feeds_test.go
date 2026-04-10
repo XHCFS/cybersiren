@@ -473,9 +473,15 @@ func TestMalwareBazaarFeed_Fetch(t *testing.T) {
 			expectCount: 0,
 		},
 		{
+			name:        "no_results returns empty success",
+			statusCode:  http.StatusOK,
+			body:        `{"query_status":"no_results","data":[]}`,
+			expectCount: 0,
+		},
+		{
 			name:       "query status error",
 			statusCode: http.StatusOK,
-			body:       `{"query_status":"no_results","data":[]}`,
+			body:       `{"query_status":"illegal_search_value","data":[]}`,
 			expectErr:  true,
 			errIs:      ti.ErrMalwareBazaarAPIError,
 		},
@@ -490,6 +496,18 @@ func TestMalwareBazaarFeed_Fetch(t *testing.T) {
 			statusCode: http.StatusOK,
 			body:       `{`,
 			expectErr:  true,
+		},
+		{
+			name:        "invalid sha256 hash is skipped",
+			statusCode:  http.StatusOK,
+			body:        `{"query_status":"ok","data":[{"sha256_hash":"not-a-valid-hash","md5_hash":"","sha1_hash":"","file_type":"exe","signature":"test","tags":[],"reporter":"someone"}]}`,
+			expectCount: 0,
+		},
+		{
+			name:        "non-hex sha256 hash is skipped",
+			statusCode:  http.StatusOK,
+			body:        `{"query_status":"ok","data":[{"sha256_hash":"zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz","md5_hash":"","sha1_hash":"","file_type":"exe","signature":"test","tags":[],"reporter":"someone"}]}`,
+			expectCount: 0,
 		},
 	}
 
@@ -510,7 +528,8 @@ func TestMalwareBazaarFeed_Fetch(t *testing.T) {
 			}))
 			defer server.Close()
 
-			feed := tifeeds.NewMalwareBazaarFeed(14, nil, client, zerolog.Nop())
+			feed, feedErr := tifeeds.NewMalwareBazaarFeed(14, &config.Config{FeedMalwareBazaarAPIKey: "test-key"}, client, zerolog.Nop())
+			require.NoError(t, feedErr)
 			feed.URL = server.URL
 
 			indicators, err := feed.Fetch(context.Background())
@@ -527,6 +546,89 @@ func TestMalwareBazaarFeed_Fetch(t *testing.T) {
 				return
 			}
 
+			require.NoError(t, err)
+			assert.Len(t, indicators, tc.expectCount)
+			if tc.checkResponse != nil {
+				tc.checkResponse(t, indicators)
+			}
+		})
+	}
+}
+
+func TestMalwareBazaarFeed_APIKeyMissing(t *testing.T) {
+	client := newTestHTTPClient()
+	_, err := tifeeds.NewMalwareBazaarFeed(1, &config.Config{}, client, zerolog.Nop())
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ti.ErrMalwareBazaarKeyMissing)
+}
+
+func TestMalwareBazaarFeed_NilConfigKeyMissing(t *testing.T) {
+	client := newTestHTTPClient()
+	_, err := tifeeds.NewMalwareBazaarFeed(1, nil, client, zerolog.Nop())
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ti.ErrMalwareBazaarKeyMissing)
+}
+
+func TestThreatFoxFeed_IPv6EdgeCases(t *testing.T) {
+	type testCase struct {
+		name          string
+		body          string
+		expectCount   int
+		checkResponse func(t *testing.T, indicators []ti.TIIndicator)
+	}
+
+	testCases := []testCase{
+		{
+			name: "bracketed IPv6 with port",
+			body: `{"query_status":"ok","data":[
+				{"id":"20","ioc_type":"ip:port","ioc":"[2001:db8::1]:443","threat_type":"c2","tags":["bot"],"confidence_level":80}
+			]}`,
+			expectCount: 1,
+			checkResponse: func(t *testing.T, indicators []ti.TIIndicator) {
+				assert.Equal(t, "ip", indicators[0].IndicatorType)
+				assert.Equal(t, "2001:db8::1", indicators[0].IndicatorValue)
+			},
+		},
+		{
+			name: "bare IPv6 without port",
+			body: `{"query_status":"ok","data":[
+				{"id":"21","ioc_type":"ip:port","ioc":"2001:db8::1","threat_type":"c2","tags":["bot"],"confidence_level":80}
+			]}`,
+			expectCount: 1,
+			checkResponse: func(t *testing.T, indicators []ti.TIIndicator) {
+				assert.Equal(t, "ip", indicators[0].IndicatorType)
+				assert.Equal(t, "2001:db8::1", indicators[0].IndicatorValue)
+			},
+		},
+		{
+			name: "invalid IP is skipped",
+			body: `{"query_status":"ok","data":[
+				{"id":"22","ioc_type":"ip:port","ioc":"not.an.ip","threat_type":"c2","tags":[],"confidence_level":50}
+			]}`,
+			expectCount: 0,
+		},
+		{
+			name: "invalid sha256 hash is skipped",
+			body: `{"query_status":"ok","data":[
+				{"id":"23","ioc_type":"sha256_hash","ioc":"tooshort","threat_type":"malware","tags":["trojan"],"confidence_level":90}
+			]}`,
+			expectCount: 0,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			client := newTestHTTPClient()
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer server.Close()
+
+			feed := tifeeds.NewThreatFoxFeed(13, &config.Config{}, client, zerolog.Nop())
+			feed.URL = server.URL
+
+			indicators, err := feed.Fetch(context.Background())
 			require.NoError(t, err)
 			assert.Len(t, indicators, tc.expectCount)
 			if tc.checkResponse != nil {

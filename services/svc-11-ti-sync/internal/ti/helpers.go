@@ -181,3 +181,16 @@ func ClampInt(value, minValue, maxValue int) int {
 	}
 	return value
 }
+
+// IsValidSHA256 reports whether s is a valid lowercase hex-encoded SHA-256 hash.
+func IsValidSHA256(s string) bool {
+	if len(s) != 64 {
+		return false
+	}
+	for _, c := range s {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+			return false
+		}
+	}
+	return true
+}
