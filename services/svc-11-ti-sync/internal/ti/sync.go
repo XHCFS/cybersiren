@@ -179,11 +179,41 @@ func (r *Runner) SyncAll(ctx context.Context) (err error) {
 				r.log.Error().Err(malwareErr).Str("feed", feedName).Msg("malware hash upsert failed")
 				feedSpan.RecordError(malwareErr)
 				feedSpan.SetStatus(codes.Error, malwareErr.Error())
+
+				// Hash-only feeds (e.g. MalwareBazaar) have no non-hash indicators,
+				// so a hash upsert failure means zero data was persisted — treat as fatal.
+				if len(nonHashIndicators) == 0 {
+					if r.syncErrors != nil {
+						r.syncErrors.WithLabelValues(feedName).Inc()
+					}
+
+					r.updateFeedLastFetched(feedCtx, feedName, feedID, feedSpan)
+					feedSpan.End()
+					continue
+				}
 			} else {
 				r.log.Info().
 					Str("feed", feedName).
 					Int("malware_hashes", malwareResult.Inserted).
 					Msg("malware hash upsert completed")
+			}
+		}
+
+		// When a feed returns only hash indicators, BulkUpsertIndicators
+		// receives an empty slice and returns early without deactivating
+		// stale rows. Deactivate after successful hash upsert so we never
+		// remove coverage before replacement data is persisted.
+		if len(nonHashIndicators) == 0 && feedID > 0 {
+			deactivated, deactivateErr := r.repo.DeactivateStaleIndicators(feedCtx, feedID)
+			if deactivateErr != nil {
+				r.log.Error().Err(deactivateErr).Str("feed", feedName).Msg("explicit stale indicator deactivation failed")
+				feedSpan.RecordError(deactivateErr)
+				feedSpan.SetStatus(codes.Error, deactivateErr.Error())
+			} else if deactivated > 0 {
+				r.log.Info().
+					Str("feed", feedName).
+					Int("deactivated", deactivated).
+					Msg("explicitly deactivated stale indicators for hash-only feed")
 			}
 		}
 

@@ -451,6 +451,12 @@ func TestMalwareBazaarFeed_Fetch(t *testing.T) {
 				assert.Contains(t, ind.ThreatTags, "stealer")
 				assert.Contains(t, ind.ThreatTags, "rat")
 				assert.Contains(t, ind.ThreatTags, "exe")
+				// Verify no duplicate tags (file_type should not appear twice).
+				seen := make(map[string]bool, len(ind.ThreatTags))
+				for _, tag := range ind.ThreatTags {
+					assert.False(t, seen[tag], "duplicate tag: %s", tag)
+					seen[tag] = true
+				}
 				assert.Equal(t, sha256Valid, ind.SourceID)
 				assert.NotEmpty(t, ind.RawMetadata)
 			},

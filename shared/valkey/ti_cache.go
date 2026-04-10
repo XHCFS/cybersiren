@@ -38,10 +38,10 @@ type TICache interface {
 }
 
 type ValkeyTICache struct {
-	client          valkeygo.Client
-	repo            repository.TIRepository
-	log             zerolog.Logger
-	hashTTLSeconds  int64
+	client         valkeygo.Client
+	repo           repository.TIRepository
+	log            zerolog.Logger
+	hashTTLSeconds int64
 
 	refreshKeysTotal *prometheus.GaugeVec
 	refreshDuration  *prometheus.HistogramVec
@@ -50,7 +50,13 @@ type ValkeyTICache struct {
 
 var _ TICache = (*ValkeyTICache)(nil)
 
-func NewTICache(client valkeygo.Client, repo repository.TIRepository, log zerolog.Logger, metrics *prometheus.Registry, hashTTLSeconds int64) *ValkeyTICache {
+func NewTICache(
+	client valkeygo.Client,
+	repo repository.TIRepository,
+	log zerolog.Logger,
+	metrics *prometheus.Registry,
+	hashTTLSeconds int64,
+) *ValkeyTICache {
 	if metrics == nil {
 		metrics = prometheus.NewRegistry()
 	}
