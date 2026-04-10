@@ -97,9 +97,10 @@ cybersiren/
 
 ## Quick Start (Demo)
 
-Runs any service with Postgres, Valkey, Prometheus, Grafana, and Jaeger. No environment variables required.
+Runs any service with Postgres, Valkey, Prometheus, Grafana, and Jaeger.
 
 ```bash
+cp deploy/compose/.env.example deploy/compose/.env  # one-time Docker Compose setup
 make demo svc=svc-03-url-analysis   # URL scanner with full observability
 make demo svc=svc-11-ti-sync        # threat-intel sync with full observability
 make demo-all                       # ALL services at once
