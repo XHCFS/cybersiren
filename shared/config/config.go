@@ -230,9 +230,9 @@ func Load() (*Config, error) {
 			Level:  "info",
 			Pretty: false,
 		},
-		JaegerEndpoint:      "",
-		MetricsPort:         9090,
-		SyncIntervalSeconds: 21600,
+		JaegerEndpoint:        "",
+		MetricsPort:           9090,
+		SyncIntervalSeconds:   3600,
 		TIHashCacheTTLSeconds: 7200,
 		Valkey: ValkeyConfig{
 			Addr: "localhost:6379",
@@ -457,6 +457,19 @@ func (c *Config) Validate() error {
 	}
 	if !validSSLModes[c.DB.SSLMode] {
 		return fmt.Errorf("db.ssl_mode must be one of: disable, allow, prefer, require, verify-ca, verify-full, got %q", c.DB.SSLMode)
+	}
+
+	if c.SyncIntervalSeconds <= 30 {
+		return fmt.Errorf("sync_interval_seconds must be greater than 30, got %d", c.SyncIntervalSeconds)
+	}
+	if c.TIHashCacheTTLSeconds <= 0 {
+		return fmt.Errorf("ti_hash_cache_ttl_seconds must be greater than 0, got %d", c.TIHashCacheTTLSeconds)
+	}
+	if c.TIHashCacheTTLSeconds < c.SyncIntervalSeconds {
+		return fmt.Errorf(
+			"ti_hash_cache_ttl_seconds (%d) should be >= sync_interval_seconds (%d) to avoid cache expiry between syncs",
+			c.TIHashCacheTTLSeconds, c.SyncIntervalSeconds,
+		)
 	}
 
 	return nil

@@ -2,6 +2,7 @@ package ti
 
 import (
 	"errors"
+	"strings"
 	"time"
 
 	"go.opentelemetry.io/otel/trace"
@@ -29,4 +30,21 @@ var feedTracer = tracing.Tracer("services/svc-11-ti-sync/internal/ti/feeds")
 
 func Tracer() trace.Tracer {
 	return feedTracer
+}
+
+// DeduplicateTags returns a copy of tags with duplicates removed.
+// Comparison is case-insensitive, but the original casing of the first
+// occurrence is preserved.
+func DeduplicateTags(tags []string) []string {
+	seen := make(map[string]struct{}, len(tags))
+	out := make([]string, 0, len(tags))
+	for _, t := range tags {
+		key := strings.ToLower(t)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, t)
+	}
+	return out
 }

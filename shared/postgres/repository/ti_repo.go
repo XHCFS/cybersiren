@@ -29,6 +29,7 @@ var tiRepoTracer = tracing.Tracer("shared/postgres/repository/ti_repo")
 type TIRepository interface {
 	BulkUpsertIndicators(ctx context.Context, indicators []TIIndicator) (UpsertResult, error)
 	BulkUpsertMalwareHashes(ctx context.Context, hashes []MalwareHash) (UpsertResult, error)
+	DeactivateStaleIndicators(ctx context.Context, feedID int64) (int, error)
 	UpdateFeedLastFetched(ctx context.Context, feedID int64) error
 	ListActiveDomainIndicators(ctx context.Context) ([]DomainIndicator, error)
 	ListMaliciousHashes(ctx context.Context) ([]MaliciousHash, error)
@@ -233,6 +234,40 @@ func (r *PostgresTIRepository) BulkUpsertIndicators(ctx context.Context, indicat
 	)
 
 	return result, nil
+}
+
+// DeactivateStaleIndicators marks indicators for the given feed as inactive
+// when their last_seen timestamp is older than the current sync run.
+func (r *PostgresTIRepository) DeactivateStaleIndicators(ctx context.Context, feedID int64) (deactivated int, err error) {
+	ctx, span := tiRepoTracer.Start(ctx, "ti_repo.DeactivateStaleIndicators")
+	defer func() {
+		span.SetAttributes(
+			attribute.Int64("feed_id", feedID),
+			attribute.Int("deactivated", deactivated),
+		)
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+		}
+		span.End()
+	}()
+
+	if err = r.ensureReady(); err != nil {
+		return 0, err
+	}
+
+	count, deactivateErr := r.q.DeactivateStaleFeedIndicators(ctx, db.DeactivateStaleFeedIndicatorsParams{
+		FeedID: feedID,
+		LastSeen: pgtype.Timestamptz{
+			Time:  time.Now().UTC(),
+			Valid: true,
+		},
+	})
+	if deactivateErr != nil {
+		return 0, fmt.Errorf("deactivate stale indicators for feed %d: %w", feedID, deactivateErr)
+	}
+
+	return int(count), nil
 }
 
 func (r *PostgresTIRepository) UpdateFeedLastFetched(ctx context.Context, feedID int64) (err error) {
