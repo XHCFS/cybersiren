@@ -4,34 +4,36 @@ package url
 // CyberSiren svc-03 — URL feature extractor & model pool tests
 //
 // Test groups:
-//   Unit (no external deps):
-//     TestShannonEntropy           – entropy function
-//     TestCharContinuationRate     – continuation-rate function
-//     TestHasRepeatedDigits        – repeated-digit detector
-//     TestSplitTLDParts            – TLD splitter for known ccSLDs
-//     TestExtractFeatures_Always28 – always returns 28 features
-//     TestExtractFeatures_Edge     – empty / schemeless / malformed URLs
-//     TestExtractFeatures_F01_F10  – Tier-1 features, exact values
-//     TestExtractFeatures_F11_F20  – Tier-2 features, exact values
-//     TestExtractFeatures_F21_F30  – Tier-3 features, exact values
-//     TestExtractFeatures_Dataset  – parity against cybersiren_lowlatency_dataset.csv
 //
-//   Integration (require ml/model.joblib + ml/inference_script.py):
-//     TestURLModel_LoadAndPredict    – basic smoke test
-//     TestURLModel_ScoreBounds       – score is always 0–100
-//     TestURLModel_KnownPhishing     – high-confidence phishing URL scores ≥ 70
-//     TestURLModel_KnownLegit        – high-confidence legit URL scores ≤ 30
-//     TestURLModel_ConcurrentPredict – race-free pool under goroutine load
-//     TestURLModel_CloseIdempotent   – double Close() does not panic
-//     TestURLModel_PredictAfterClose – returns neutral, does not block
-//     TestURLModel_EndToEnd          – ExtractFeatures → Predict pipeline
+//	Unit (no external deps):
+//	  TestShannonEntropy           – entropy function
+//	  TestCharContinuationRate     – continuation-rate function
+//	  TestHasRepeatedDigits        – repeated-digit detector
+//	  TestSplitTLDParts            – TLD splitter for known ccSLDs
+//	  TestExtractFeatures_Always28 – always returns 28 features
+//	  TestExtractFeatures_Edge     – empty / schemeless / malformed URLs
+//	  TestExtractFeatures_F01_F10  – Tier-1 features, exact values
+//	  TestExtractFeatures_F11_F20  – Tier-2 features, exact values
+//	  TestExtractFeatures_F21_F30  – Tier-3 features, exact values
+//	  TestExtractFeatures_Dataset  – parity against cybersiren_lowlatency_dataset.csv
 //
-//   Mock-script (require python3 only, no model):
-//     TestURLModel_TimeoutReturnsNeutral    – short deadline → neutral score
-//     TestURLModel_WorkerCrashReplacesPool  – crash triggers pool replacement
-//     TestURLModel_ConcurrentCloseAndPredict – Close during Predict returns promptly
-//     TestURLModel_ErrorResponseReturnsNeutral – resp.Error → neutral + logged
-//     TestURLModel_SpawnFailsOnBadScript    – bad script → NewURLModel error
+//	Integration (require ml/model.joblib + ml/inference_script.py):
+//	  TestURLModel_LoadAndPredict               – basic smoke test
+//	  TestURLModel_ScoreBounds                  – score is always 0–100
+//	  TestURLModel_KnownPhishing                – high-confidence phishing URL scores ≥ 70
+//	  TestURLModel_KnownLegit                   – high-confidence legit URL scores ≤ 30
+//	  TestURLModel_DeepPathRegisteredDomainLegit – F32 regression: deep-path top-1M URLs score ≤ 30
+//	  TestURLModel_ConcurrentPredict            – race-free pool under goroutine load
+//	  TestURLModel_CloseIdempotent              – double Close() does not panic
+//	  TestURLModel_PredictAfterClose            – returns neutral, does not block
+//	  TestURLModel_EndToEnd                     – ExtractFeatures → Predict pipeline
+//
+//	Mock-script (require python3 only, no model):
+//	  TestURLModel_TimeoutReturnsNeutral         – short deadline → neutral score
+//	  TestURLModel_WorkerCrashReplacesPool       – crash triggers pool replacement
+//	  TestURLModel_ConcurrentCloseAndPredict     – Close during Predict returns promptly
+//	  TestURLModel_ErrorResponseReturnsNeutral   – resp.Error → neutral + logged
+//	  TestURLModel_SpawnFailsOnBadScript         – bad script → NewURLModel error
 // ══════════════════════════════════════════════════════════════════════════════
 
 import (
@@ -94,8 +96,8 @@ func skipIfNoModel(t *testing.T) {
 	if _, err := os.Stat(modelPath()); os.IsNotExist(err) {
 		t.Skip("ml/model.joblib not present — add the trained model to run integration tests")
 	}
-	if err := exec.Command("python3", "-c", "import joblib, numpy, lightgbm").Run(); err != nil {
-		t.Skip("Python dependencies (joblib, numpy, lightgbm) not available — pip install joblib numpy lightgbm to run integration tests")
+	if err := exec.Command("python3", "-c", "import joblib, numpy, xgboost").Run(); err != nil {
+		t.Skip("Python dependencies (joblib, numpy, xgboost) not available — pip install joblib numpy xgboost to run integration tests")
 	}
 }
 
@@ -713,6 +715,47 @@ func TestURLModel_KnownLegit(t *testing.T) {
 		}
 		if score > 30 {
 			t.Errorf("known legitimate URL (%s) %q scored %d, expected ≤ 30", tc.desc, tc.url, score)
+		}
+	}
+}
+
+// TestURLModel_DeepPathRegisteredDomainLegit is a regression test for the
+// false-positive class fixed in PR #122 (F32 registered_domain_top1m).
+// Deep-path URLs on top-1M registered domains (e.g. github.com, google.com)
+// previously scored 98–99 because the prior model learned
+// "deep path + high entropy → phishing". With F32 in place, both URLs must
+// land in the legit band (score ≤ 30).
+func TestURLModel_DeepPathRegisteredDomainLegit(t *testing.T) {
+	skipIfNoModel(t)
+
+	m, err := NewURLModel(scriptPath(), 1, nil)
+	if err != nil {
+		t.Fatalf("NewURLModel: %v", err)
+	}
+	defer m.Close()
+
+	cases := []struct {
+		url  string
+		desc string
+	}{
+		{
+			"https://github.com/XHCFS/cybersiren/pull/121",
+			"deep GitHub path (previously scored 98 before F32)",
+		},
+		{
+			"https://gemini.google.com/u/1/app/b681b0bd759d099c?pageId=none",
+			"subdomain of google.com with deep path and query (previously scored 99 before F32)",
+		},
+	}
+
+	for _, tc := range cases {
+		score, _, err := m.Predict(context.Background(), tc.url)
+		if err != nil {
+			t.Fatalf("Predict(%s): %v", tc.desc, err)
+		}
+		if score > 30 {
+			t.Errorf("deep-path top-1M URL (%s) %q scored %d, expected ≤ 30 — F32 regression?",
+				tc.desc, tc.url, score)
 		}
 	}
 }
