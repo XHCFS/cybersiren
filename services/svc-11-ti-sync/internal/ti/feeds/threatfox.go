@@ -144,7 +144,9 @@ func (f *ThreatFoxFeed) Fetch(ctx context.Context) (indicators []ti.TIIndicator,
 			indicatorType = ti.IPIndicatorType
 			raw := strings.TrimSpace(entry.IOC)
 			host := raw
-			if idx := strings.LastIndex(raw, ":"); idx > 0 {
+			// Only attempt port stripping for bracketed IPv6 ([::1]:80) or IPv4 (1.2.3.4:80).
+			// Bare IPv6 addresses contain colons that would confuse SplitHostPort.
+			if strings.HasPrefix(raw, "[") || strings.Count(raw, ":") == 1 {
 				h, _, splitErr := net.SplitHostPort(raw)
 				if splitErr == nil {
 					host = h
@@ -164,6 +166,13 @@ func (f *ThreatFoxFeed) Fetch(ctx context.Context) (indicators []ti.TIIndicator,
 			indicatorType = ti.HashIndicatorType
 			indicatorValue = strings.ToLower(strings.TrimSpace(entry.IOC))
 			if indicatorValue == "" {
+				continue
+			}
+			if !ti.IsValidSHA256(indicatorValue) {
+				f.log.Warn().
+					Str("sha256", indicatorValue).
+					Str("source_id", ti.RawJSONToString(entry.ID)).
+					Msg("skipping invalid ThreatFox SHA-256 hash")
 				continue
 			}
 

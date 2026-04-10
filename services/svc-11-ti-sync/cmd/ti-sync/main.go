@@ -103,7 +103,7 @@ func main() {
 	defer rdb.Close()
 
 	repo := repository.NewTIRepository(pool, log, reg)
-	cache := sharedvalkey.NewTICache(rdb, repo, log, reg)
+	cache := sharedvalkey.NewTICache(rdb, repo, log, reg, int64(cfg.TIHashCacheTTLSeconds))
 
 	enabledFeeds, err := db.New(pool).GetEnabledFeeds(ctx)
 	if err != nil {
@@ -157,7 +157,17 @@ func main() {
 
 			feedImpls = append(feedImpls, feedImpl)
 		case "malwarebazaar":
-			feedImpl := feeds.NewMalwareBazaarFeed(feedRow.ID, cfg, httpClient, log)
+			feedImpl, feedErr := feeds.NewMalwareBazaarFeed(feedRow.ID, cfg, httpClient, log)
+			if feedErr != nil {
+				if errors.Is(feedErr, ti.ErrMalwareBazaarKeyMissing) {
+					log.Warn().Msg("malwarebazaar: no API key configured, skipping")
+					continue
+				}
+
+				log.Error().Err(feedErr).Str("feed", feedName).Msg("failed to initialize feed")
+				continue
+			}
+
 			feedImpl.URL = feedURL
 
 			feedImpls = append(feedImpls, feedImpl)
@@ -217,6 +227,6 @@ func warnFeedConfiguration(log zerolog.Logger, cfg *config.Config, enabledFeeds 
 	}
 
 	if _, ok := enabledByName["malwarebazaar"]; ok && strings.TrimSpace(cfg.FeedMalwareBazaarAPIKey) == "" {
-		log.Warn().Msg("malwarebazaar is enabled in db but no API key is configured; feed may be skipped")
+		log.Warn().Msg("malwarebazaar is enabled in db but no API key is configured; feed will be skipped")
 	}
 }

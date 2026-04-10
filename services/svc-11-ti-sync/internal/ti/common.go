@@ -11,6 +11,7 @@ import (
 
 var (
 	ErrPhishTankKeyMissing          = errors.New("phishtank api key missing")
+	ErrMalwareBazaarKeyMissing      = errors.New("malwarebazaar api key missing")
 	ErrThreatFoxAPIError            = errors.New("threatfox api returned non-ok query_status")
 	ErrMalwareBazaarAPIError        = errors.New("malwarebazaar api returned non-ok query_status")
 	ErrOpenPhishNonCommercialNotice = errors.New("OpenPhish free tier is non-commercial use only")

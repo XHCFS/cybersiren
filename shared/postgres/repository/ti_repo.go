@@ -348,6 +348,11 @@ func (r *PostgresTIRepository) BulkUpsertMalwareHashes(ctx context.Context, hash
 				continue
 			}
 
+			if !normalization.IsValidHexHash(sha, 64) {
+				r.log.Warn().Str("sha256", sha).Msg("skipping invalid SHA-256 hash in bulk upsert")
+				continue
+			}
+
 			riskScore := h.RiskScore
 			if riskScore < 0 || riskScore > 100 {
 				return result, fmt.Errorf("malware hash %q: risk_score must be between 0 and 100, got %d", sha, riskScore)

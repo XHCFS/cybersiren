@@ -103,7 +103,7 @@ func main() {
 	defer valkeyClient.Close()
 
 	tiRepo := repository.NewTIRepository(dbPool, log, reg)
-	tiCache := sharedvalkey.NewTICache(valkeyClient, tiRepo, log, reg)
+	tiCache := sharedvalkey.NewTICache(valkeyClient, tiRepo, log, reg, 0)
 
 	if cacheErr := tiCache.RefreshDomainCache(ctx); cacheErr != nil {
 		log.Error().Err(cacheErr).Msg("initial TI domain cache refresh failed")
