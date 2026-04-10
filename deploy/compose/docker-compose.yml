@@ -211,6 +211,41 @@ services:
       - cybersiren
     restart: unless-stopped
 
+  # ── svc-11-ti-sync ─────────────────────────────────────────────────────────
+  # Synchronises threat intelligence feeds into the local database on a
+  # recurring cycle. Exposes Prometheus metrics and sends traces to Jaeger.
+  svc-11-ti-sync:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.ti_sync
+    profiles: ["demo"]
+    depends_on:
+      demo-seed:
+        condition: service_completed_successfully
+      valkey:
+        condition: service_healthy
+    ports:
+      - "9093:9090"
+    environment:
+      CYBERSIREN_ENV: development
+      CYBERSIREN_LOG__LEVEL: debug
+      CYBERSIREN_LOG__PRETTY: "true"
+      CYBERSIREN_DB__HOST: postgres
+      CYBERSIREN_DB__PORT: "5432"
+      CYBERSIREN_DB__NAME: cybersiren
+      CYBERSIREN_DB__USER: ${POSTGRES_USER:-postgres}
+      CYBERSIREN_DB__PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      CYBERSIREN_DB__SSL_MODE: disable
+      CYBERSIREN_VALKEY__ADDR: valkey:6379
+      CYBERSIREN_AUTH__JWT_SECRET: demo-secret-not-for-production-use!!
+      CYBERSIREN_METRICS_PORT: "9090"
+      CYBERSIREN_JAEGER_ENDPOINT: http://jaeger:4318
+      CYBERSIREN_SYNC_INTERVAL_SECONDS: "60"
+      CYBERSIREN_TI_HASH_CACHE_TTL_SECONDS: "120"
+    networks:
+      - cybersiren
+    restart: unless-stopped
+
   # ── Jaeger (distributed tracing) ───────────────────────────────────────────
   # All-in-one Jaeger instance for local development.
   # UI at http://localhost:16686, OTLP HTTP receiver on port 4318.
@@ -266,6 +301,8 @@ services:
       - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
     depends_on:
       svc-03-url-analysis:
+        condition: service_started
+      svc-11-ti-sync:
         condition: service_started
     networks:
       - cybersiren

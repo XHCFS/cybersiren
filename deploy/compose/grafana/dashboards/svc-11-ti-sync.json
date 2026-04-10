@@ -1,0 +1,256 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "title": "Feed Sync — Total Successful Syncs",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "fillOpacity": 15, "lineWidth": 2 }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "rate(feed_sync_total{job=\"svc-11-ti-sync\"}[5m])",
+          "legendFormat": "sync rate",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "title": "Feed Sync — Errors by Feed",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "fillOpacity": 20, "lineWidth": 2 }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "rate(feed_sync_errors_total{job=\"svc-11-ti-sync\"}[5m])",
+          "legendFormat": "{{feed_name}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "title": "Feed Sync — Cycle Duration (seconds)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "fillOpacity": 10, "lineWidth": 2 },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "rate(feed_sync_duration_seconds_sum{job=\"svc-11-ti-sync\"}[5m]) / rate(feed_sync_duration_seconds_count{job=\"svc-11-ti-sync\"}[5m])",
+          "legendFormat": "avg duration",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.95, rate(feed_sync_duration_seconds_bucket{job=\"svc-11-ti-sync\"}[5m]))",
+          "legendFormat": "p95 duration",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "title": "TI Indicators — Upsert Rate",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "fillOpacity": 15, "lineWidth": 2 }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "rate(ti_indicator_upsert_total{job=\"svc-11-ti-sync\"}[5m])",
+          "legendFormat": "{{operation}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "title": "TI DB Sync Duration (seconds)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "fillOpacity": 10, "lineWidth": 2 },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "rate(ti_sync_duration_seconds_sum{job=\"svc-11-ti-sync\"}[5m]) / rate(ti_sync_duration_seconds_count{job=\"svc-11-ti-sync\"}[5m])",
+          "legendFormat": "avg db sync",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "title": "TI Cache — Blocklist Lookups (hit vs miss)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "fillOpacity": 20, "lineWidth": 2 }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "rate(ti_cache_blocklist_lookups_total{job=\"svc-11-ti-sync\"}[1m])",
+          "legendFormat": "{{hit}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "title": "TI Cache — Keys Refreshed",
+      "type": "stat",
+      "gridPos": { "h": 8, "w": 6, "x": 0, "y": 24 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "ti_cache_refresh_keys_total{job=\"svc-11-ti-sync\"}",
+          "legendFormat": "keys refreshed",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "green", "value": 1 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "title": "TI Cache — Refresh Duration (seconds)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 18, "x": 6, "y": 24 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "fillOpacity": 10, "lineWidth": 2 },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "rate(ti_cache_refresh_duration_seconds_sum{job=\"svc-11-ti-sync\"}[5m]) / rate(ti_cache_refresh_duration_seconds_count{job=\"svc-11-ti-sync\"}[5m])",
+          "legendFormat": "{{cache_type}} avg",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "title": "Go Runtime — Goroutines",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 32 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "fillOpacity": 10, "lineWidth": 2 }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "go_goroutines{job=\"svc-11-ti-sync\"}",
+          "legendFormat": "goroutines",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "title": "Go Runtime — Memory (MiB)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 32 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "fillOpacity": 10, "lineWidth": 2 }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "go_memstats_alloc_bytes{job=\"svc-11-ti-sync\"} / 1024 / 1024",
+          "legendFormat": "alloc",
+          "refId": "A"
+        },
+        {
+          "expr": "go_memstats_sys_bytes{job=\"svc-11-ti-sync\"} / 1024 / 1024",
+          "legendFormat": "sys",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "title": "Process — Open File Descriptors",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 40 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "fillOpacity": 10, "lineWidth": 2 }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "process_open_fds{job=\"svc-11-ti-sync\"}",
+          "legendFormat": "open fds",
+          "refId": "A"
+        }
+      ]
+    }
+  ],
+  "schemaVersion": 39,
+  "tags": ["cybersiren", "svc-11", "ti-sync"],
+  "templating": { "list": [] },
+  "time": { "from": "now-30m", "to": "now" },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "svc-11 TI Sync",
+  "uid": "cybersiren-svc11",
+  "version": 1
+}
