@@ -203,7 +203,9 @@ func (r *Runner) SyncAll(ctx context.Context) (err error) {
 		// receives an empty slice and returns early without deactivating
 		// stale rows. Deactivate after successful hash upsert so we never
 		// remove coverage before replacement data is persisted.
-		if len(nonHashIndicators) == 0 && feedID > 0 {
+		// Guard on len(hashIndicators) > 0 so that a normal feed returning
+		// zero indicators does not incorrectly wipe its prior ti_indicators.
+		if len(hashIndicators) > 0 && len(nonHashIndicators) == 0 && feedID > 0 {
 			deactivated, deactivateErr := r.repo.DeactivateStaleIndicators(feedCtx, feedID)
 			if deactivateErr != nil {
 				r.log.Error().Err(deactivateErr).Str("feed", feedName).Msg("explicit stale indicator deactivation failed")

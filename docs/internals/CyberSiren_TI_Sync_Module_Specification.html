@@ -119,8 +119,9 @@
 
 <h1>CYBERSIREN — THREAT INTELLIGENCE SYNC MODULE SPECIFICATION</h1>
 <div class="doc-meta">
-  <span><strong>Document:</strong> TI-SPEC-v1.0</span>
+  <span><strong>Document:</strong> TI-SPEC-v1.1</span>
   <span><strong>Date:</strong> 2026-04-10</span>
+  <span><strong>Revised:</strong> MalwareBazaar feed (GAP-1/2/3), hash routing separation, ThreatFox multi-type IOC, hash cache TTL config</span>
   <span><strong>Scope:</strong> SVC-11 TI Sync — Feed ingestion, repository layer, Valkey cache, runner lifecycle</span>
   <span><strong>Classification:</strong> Internal / Graduation Project</span>
 </div>
@@ -130,7 +131,7 @@
 </div>
 
 <div class="note">
-  <strong>Live run results (2026-04-10):</strong> 2,724 active indicators across 4 feeds — OpenPhish (300 URLs), URLhaus (1,907 URLs), ThreatFox (51 URLs + 406 domains + 39 IPs), MalwareBazaar (6 malware hashes in <code>attachment_library</code>). 426 domains and 6 hashes cached in Valkey.
+  <strong>Live run results (2026-04-10, post-PR):</strong> 2,678 active indicators across 4 feeds — OpenPhish (300 URLs), URLhaus (1,946 URLs), ThreatFox (432 mixed: URLs + domains + IPs), MalwareBazaar (30 malicious hashes in <code>attachment_library</code>; 0 rows in <code>ti_indicators</code> by design). 38 <code>ti_hash:*</code> keys and ~400 domain keys cached in Valkey.
 </div>
 
 
@@ -165,7 +166,7 @@
 <div class="pipeline-step">
   <div class="step-header">
     <div class="step-num">5</div>
-    <div class="step-content"><strong>Metrics server</strong> — Prometheus HTTP server on <code>CYBERSIREN_METRICS_PORT</code> (default 19090). Exposes <code>/metrics</code>. Runs as background goroutine.</div>
+    <div class="step-content"><strong>Metrics server</strong> — Prometheus HTTP server on <code>CYBERSIREN_METRICS_PORT</code> (default 9090). Exposes <code>/metrics</code>. Runs as background goroutine.</div>
   </div>
 </div>
 <div class="pipeline-step">
@@ -195,7 +196,7 @@
 <div class="pipeline-step">
   <div class="step-header">
     <div class="step-num">10</div>
-    <div class="step-content"><strong>Runner.Start(ctx, interval)</strong> — executes initial sync immediately, then ticks on <code>CYBERSIREN_SYNC_INTERVAL_SECONDS</code> (default 21,600 s / 6 h). Fatal if no feeds are enabled.</div>
+    <div class="step-content"><strong>Runner.Start(ctx, interval)</strong> — executes initial sync immediately, then ticks on <code>CYBERSIREN_SYNC_INTERVAL_SECONDS</code> (default 3,600 s / 1 h). Fatal if no feeds are enabled.</div>
   </div>
 </div>
 
@@ -204,13 +205,14 @@
   <tr><th>Env Var</th><th>koanf Key</th><th>Default</th><th>Purpose</th></tr>
   <tr><td><code>CYBERSIREN_DB__*</code></td><td><code>db.*</code></td><td>—</td><td>PostgreSQL connection (host, port, user, password, db, ssl_mode)</td></tr>
   <tr><td><code>CYBERSIREN_VALKEY__ADDR</code></td><td><code>valkey.addr</code></td><td><code>localhost:6379</code></td><td>Valkey address</td></tr>
-  <tr><td><code>CYBERSIREN_SYNC_INTERVAL_SECONDS</code></td><td><code>sync_interval_seconds</code></td><td>21600</td><td>Feed sync cycle period. Must be &gt; 30 s.</td></tr>
-  <tr><td><code>CYBERSIREN_METRICS_PORT</code></td><td><code>metrics_port</code></td><td>19090</td><td>Prometheus /metrics HTTP port</td></tr>
+  <tr><td><code>CYBERSIREN_SYNC_INTERVAL_SECONDS</code></td><td><code>sync_interval_seconds</code></td><td>3600</td><td>Feed sync cycle period. Must be &gt; 30 s.</td></tr>
+  <tr><td><code>CYBERSIREN_METRICS_PORT</code></td><td><code>metrics_port</code></td><td>9090</td><td>Prometheus /metrics HTTP port</td></tr>
   <tr><td><code>CYBERSIREN_JAEGER_ENDPOINT</code></td><td><code>jaeger_endpoint</code></td><td>""</td><td>OTLP endpoint. Empty = noop tracer.</td></tr>
   <tr><td><code>CYBERSIREN_FEED_PHISHTANK_API_KEY</code></td><td><code>feed_phishtank_api_key</code></td><td>""</td><td>PhishTank API key (required to enable feed)</td></tr>
   <tr><td><code>CYBERSIREN_FEED_THREATFOX_API_KEY</code></td><td><code>feed_threatfox_api_key</code></td><td>""</td><td>ThreatFox Auth-Key header (optional, improves rate limits)</td></tr>
   <tr><td><code>CYBERSIREN_FEED_OPENPHISH_API_KEY</code></td><td><code>feed_openphish_api_key</code></td><td>""</td><td>OpenPhish API key (free tier does not require one)</td></tr>
   <tr><td><code>CYBERSIREN_FEED_MALWAREBAZAAR_API_KEY</code></td><td><code>feed_malwarebazaar_api_key</code></td><td>""</td><td>MalwareBazaar Auth-Key (required as of 2025)</td></tr>
+  <tr><td><code>CYBERSIREN_TI_HASH_CACHE_TTL_SECONDS</code></td><td><code>ti_hash_cache_ttl_seconds</code></td><td>7200</td><td>Hash cache TTL in seconds. Must be &gt; 0 and ≥ <code>sync_interval_seconds</code> to prevent cache expiry between syncs.</td></tr>
 </table>
 
 
@@ -326,7 +328,7 @@
       <tr><td>Default URL</td><td><code>https://threatfox-api.abuse.ch/api/v1/</code></td></tr>
       <tr><td>Protocol</td><td>HTTP POST. JSON body: <code>{"query": "get_iocs", "days": 1}</code>. Auth-Key header sent if key configured.</td></tr>
       <tr><td>Response format</td><td>JSON. Top-level: <code>query_status</code> (must equal <code>"ok"</code>) + <code>data</code> array of IOC entries.</td></tr>
-      <tr><td>Indicator types</td><td>URL, domain, IP (including ip:port — port stripped), hash (SHA-256/MD5/SHA-1)</td></tr>
+      <tr><td>Indicator types</td><td>URL, domain, IP (<code>ip:port</code> and bare IPv4/IPv6 — port stripped), SHA-256 hash only (<code>sha256_hash</code> ioc_type). Other hash types (md5_hash, sha1_hash) are skipped.</td></tr>
       <tr><td>Risk score</td><td><code>confidence_level</code> field (0–100). Clamped via <code>ti.ClampInt()</code>.</td></tr>
       <tr><td>Confidence</td><td><code>confidence_level / 100.0</code></td></tr>
       <tr><td>Auth</td><td>Optional. <code>CYBERSIREN_FEED_THREATFOX_API_KEY</code>. Key sent in both JSON body (<code>auth_key</code>) and HTTP header (<code>Auth-Key</code>).</td></tr>
@@ -335,8 +337,9 @@
           <tr><th style="background:#eee;">ThreatFox <code>ioc_type</code></th><th style="background:#eee;">CyberSiren type</th><th style="background:#eee;">Normalization</th></tr>
           <tr><td><code>"url"</code></td><td><code>url</code></td><td><code>normalization.NormalizeURL()</code></td></tr>
           <tr><td><code>"domain"</code></td><td><code>domain</code></td><td><code>normalization.NormalizeDomain()</code></td></tr>
-          <tr><td><code>"ip:port"</code> / <code>"ip"</code></td><td><code>ip</code></td><td><code>net.SplitHostPort()</code> then <code>net.ParseIP()</code></td></tr>
-          <tr><td><code>*"hash"*</code></td><td><code>hash</code></td><td>Lowercased, trimmed</td></tr>
+          <tr><td>prefix <code>"ip"</code> (covers <code>"ip:port"</code>, <code>"ip"</code>)</td><td><code>ip</code></td><td>Bracketed IPv6 <code>[::1]:port</code> or single-colon IPv4 → <code>net.SplitHostPort()</code> to strip port; bare IPv6 passed directly. <code>net.ParseIP()</code> validates.</td></tr>
+          <tr><td><code>"sha256_hash"</code></td><td><code>hash</code> → <code>attachment_library</code></td><td>Lowercased, trimmed</td></tr>
+          <tr><td><code>"md5_hash"</code>, <code>"sha1_hash"</code>, other <code>*_hash</code></td><td>skipped</td><td>Debug log emitted</td></tr>
           <tr><td>anything else</td><td>skipped</td><td>Warning logged with ioc_type value</td></tr>
         </table>
       </td></tr>
@@ -390,7 +393,13 @@
 <div class="pipeline-step">
   <div class="step-header">
     <div class="step-num">3</div>
-    <div class="step-content"><strong>extractHashIndicators()</strong> — Filters indicators with <code>IndicatorType == "hash"</code>. If any found, calls <code>BulkUpsertMalwareHashes()</code> to write to <code>attachment_library</code>. Errors logged but non-fatal.</div>
+    <div class="step-content"><strong>extractHashIndicators() → BulkUpsertMalwareHashes()</strong> — Filters indicators with <code>IndicatorType == "hash"</code>. If any found, calls <code>BulkUpsertMalwareHashes()</code> to write to <code>attachment_library</code>. For mixed feeds (e.g. ThreatFox returning both hash and non-hash), hash upsert errors are logged but non-fatal. For hash-only feeds (e.g. MalwareBazaar where <code>len(nonHashIndicators) == 0</code>), hash upsert failure is treated as fatal — the feed is counted as failed and the cycle continues to the next feed.</div>
+  </div>
+</div>
+<div class="pipeline-step">
+  <div class="step-header">
+    <div class="step-num">3a</div>
+    <div class="step-content"><strong>DeactivateStaleIndicators() — hash-only feeds only</strong> — When a feed returned only hash indicators (<code>len(hashIndicators) &gt; 0 &amp;&amp; len(nonHashIndicators) == 0</code>), <code>BulkUpsertIndicators</code> received an empty slice and early-returned without running its internal deactivation. An explicit <code>DeactivateStaleIndicators(feedID)</code> call is made after a successful hash upsert to clean up any stale rows in <code>ti_indicators</code> for that feed (e.g. from runs before hash routing was introduced). Deactivation errors are logged but do not fail the feed.</div>
   </div>
 </div>
 <div class="pipeline-step">
@@ -497,9 +506,10 @@
   <tr><td>Key pattern</td><td><code>ti_hash:{sha256}</code> — SHA-256 in braces</td></tr>
   <tr><td>Value type</td><td>Hash (HSET)</td></tr>
   <tr><td>Fields</td><td><code>type</code> ("sha256"), <code>risk_score</code> (int), <code>tags</code> (comma-joined threat_tags), <code>updated_at</code> (RFC3339 UTC timestamp)</td></tr>
-  <tr><td>TTL</td><td>3,600 seconds (1 hour)</td></tr>
+  <tr><td>TTL</td><td>Configurable via <code>CYBERSIREN_TI_HASH_CACHE_TTL_SECONDS</code>; default 7,200 s (2 h). Set via EXPIRE after each HSET batch. Must be ≥ <code>sync_interval_seconds</code>.</td></tr>
   <tr><td>Batch size</td><td>200 keys per <code>DoMulti</code> call</td></tr>
   <tr><td>Source</td><td><code>ListMaliciousHashes()</code> — all <code>is_malicious = TRUE</code>, <code>deleted_at IS NULL</code> rows from <code>attachment_library</code></td></tr>
+  <tr><td>Staleness note</td><td>Refresh is additive — keys for hashes removed from <code>attachment_library</code> persist until TTL expiry. No explicit deletion is performed. See Limitations §10.7.</td></tr>
 </table>
 
 
@@ -609,11 +619,12 @@
   <tr><td class="svc">Conflict: GREATEST risk_score</td><td>Risk scores should never decrease. If a feed previously reported score 90 and now reports 70 (e.g., due to API changes), the historical high is preserved. Operators can manually decrease via the admin API.</td></tr>
   <tr><td class="svc">Conflict: tag union not replacement</td><td>Tags from multiple sync cycles accumulate. A domain tagged <code>["phishing"]</code> in one cycle and <code>["malware", "botnet"]</code> in the next retains all three tags. This preserves historical context from feeds that rotate their tag classifications.</td></tr>
   <tr><td class="svc">is_active deactivation</td><td>Indicators not seen in the current sync cycle are marked <code>is_active = FALSE</code> rather than deleted. This allows downstream services to distinguish between "currently blocklisted" and "was blocklisted" without losing the historical record.</td></tr>
-  <tr><td class="svc">Valkey cache TTL = 1 hour</td><td>With a 6-hour default sync interval, a 1-hour TTL ensures the cache never serves data older than 1 sync cycle + 1 cache window (7 hours maximum staleness). The cache is fully rebuilt on every sync, so staleness is bounded.</td></tr>
+  <tr><td class="svc">Valkey domain cache TTL = 1 hour</td><td>Domain cache TTL is fixed at 3,600 s. With a 1-hour default sync interval, domain cache is fully rebuilt each cycle before prior keys expire. Staleness is bounded to one sync window.</td></tr>
+  <tr><td class="svc">Valkey hash cache TTL = 2 hours (configurable)</td><td>Hash cache TTL defaults to 7,200 s (2 × the default sync interval). The validation rule <code>TIHashCacheTTLSeconds ≥ SyncIntervalSeconds</code> ensures hash keys never expire between sync runs. The 2× default gives headroom for slower hash refreshes. The cache is additive: removed hashes persist until TTL expiry (see Limitations §10.7).</td></tr>
   <tr><td class="svc">Feed URL from DB at runtime</td><td>The URL stored in the <code>feeds.url</code> column overrides the hardcoded default constant. This allows feed URLs to be updated via the admin API without a service redeployment. PhishTank uses a template URL; the API key is still injected from config, not the DB.</td></tr>
   <tr><td class="svc">Atomic overlap guard</td><td><code>atomic.Bool cycleRunning</code> prevents two sync cycles from running simultaneously if the previous cycle overruns the interval. This is safer than a mutex approach because the check is non-blocking and a skipped tick is recoverable on the next tick.</td></tr>
   <tr><td class="svc">MalwareBazaar Auth-Key requirement</td><td>As of 2025, abuse.ch requires authentication for all MalwareBazaar API calls (previously only the enhanced tier). The implementation sends the key as an <code>Auth-Key</code> HTTP header matching the pattern used by ThreatFox. A missing key logs a warning but does not prevent service startup; the feed will fail at fetch time with HTTP 401.</td></tr>
-  <tr><td class="svc">ThreatFox ip:port stripping</td><td>ThreatFox reports C2 servers as <code>1.2.3.4:6000</code> (ip:port format). The port is stripped via <code>net.SplitHostPort()</code> before storing the IP. CyberSiren's <code>ti_indicators</code> has no port field — indicators represent hosts, not endpoints. Port context is preserved in <code>raw_metadata</code>.</td></tr>
+  <tr><td class="svc">ThreatFox ip:port stripping + IPv6 safety</td><td>ThreatFox reports C2 servers as <code>1.2.3.4:6000</code> (ip:port format). Port stripping via <code>net.SplitHostPort()</code> is applied only for bracketed IPv6 (<code>[::1]:80</code>) or single-colon IPv4 (<code>1.2.3.4:80</code>). Bare IPv6 addresses (multiple colons, no brackets) bypass <code>SplitHostPort</code> to avoid mis-parsing. CyberSiren's <code>ti_indicators</code> has no port field — indicators represent hosts, not endpoints. Port context is preserved in <code>raw_metadata</code>.</td></tr>
 </table>
 
 
@@ -623,11 +634,12 @@
 <table>
   <tr><th>#</th><th>Limitation</th><th>Impact</th><th>Mitigation</th></tr>
   <tr><td>1</td><td>No parallel feed fetching.</td><td>Total sync time = sum of all feed fetch times. Currently ~8 s for 4 feeds.</td><td>Acceptable at current scale. Parallel fetch can be added if feed count grows significantly.</td></tr>
-  <tr><td>2</td><td>No per-feed scheduling.</td><td>All feeds sync on the same interval (default 6 h). High-frequency feeds (URLhaus updates every 5 min) are under-sampled.</td><td>Use a shorter global interval or add per-feed cron support in a future iteration.</td></tr>
+  <tr><td>2</td><td>No per-feed scheduling.</td><td>All feeds sync on the same interval (default 1 h). High-frequency feeds (URLhaus updates every 5 min) are under-sampled.</td><td>Use a shorter global interval or add per-feed cron support in a future iteration.</td></tr>
   <tr><td>3</td><td>No distributed leader election.</td><td>Running multiple instances of svc-11 simultaneously will cause duplicate upsert contention. Upsert semantics are idempotent, so data integrity is maintained, but it wastes API calls and DB write pressure.</td></tr>
   <tr><td>4</td><td>Hash cache holds entire malicious set in memory per refresh.</td><td>If <code>attachment_library</code> grows to millions of entries, the refresh will hold a large slice in RAM. Batch streaming would be needed.</td><td>Current scale (hundreds to low thousands of entries) is well within limits.</td></tr>
   <tr><td>5</td><td>PhishTank feed disabled unless API key is provided.</td><td>PhishTank is the community-verified source with highest precision for known phishing URLs. Without it, URL coverage relies on OpenPhish + URLhaus.</td><td>Register at phishtank.org, set <code>CYBERSIREN_FEED_PHISHTANK_API_KEY</code>.</td></tr>
   <tr><td>6</td><td>Raw metadata not updated on indicator conflict.</td><td>If a feed changes the payload for an existing IOC (new confidence level, additional fields), the stored <code>raw_metadata</code> jsonb reflects the first-seen payload only.</td><td>Risk score and tags are updated on conflict. For full payload history, store in an event log (not implemented).</td></tr>
+  <tr><td>7</td><td>Hash cache (<code>ti_hash:*</code> keys) is additive — stale keys are not deleted on refresh.</td><td>If a hash is removed from <code>attachment_library</code> (e.g. false-positive correction), its Valkey key persists until TTL expiry (default 2 h). SVC-05 may still return a hit for that hash within the TTL window.</td><td>Acceptable for a security context where false positives are preferable to false negatives. TTL bounds the staleness window. A future iteration could use a generation-swap pattern (write to a new key prefix, then rename) to achieve atomic, non-stale rebuilds.</td></tr>
 </table>
 
 </body>
