@@ -739,7 +739,9 @@ func TestURLModel_DeepPathRegisteredDomainLegit(t *testing.T) {
 		desc string
 	}{
 		{
-			"https://github.com/XHCFS/cybersiren/pull/121",
+			// Stable tree path on github.com — representative of the deep-path
+			// class that previously scored 98 (reported in PR #122 as pull/121).
+			"https://github.com/XHCFS/cybersiren/tree/main/services/svc-03-url-analysis",
 			"deep GitHub path (previously scored 98 before F32)",
 		},
 		{
