@@ -58,7 +58,11 @@ func main() {
 
 	reg := metrics.Init("svc-11-ti-sync")
 
-	metricsShutdown := metrics.StartServer(cfg.MetricsPort, reg, log)
+	metricsShutdown, err := metrics.StartServer(cfg.MetricsPort, reg, log)
+	if err != nil {
+		log.Fatal().Err(err).Msg("failed to start metrics server")
+		return
+	}
 	defer func() { _ = metricsShutdown(context.Background()) }()
 
 	poolOpts := pool.PoolOptions{
