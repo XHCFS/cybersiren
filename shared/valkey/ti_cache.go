@@ -504,6 +504,7 @@ func registerCounterVec(registry *prometheus.Registry, counterVec *prometheus.Co
 	return counterVec
 }
 
+// observeRefreshDuration records TI cache refresh latency for the given cache type.
 func (c *ValkeyTICache) observeRefreshDuration(cacheType string, duration time.Duration) {
 	if c == nil || c.refreshDuration == nil {
 		return
@@ -512,6 +513,7 @@ func (c *ValkeyTICache) observeRefreshDuration(cacheType string, duration time.D
 	c.refreshDuration.WithLabelValues(cacheType).Observe(duration.Seconds())
 }
 
+// setRefreshKeys records the latest successful TI cache refresh key count for the given cache type.
 func (c *ValkeyTICache) setRefreshKeys(cacheType string, keysWritten int) {
 	if c == nil || c.refreshKeysTotal == nil {
 		return
