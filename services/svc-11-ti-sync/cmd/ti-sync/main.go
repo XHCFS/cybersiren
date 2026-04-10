@@ -156,6 +156,11 @@ func main() {
 			feedImpl.URL = feedURL
 
 			feedImpls = append(feedImpls, feedImpl)
+		case "malwarebazaar":
+			feedImpl := feeds.NewMalwareBazaarFeed(feedRow.ID, cfg, httpClient, log)
+			feedImpl.URL = feedURL
+
+			feedImpls = append(feedImpls, feedImpl)
 		default:
 			log.Warn().Str("feed", feedRow.Name).Msg("unknown feed name in db, skipping")
 		}

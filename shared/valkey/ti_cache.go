@@ -22,13 +22,17 @@ import (
 const (
 	tiDomainTTLSeconds   int64 = 3600
 	tiDomainRefreshBatch       = 200
+	tiHashTTLSeconds     int64 = 3600
+	tiHashRefreshBatch         = 200
 )
 
 var tiCacheTracer = tracing.Tracer("shared/valkey/ti_cache")
 
-// TICache provides read and write access to the threat-intelligence domain cache.
+// TICache provides read and write access to the threat-intelligence caches.
 type TICache interface {
 	RefreshDomainCache(ctx context.Context) error
+	// RefreshHashCache rebuilds the ti_hash:{sha256} keys in Valkey from the attachment library.
+	RefreshHashCache(ctx context.Context) error
 	// IsBlocklisted checks whether the given domain appears in the TI domain cache.
 	IsBlocklisted(ctx context.Context, domain string) (bool, int, string, error)
 }
@@ -196,6 +200,143 @@ func (c *ValkeyTICache) RefreshDomainCache(ctx context.Context) (err error) {
 				Str("key", meta.Key).
 				Str("command", meta.Command).
 				Msg("missing TI domain cache command result")
+		}
+
+		for _, keyState := range keyStates {
+			if keyState.HSetOK && keyState.ExpireOK {
+				keysWritten++
+			}
+		}
+	}
+
+	if c.refreshKeysTotal != nil {
+		c.refreshKeysTotal.Set(float64(keysWritten))
+	}
+
+	return nil
+}
+
+// RefreshHashCache rebuilds the ti_hash:{sha256} keys in Valkey from the attachment library.
+func (c *ValkeyTICache) RefreshHashCache(ctx context.Context) (err error) {
+	startedAt := time.Now()
+	keysWritten := 0
+	commandErrors := 0
+
+	ctx, span := tiCacheTracer.Start(ctx, "ti_cache.RefreshHashCache")
+	defer func() {
+		duration := time.Since(startedAt)
+		span.SetAttributes(
+			attribute.Int("keys_written", keysWritten),
+			attribute.Int("command_errors", commandErrors),
+			attribute.Float64("duration_seconds", duration.Seconds()),
+		)
+
+		if c != nil && c.refreshDuration != nil {
+			c.refreshDuration.Observe(duration.Seconds())
+		}
+
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+		}
+		span.End()
+	}()
+
+	if err = c.ensureReady(); err != nil {
+		return err
+	}
+
+	hashes, listErr := c.repo.ListMaliciousHashes(ctx)
+	if listErr != nil {
+		return fmt.Errorf("list malicious hashes: %w", listErr)
+	}
+
+	for start := 0; start < len(hashes); start += tiHashRefreshBatch {
+		end := start + tiHashRefreshBatch
+		if end > len(hashes) {
+			end = len(hashes)
+		}
+
+		chunk := hashes[start:end]
+		cmds := make([]valkeygo.Completed, 0, len(chunk)*2)
+		metas := make([]cacheCommandMeta, 0, len(chunk)*2)
+		keyStates := make([]cacheKeyState, 0, len(chunk))
+
+		for _, h := range chunk {
+			sha := strings.TrimSpace(h.SHA256)
+			if sha == "" {
+				c.log.Warn().Int64("id", h.ID).Msg("skipping malicious hash with empty sha256")
+				continue
+			}
+
+			key := fmt.Sprintf("ti_hash:{%s}", strings.ToLower(sha))
+			source := strings.Join(h.ThreatTags, ",")
+
+			hsetCmd := c.client.B().Hset().
+				Key(key).
+				FieldValue().
+				FieldValue("is_malicious", "true").
+				FieldValue("risk_score", strconv.Itoa(h.RiskScore)).
+				FieldValue("source", source).
+				Build()
+			expireCmd := c.client.B().Expire().Key(key).Seconds(tiHashTTLSeconds).Build()
+
+			cmds = append(cmds, hsetCmd, expireCmd)
+			metas = append(metas,
+				cacheCommandMeta{Key: key, Command: "HSET"},
+				cacheCommandMeta{Key: key, Command: "EXPIRE"},
+			)
+			keyStates = append(keyStates, cacheKeyState{})
+		}
+
+		if len(cmds) == 0 {
+			continue
+		}
+
+		results := c.client.DoMulti(ctx, cmds...)
+		if len(results) != len(metas) {
+			c.log.Error().
+				Int("cmd_count", len(metas)).
+				Int("result_count", len(results)).
+				Msg("valkey DoMulti returned unexpected result count")
+		}
+
+		limit := len(results)
+		if limit > len(metas) {
+			limit = len(metas)
+		}
+
+		for i := 0; i < limit; i++ {
+			resultErr := results[i].Error()
+			if resultErr != nil {
+				commandErrors++
+				meta := metas[i]
+				c.log.Error().
+					Err(resultErr).
+					Str("key", meta.Key).
+					Str("command", meta.Command).
+					Msg("failed TI hash cache command")
+				continue
+			}
+
+			keyIndex := i / 2
+			if keyIndex >= len(keyStates) {
+				continue
+			}
+			if i%2 == 0 {
+				keyStates[keyIndex].HSetOK = true
+			} else {
+				keyStates[keyIndex].ExpireOK = true
+			}
+		}
+
+		for i := limit; i < len(metas); i++ {
+			commandErrors++
+			meta := metas[i]
+			c.log.Error().
+				Str("key", meta.Key).
+				Str("command", meta.Command).
+				Msg("missing TI hash cache command result")
 		}
 
 		for _, keyState := range keyStates {

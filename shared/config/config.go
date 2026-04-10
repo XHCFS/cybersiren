@@ -25,12 +25,13 @@ type Config struct {
 	Auth   AuthConfig   `koanf:"auth"`
 	Log    LogConfig    `koanf:"log"`
 
-	JaegerEndpoint      string `koanf:"jaeger_endpoint"`
-	MetricsPort         int    `koanf:"metrics_port"`
-	FeedPhishTankAPIKey string `koanf:"feed_phishtank_api_key"`
-	FeedThreatFoxAPIKey string `koanf:"feed_threatfox_api_key"`
-	FeedOpenPhishAPIKey string `koanf:"feed_openphish_api_key"`
-	SyncIntervalSeconds int    `koanf:"sync_interval_seconds"`
+	JaegerEndpoint          string `koanf:"jaeger_endpoint"`
+	MetricsPort             int    `koanf:"metrics_port"`
+	FeedPhishTankAPIKey     string `koanf:"feed_phishtank_api_key"`
+	FeedThreatFoxAPIKey     string `koanf:"feed_threatfox_api_key"`
+	FeedOpenPhishAPIKey     string `koanf:"feed_openphish_api_key"`
+	FeedMalwareBazaarAPIKey string `koanf:"feed_malwarebazaar_api_key"`
+	SyncIntervalSeconds     int    `koanf:"sync_interval_seconds"`
 
 	Valkey     ValkeyConfig     `koanf:"valkey"`
 	Worker     WorkerConfig     `koanf:"worker"`
