@@ -1,10 +1,23 @@
+# =============================================================================
+# CyberSiren — Prometheus Scrape Configuration
+# =============================================================================
+# Targets that are not running are marked as "down" in Prometheus — this is
+# expected and harmless. Only running services produce metrics.
+# To add a new service: append a static_configs entry with its container name
+# and the port it exposes /metrics on (typically 9090).
+# =============================================================================
+
 global:
   scrape_interval: 10s
   evaluation_interval: 10s
 
 scrape_configs:
-  - job_name: "svc-03-url-analysis"
+  - job_name: "cybersiren-services"
+    scrape_timeout: 5s
     static_configs:
       - targets: ["svc-03-url-analysis:9090"]
         labels:
           service: "svc-03-url-analysis"
+      - targets: ["svc-11-ti-sync:9090"]
+        labels:
+          service: "svc-11-ti-sync"

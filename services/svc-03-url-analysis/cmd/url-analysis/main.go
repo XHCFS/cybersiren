@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net/http"
 	"os/signal"
@@ -60,30 +59,8 @@ func main() {
 
 	reg := metrics.Init("svc-03-url-analysis")
 
-	mux := http.NewServeMux()
-	mux.Handle("/metrics", metrics.HTTPHandler(reg))
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("ok"))
-	})
-
-	metricsSrv := &http.Server{
-		Addr:         fmt.Sprintf(":%d", cfg.MetricsPort),
-		Handler:      mux,
-		ReadTimeout:  5 * time.Second,
-		WriteTimeout: 10 * time.Second,
-		IdleTimeout:  30 * time.Second,
-	}
-	go func() {
-		if listenErr := metricsSrv.ListenAndServe(); listenErr != nil && !errors.Is(listenErr, http.ErrServerClosed) {
-			log.Error().Err(listenErr).Msg("metrics server error")
-		}
-	}()
-	defer func() {
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_ = metricsSrv.Shutdown(shutdownCtx)
-	}()
+	metricsShutdown := metrics.StartServer(cfg.MetricsPort, reg, log)
+	defer func() { _ = metricsShutdown(context.Background()) }()
 
 	poolOpts := pool.PoolOptions{
 		MaxConns:          int32(cfg.DB.MaxConns),
