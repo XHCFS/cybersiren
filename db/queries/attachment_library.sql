@@ -8,7 +8,7 @@ ON CONFLICT (sha256)
 DO UPDATE
 SET
     is_malicious = TRUE,
-    risk_score   = GREATEST(attachment_library.risk_score, EXCLUDED.risk_score),
+    risk_score   = GREATEST(COALESCE(attachment_library.risk_score, 0), COALESCE(EXCLUDED.risk_score, 0)),
     threat_tags  = (
         SELECT ARRAY(
             SELECT DISTINCT tag
@@ -29,7 +29,8 @@ SELECT
     id,
     sha256,
     risk_score,
-    threat_tags
+    threat_tags,
+    updated_at
 FROM attachment_library
 WHERE is_malicious = TRUE
   AND deleted_at IS NULL;

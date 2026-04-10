@@ -42,8 +42,8 @@ type ValkeyTICache struct {
 	repo   repository.TIRepository
 	log    zerolog.Logger
 
-	refreshKeysTotal prometheus.Gauge
-	refreshDuration  prometheus.Histogram
+	refreshKeysTotal *prometheus.GaugeVec
+	refreshDuration  *prometheus.HistogramVec
 	blocklistLookups *prometheus.CounterVec
 }
 
@@ -54,16 +54,16 @@ func NewTICache(client valkeygo.Client, repo repository.TIRepository, log zerolo
 		metrics = prometheus.NewRegistry()
 	}
 
-	refreshKeysTotal := registerGauge(metrics, prometheus.NewGauge(prometheus.GaugeOpts{
+	refreshKeysTotal := registerGaugeVec(metrics, prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "ti_cache_refresh_keys_total",
-		Help: "Total TI domain cache keys written in the most recent refresh.",
-	}))
+		Help: "Total TI cache keys written in the most recent refresh, partitioned by cache type.",
+	}, []string{"cache_type"}))
 
-	refreshDuration := registerHistogram(metrics, prometheus.NewHistogram(prometheus.HistogramOpts{
+	refreshDuration := registerHistogramVec(metrics, prometheus.NewHistogramVec(prometheus.HistogramOpts{
 		Name:    "ti_cache_refresh_duration_seconds",
-		Help:    "Duration of TI domain cache refresh operations in seconds.",
+		Help:    "Duration of TI cache refresh operations in seconds, partitioned by cache type.",
 		Buckets: prometheus.DefBuckets,
-	}))
+	}, []string{"cache_type"}))
 
 	blocklistLookups := registerCounterVec(metrics, prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "ti_cache_blocklist_lookups_total",
@@ -94,9 +94,7 @@ func (c *ValkeyTICache) RefreshDomainCache(ctx context.Context) (err error) {
 			attribute.Float64("duration_seconds", duration.Seconds()),
 		)
 
-		if c != nil && c.refreshDuration != nil {
-			c.refreshDuration.Observe(duration.Seconds())
-		}
+		c.observeRefreshDuration("domain", duration)
 
 		if err != nil {
 			span.RecordError(err)
@@ -209,9 +207,7 @@ func (c *ValkeyTICache) RefreshDomainCache(ctx context.Context) (err error) {
 		}
 	}
 
-	if c.refreshKeysTotal != nil {
-		c.refreshKeysTotal.Set(float64(keysWritten))
-	}
+	c.setRefreshKeys("domain", keysWritten)
 
 	return nil
 }
@@ -231,9 +227,7 @@ func (c *ValkeyTICache) RefreshHashCache(ctx context.Context) (err error) {
 			attribute.Float64("duration_seconds", duration.Seconds()),
 		)
 
-		if c != nil && c.refreshDuration != nil {
-			c.refreshDuration.Observe(duration.Seconds())
-		}
+		c.observeRefreshDuration("hash", duration)
 
 		if err != nil {
 			span.RecordError(err)
@@ -270,14 +264,19 @@ func (c *ValkeyTICache) RefreshHashCache(ctx context.Context) (err error) {
 			}
 
 			key := fmt.Sprintf("ti_hash:{%s}", strings.ToLower(sha))
-			source := strings.Join(h.ThreatTags, ",")
+			tags := strings.Join(h.ThreatTags, ",")
+			updatedAt := ""
+			if !h.UpdatedAt.IsZero() {
+				updatedAt = h.UpdatedAt.UTC().Format(time.RFC3339)
+			}
 
 			hsetCmd := c.client.B().Hset().
 				Key(key).
 				FieldValue().
-				FieldValue("is_malicious", "true").
+				FieldValue("type", "sha256").
 				FieldValue("risk_score", strconv.Itoa(h.RiskScore)).
-				FieldValue("source", source).
+				FieldValue("tags", tags).
+				FieldValue("updated_at", updatedAt).
 				Build()
 			expireCmd := c.client.B().Expire().Key(key).Seconds(tiHashTTLSeconds).Build()
 
@@ -346,9 +345,7 @@ func (c *ValkeyTICache) RefreshHashCache(ctx context.Context) (err error) {
 		}
 	}
 
-	if c.refreshKeysTotal != nil {
-		c.refreshKeysTotal.Set(float64(keysWritten))
-	}
+	c.setRefreshKeys("hash", keysWritten)
 
 	return nil
 }
@@ -439,6 +436,23 @@ func registerGauge(registry *prometheus.Registry, gauge prometheus.Gauge) promet
 	return gauge
 }
 
+func registerGaugeVec(registry *prometheus.Registry, gaugeVec *prometheus.GaugeVec) *prometheus.GaugeVec {
+	err := registry.Register(gaugeVec)
+	if err == nil {
+		return gaugeVec
+	}
+
+	var alreadyRegistered prometheus.AlreadyRegisteredError
+	if errors.As(err, &alreadyRegistered) {
+		existing, ok := alreadyRegistered.ExistingCollector.(*prometheus.GaugeVec)
+		if ok {
+			return existing
+		}
+	}
+
+	return gaugeVec
+}
+
 func registerHistogram(registry *prometheus.Registry, histogram prometheus.Histogram) prometheus.Histogram {
 	err := registry.Register(histogram)
 	if err == nil {
@@ -456,6 +470,23 @@ func registerHistogram(registry *prometheus.Registry, histogram prometheus.Histo
 	return histogram
 }
 
+func registerHistogramVec(registry *prometheus.Registry, histogramVec *prometheus.HistogramVec) *prometheus.HistogramVec {
+	err := registry.Register(histogramVec)
+	if err == nil {
+		return histogramVec
+	}
+
+	var alreadyRegistered prometheus.AlreadyRegisteredError
+	if errors.As(err, &alreadyRegistered) {
+		existing, ok := alreadyRegistered.ExistingCollector.(*prometheus.HistogramVec)
+		if ok {
+			return existing
+		}
+	}
+
+	return histogramVec
+}
+
 func registerCounterVec(registry *prometheus.Registry, counterVec *prometheus.CounterVec) *prometheus.CounterVec {
 	err := registry.Register(counterVec)
 	if err == nil {
@@ -471,4 +502,20 @@ func registerCounterVec(registry *prometheus.Registry, counterVec *prometheus.Co
 	}
 
 	return counterVec
+}
+
+func (c *ValkeyTICache) observeRefreshDuration(cacheType string, duration time.Duration) {
+	if c == nil || c.refreshDuration == nil {
+		return
+	}
+
+	c.refreshDuration.WithLabelValues(cacheType).Observe(duration.Seconds())
+}
+
+func (c *ValkeyTICache) setRefreshKeys(cacheType string, keysWritten int) {
+	if c == nil || c.refreshKeysTotal == nil {
+		return
+	}
+
+	c.refreshKeysTotal.WithLabelValues(cacheType).Set(float64(keysWritten))
 }

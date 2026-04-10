@@ -148,7 +148,8 @@ func (r *Runner) SyncAll(ctx context.Context) (err error) {
 			feedID = indicators[0].FeedID
 		}
 
-		upsertResult, upsertErr := r.repo.BulkUpsertIndicators(feedCtx, toRepositoryIndicators(feedName, feedID, indicators))
+		nonHashIndicators := excludeHashIndicators(indicators)
+		upsertResult, upsertErr := r.repo.BulkUpsertIndicators(feedCtx, toRepositoryIndicators(feedName, feedID, nonHashIndicators))
 		if upsertErr != nil {
 			r.log.Error().Err(upsertErr).Str("feed", feedName).Msg("feed indicator upsert failed")
 			feedSpan.RecordError(upsertErr)
@@ -320,7 +321,7 @@ func toRepositoryIndicators(feedName string, fallbackFeedID int64, indicators []
 func extractHashIndicators(indicators []TIIndicator) []repository.MalwareHash {
 	hashes := make([]repository.MalwareHash, 0)
 	for _, ind := range indicators {
-		if strings.TrimSpace(ind.IndicatorType) != "hash" {
+		if strings.TrimSpace(ind.IndicatorType) != HashIndicatorType {
 			continue
 		}
 
@@ -342,6 +343,19 @@ func extractHashIndicators(indicators []TIIndicator) []repository.MalwareHash {
 	}
 
 	return hashes
+}
+
+func excludeHashIndicators(indicators []TIIndicator) []TIIndicator {
+	filtered := make([]TIIndicator, 0, len(indicators))
+	for _, indicator := range indicators {
+		if strings.TrimSpace(indicator.IndicatorType) == HashIndicatorType {
+			continue
+		}
+
+		filtered = append(filtered, indicator)
+	}
+
+	return filtered
 }
 
 func registerCounter(registry *prometheus.Registry, counter prometheus.Counter) prometheus.Counter {

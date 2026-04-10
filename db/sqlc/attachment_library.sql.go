@@ -16,17 +16,19 @@ SELECT
     id,
     sha256,
     risk_score,
-    threat_tags
+    threat_tags,
+    updated_at
 FROM attachment_library
 WHERE is_malicious = TRUE
   AND deleted_at IS NULL
 `
 
 type ListMaliciousHashesRow struct {
-	ID         int64       `db:"id" json:"id"`
-	Sha256     string      `db:"sha256" json:"sha256"`
-	RiskScore  pgtype.Int4 `db:"risk_score" json:"risk_score"`
-	ThreatTags []string    `db:"threat_tags" json:"threat_tags"`
+	ID         int64              `db:"id" json:"id"`
+	Sha256     string             `db:"sha256" json:"sha256"`
+	RiskScore  pgtype.Int4        `db:"risk_score" json:"risk_score"`
+	ThreatTags []string           `db:"threat_tags" json:"threat_tags"`
+	UpdatedAt  pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
 }
 
 // Returns all malicious hashes for populating the TI hash cache.
@@ -44,6 +46,7 @@ func (q *Queries) ListMaliciousHashes(ctx context.Context) ([]ListMaliciousHashe
 			&i.Sha256,
 			&i.RiskScore,
 			&i.ThreatTags,
+			&i.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -62,7 +65,7 @@ ON CONFLICT (sha256)
 DO UPDATE
 SET
     is_malicious = TRUE,
-    risk_score   = GREATEST(attachment_library.risk_score, EXCLUDED.risk_score),
+    risk_score   = GREATEST(COALESCE(attachment_library.risk_score, 0), COALESCE(EXCLUDED.risk_score, 0)),
     threat_tags  = (
         SELECT ARRAY(
             SELECT DISTINCT tag
