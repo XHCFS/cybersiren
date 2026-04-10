@@ -102,6 +102,7 @@ Runs any service with Postgres, Valkey, Prometheus, Grafana, and Jaeger. No envi
 ```bash
 make demo svc=svc-03-url-analysis   # URL scanner with full observability
 make demo svc=svc-11-ti-sync        # threat-intel sync with full observability
+make demo-all                       # ALL services at once
 ```
 
 Open http://localhost:8083 once the service prints `started port=8083`.
@@ -163,6 +164,7 @@ make demo svc=svc-11-ti-sync
 
 ```bash
 make demo svc=<name>     # start service + full observability stack
+make demo-all            # start ALL services + full observability stack
 make jaeger              # start Jaeger standalone
 make open-grafana        # open Grafana in browser
 make open-prometheus     # open Prometheus in browser
