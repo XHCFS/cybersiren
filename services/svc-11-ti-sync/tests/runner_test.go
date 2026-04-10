@@ -194,12 +194,68 @@ func TestRunnerSyncAll_HashUpsertAndHashCacheErrorsAreBestEffort(t *testing.T) {
 	runner := ti.NewRunner(feeds, repo, cache, zerolog.Nop(), prometheus.NewRegistry())
 	err := runner.SyncAll(context.Background())
 
-	require.NoError(t, err)
+	// Hash-only feeds treat a hash upsert failure as fatal because zero
+	// data was persisted, so SyncAll reports all feeds failed.
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "all 1 feeds failed")
 	assert.Empty(t, repo.upsertIndicatorBatches[0])
+	assert.Len(t, repo.malwareHashBatches, 1)
+	// Deactivation runs after hash upsert; since hash upsert failed and
+	// the feed is hash-only, the loop continues before reaching deactivation.
+	assert.Empty(t, repo.deactivateCalls)
+	// Cache and MV refresh are skipped when all feeds fail.
+	assert.False(t, cache.refreshCalled)
+	assert.False(t, cache.hashRefreshCalled)
+	assert.False(t, repo.refreshMVCalled)
+}
+
+func TestRunnerSyncAll_MixedFeedHashUpsertFailureIsBestEffort(t *testing.T) {
+	repo := &mockRepo{malwareHashErr: errors.New("hash upsert failed")}
+	cache := &mockCache{}
+	feeds := []ti.Feed{
+		&mockFeed{
+			name:   "threatfox",
+			feedID: 7,
+			indicators: []ti.TIIndicator{
+				testIndicator(7, "https://evil.example"),
+				testHashIndicator(7, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
+			},
+		},
+	}
+
+	runner := ti.NewRunner(feeds, repo, cache, zerolog.Nop(), prometheus.NewRegistry())
+	err := runner.SyncAll(context.Background())
+
+	// Mixed feeds have non-hash indicators persisted, so hash upsert failure
+	// is best-effort — SyncAll should still succeed.
+	require.NoError(t, err)
+	assert.Len(t, repo.upsertIndicatorBatches, 1)
+	assert.Len(t, repo.upsertIndicatorBatches[0], 1, "only non-hash indicator should be upserted")
 	assert.Len(t, repo.malwareHashBatches, 1)
 	assert.True(t, cache.refreshCalled)
 	assert.True(t, cache.hashRefreshCalled)
 	assert.True(t, repo.refreshMVCalled)
+}
+
+func TestRunnerSyncAll_HashOnlyFeedCallsDeactivateStaleIndicators(t *testing.T) {
+	repo := &mockRepo{deactivateResult: 3}
+	cache := &mockCache{}
+	feeds := []ti.Feed{
+		&mockFeed{
+			name:       "malwarebazaar",
+			feedID:     8,
+			indicators: []ti.TIIndicator{testHashIndicator(8, "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc")},
+		},
+	}
+
+	runner := ti.NewRunner(feeds, repo, cache, zerolog.Nop(), prometheus.NewRegistry())
+	err := runner.SyncAll(context.Background())
+
+	require.NoError(t, err)
+	// Hash-only feeds should still call DeactivateStaleIndicators.
+	require.Len(t, repo.deactivateCalls, 1)
+	assert.Equal(t, int64(8), repo.deactivateCalls[0])
+	assert.True(t, cache.hashRefreshCalled)
 }
 
 func TestRunnerSyncAll_ContextCancellationSkipsRemainingFeeds(t *testing.T) {
@@ -275,6 +331,9 @@ type mockRepo struct {
 	upsertIndicatorBatches [][]repository.TIIndicator
 	malwareHashBatches     [][]repository.MalwareHash
 	malwareHashErr         error
+	deactivateCalls        []int64
+	deactivateResult       int
+	deactivateErr          error
 	updateFetchedCalls     []int64
 	refreshMVCalled        bool
 	refreshMVErr           error
@@ -305,6 +364,14 @@ func (m *mockRepo) BulkUpsertIndicators(_ context.Context, indicators []reposito
 func (m *mockRepo) UpdateFeedLastFetched(_ context.Context, feedID int64) error {
 	m.updateFetchedCalls = append(m.updateFetchedCalls, feedID)
 	return nil
+}
+
+func (m *mockRepo) DeactivateStaleIndicators(_ context.Context, feedID int64) (int, error) {
+	m.deactivateCalls = append(m.deactivateCalls, feedID)
+	if m.deactivateErr != nil {
+		return 0, m.deactivateErr
+	}
+	return m.deactivateResult, nil
 }
 
 func (m *mockRepo) ListActiveDomainIndicators(_ context.Context) ([]repository.DomainIndicator, error) {

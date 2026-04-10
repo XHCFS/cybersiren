@@ -25,7 +25,8 @@ SET
             ORDER BY tag
         )
     ),
-    updated_at   = NOW();
+    updated_at   = NOW(),
+    deleted_at   = NULL;
 
 -- name: ListMaliciousHashes :many
 -- Returns all malicious hashes for populating the TI hash cache.

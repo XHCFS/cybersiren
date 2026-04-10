@@ -82,7 +82,8 @@ SET
             ORDER BY tag
         )
     ),
-    updated_at   = NOW()
+    updated_at   = NOW(),
+    deleted_at   = NULL
 `
 
 type UpsertMalwareHashParams struct {
