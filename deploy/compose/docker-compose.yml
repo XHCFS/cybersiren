@@ -255,7 +255,7 @@ services:
     restart: unless-stopped
 
   # ── Prometheus (metrics scraper) ──────────────────────────────────────────
-  # Scrapes /metrics from svc-03 every 10 s. UI at http://localhost:9092.
+  # Scrapes /metrics from all services every 10 s. UI at http://localhost:9092.
   prometheus:
     image: prom/prometheus:latest
     profiles: ["demo"]
@@ -272,8 +272,8 @@ services:
     restart: unless-stopped
 
   # ── Grafana (metrics dashboards) ───────────────────────────────────────────
-  # Auto-provisioned with Prometheus datasource + svc-03 dashboard.
-  # UI at http://localhost:3000. Login: admin / admin (skip password change).
+  # Auto-provisioned with Prometheus datasource + pipeline dashboards.
+  # UI at http://localhost:3001. Login: admin / admin (skip password change).
   grafana:
     image: grafana/grafana:latest
     profiles: ["demo"]
@@ -285,7 +285,7 @@ services:
       GF_SECURITY_ADMIN_PASSWORD: admin
       GF_AUTH_ANONYMOUS_ENABLED: "true"
       GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
-      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/svc-03-url-analysis.json
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/pipeline-overview.json
     volumes:
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
       - ./grafana/dashboards:/var/lib/grafana/dashboards:ro

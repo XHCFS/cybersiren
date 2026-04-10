@@ -3,8 +3,62 @@ global:
   evaluation_interval: 10s
 
 scrape_configs:
+  - job_name: "svc-01-ingestion"
+    static_configs:
+      - targets: ["svc-01-ingestion:9090"]
+        labels:
+          service: "svc-01-ingestion"
+
+  - job_name: "svc-02-parser"
+    static_configs:
+      - targets: ["svc-02-parser:9090"]
+        labels:
+          service: "svc-02-parser"
+
   - job_name: "svc-03-url-analysis"
     static_configs:
       - targets: ["svc-03-url-analysis:9090"]
         labels:
           service: "svc-03-url-analysis"
+
+  - job_name: "svc-04-header-analysis"
+    static_configs:
+      - targets: ["svc-04-header-analysis:9090"]
+        labels:
+          service: "svc-04-header-analysis"
+
+  - job_name: "svc-05-attachment-analysis"
+    static_configs:
+      - targets: ["svc-05-attachment-analysis:9090"]
+        labels:
+          service: "svc-05-attachment-analysis"
+
+  - job_name: "svc-07-aggregator"
+    static_configs:
+      - targets: ["svc-07-aggregator:9090"]
+        labels:
+          service: "svc-07-aggregator"
+
+  - job_name: "svc-08-decision"
+    static_configs:
+      - targets: ["svc-08-decision:9090"]
+        labels:
+          service: "svc-08-decision"
+
+  - job_name: "svc-09-notification"
+    static_configs:
+      - targets: ["svc-09-notification:9090"]
+        labels:
+          service: "svc-09-notification"
+
+  - job_name: "svc-10-api-dashboard"
+    static_configs:
+      - targets: ["svc-10-api-dashboard:9090"]
+        labels:
+          service: "svc-10-api-dashboard"
+
+  - job_name: "svc-11-ti-sync"
+    static_configs:
+      - targets: ["svc-11-ti-sync:9090"]
+        labels:
+          service: "svc-11-ti-sync"
