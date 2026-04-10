@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -300,26 +301,53 @@ func TestThreatFoxFeed_Fetch(t *testing.T) {
 
 	testCases := []testCase{
 		{
-			name:       "success with url-only filter and confidence clamp",
+			name:       "success with multi-type indicators",
 			statusCode: http.StatusOK,
 			body: `{"query_status":"ok","data":[
 				{"id":"11","ioc_type":"url","ioc":"https://evil.example/path","threat_type":"phishing","tags":["kit","phish"],"confidence_level":88},
 				{"id":"12","ioc_type":"domain","ioc":"evil.example","threat_type":"phishing","tags":["skip"],"confidence_level":55},
-				{"id":13,"ioc_type":"url","ioc":"https://high.example","threat_type":"malware","tags":"c2,botnet","confidence_level":150}
+				{"id":13,"ioc_type":"url","ioc":"https://high.example","threat_type":"malware","tags":"c2,botnet","confidence_level":150},
+				{"id":"14","ioc_type":"ip:port","ioc":"192.0.2.1:443","threat_type":"c2","tags":["botnet"],"confidence_level":70},
+				{"id":"15","ioc_type":"sha256_hash","ioc":"ABCDEF1234567890ABCDEF1234567890ABCDEF1234567890ABCDEF1234567890","threat_type":"malware","tags":["trojan"],"confidence_level":95}
 			]}`,
-			expectCount: 2,
+			expectCount: 5,
 			checkResponse: func(t *testing.T, indicators []ti.TIIndicator) {
-				require.Len(t, indicators, 2)
+				require.Len(t, indicators, 5)
+
+				// URL entry.
 				assert.Equal(t, "11", indicators[0].SourceID)
+				assert.Equal(t, "url", indicators[0].IndicatorType)
 				assert.Equal(t, "https://evil.example/path", indicators[0].IndicatorValue)
 				assert.Equal(t, 88, indicators[0].RiskScore)
 				assert.Equal(t, 0.88, indicators[0].Confidence)
 				assert.Contains(t, indicators[0].ThreatTags, "threatfox")
 
-				assert.Equal(t, "13", indicators[1].SourceID)
-				assert.Equal(t, 100, indicators[1].RiskScore)
-				assert.Equal(t, 1.0, indicators[1].Confidence)
-				assert.Equal(t, "malware", indicators[1].ThreatType)
+				// Domain entry (previously filtered out).
+				assert.Equal(t, "12", indicators[1].SourceID)
+				assert.Equal(t, "domain", indicators[1].IndicatorType)
+				assert.Equal(t, "evil.example", indicators[1].IndicatorValue)
+				assert.Equal(t, 55, indicators[1].RiskScore)
+
+				// URL with clamped confidence.
+				assert.Equal(t, "13", indicators[2].SourceID)
+				assert.Equal(t, "url", indicators[2].IndicatorType)
+				assert.Equal(t, 100, indicators[2].RiskScore)
+				assert.Equal(t, 1.0, indicators[2].Confidence)
+				assert.Equal(t, "malware", indicators[2].ThreatType)
+
+				// IP:port entry.
+				assert.Equal(t, "14", indicators[3].SourceID)
+				assert.Equal(t, "ip", indicators[3].IndicatorType)
+				assert.Equal(t, "192.0.2.1", indicators[3].IndicatorValue)
+				assert.Equal(t, 70, indicators[3].RiskScore)
+				assert.Contains(t, indicators[3].ThreatTags, "threatfox")
+
+				// Hash entry.
+				assert.Equal(t, "15", indicators[4].SourceID)
+				assert.Equal(t, "hash", indicators[4].IndicatorType)
+				assert.Equal(t, "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890", indicators[4].IndicatorValue)
+				assert.Equal(t, 95, indicators[4].RiskScore)
+				assert.Contains(t, indicators[4].ThreatTags, "threatfox")
 			},
 		},
 		{
@@ -373,6 +401,125 @@ func TestThreatFoxFeed_Fetch(t *testing.T) {
 			if tc.expectErr {
 				require.Error(t, err)
 				assert.Contains(t, err.Error(), "threatfox:")
+				if tc.errIs != nil {
+					assert.True(t, errors.Is(err, tc.errIs))
+				}
+				return
+			}
+
+			require.NoError(t, err)
+			assert.Len(t, indicators, tc.expectCount)
+			if tc.checkResponse != nil {
+				tc.checkResponse(t, indicators)
+			}
+		})
+	}
+}
+
+func TestMalwareBazaarFeed_Fetch(t *testing.T) {
+	type testCase struct {
+		name          string
+		statusCode    int
+		body          string
+		expectErr     bool
+		errIs         error
+		expectCount   int
+		checkResponse func(t *testing.T, indicators []ti.TIIndicator)
+	}
+
+	sha256Valid := "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+
+	testCases := []testCase{
+		{
+			name:       "success parses sha256 hashes",
+			statusCode: http.StatusOK,
+			body: fmt.Sprintf(`{"query_status":"ok","data":[
+				{"sha256_hash":"%s","md5_hash":"d41d8cd98f00b204e9800998ecf8427e","sha1_hash":"da39a3ee5e6b4b0d3255bfef95601890afd80709","file_type":"exe","signature":"AgentTesla","tags":["stealer","rat"],"reporter":"abuse_ch"},
+				{"sha256_hash":"","md5_hash":"skip","sha1_hash":"skip","file_type":"dll","signature":"","tags":null,"reporter":"someone"}
+			]}`, sha256Valid),
+			expectCount: 1,
+			checkResponse: func(t *testing.T, indicators []ti.TIIndicator) {
+				require.Len(t, indicators, 1)
+				ind := indicators[0]
+				assert.Equal(t, "hash", ind.IndicatorType)
+				assert.Equal(t, sha256Valid, ind.IndicatorValue)
+				assert.Equal(t, 90, ind.RiskScore)
+				assert.Equal(t, 0.95, ind.Confidence)
+				assert.Equal(t, "AgentTesla", ind.ThreatType)
+				assert.Contains(t, ind.ThreatTags, "malwarebazaar")
+				assert.Contains(t, ind.ThreatTags, "stealer")
+				assert.Contains(t, ind.ThreatTags, "rat")
+				assert.Contains(t, ind.ThreatTags, "exe")
+				assert.Equal(t, sha256Valid, ind.SourceID)
+				assert.NotEmpty(t, ind.RawMetadata)
+			},
+		},
+		{
+			name:        "signature empty defaults to malware",
+			statusCode:  http.StatusOK,
+			body:        `{"query_status":"ok","data":[{"sha256_hash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","md5_hash":"","sha1_hash":"","file_type":"pdf","signature":"","tags":[],"reporter":"tester"}]}`,
+			expectCount: 1,
+			checkResponse: func(t *testing.T, indicators []ti.TIIndicator) {
+				require.Len(t, indicators, 1)
+				assert.Equal(t, "malware", indicators[0].ThreatType)
+				assert.Contains(t, indicators[0].ThreatTags, "pdf")
+			},
+		},
+		{
+			name:        "empty data array",
+			statusCode:  http.StatusOK,
+			body:        `{"query_status":"ok","data":[]}`,
+			expectCount: 0,
+		},
+		{
+			name:       "query status error",
+			statusCode: http.StatusOK,
+			body:       `{"query_status":"no_results","data":[]}`,
+			expectErr:  true,
+			errIs:      ti.ErrMalwareBazaarAPIError,
+		},
+		{
+			name:       "http server error",
+			statusCode: http.StatusServiceUnavailable,
+			body:       `{"error":"upstream"}`,
+			expectErr:  true,
+		},
+		{
+			name:       "invalid json",
+			statusCode: http.StatusOK,
+			body:       `{`,
+			expectErr:  true,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			client := newTestHTTPClient()
+			var requestMethod string
+			var contentType string
+			var requestBody string
+
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requestMethod = r.Method
+				contentType = r.Header.Get("Content-Type")
+				payload, _ := io.ReadAll(r.Body)
+				requestBody = string(payload)
+				w.WriteHeader(tc.statusCode)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer server.Close()
+
+			feed := tifeeds.NewMalwareBazaarFeed(14, nil, client, zerolog.Nop())
+			feed.URL = server.URL
+
+			indicators, err := feed.Fetch(context.Background())
+			assert.Equal(t, http.MethodPost, requestMethod)
+			assert.Contains(t, strings.ToLower(contentType), "application/x-www-form-urlencoded")
+			assert.Contains(t, requestBody, "query=get_recent")
+
+			if tc.expectErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "malwarebazaar:")
 				if tc.errIs != nil {
 					assert.True(t, errors.Is(err, tc.errIs))
 				}

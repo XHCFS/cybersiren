@@ -28,8 +28,10 @@ var tiRepoTracer = tracing.Tracer("shared/postgres/repository/ti_repo")
 // TIRepository is the interface all callers should use.
 type TIRepository interface {
 	BulkUpsertIndicators(ctx context.Context, indicators []TIIndicator) (UpsertResult, error)
+	BulkUpsertMalwareHashes(ctx context.Context, hashes []MalwareHash) (UpsertResult, error)
 	UpdateFeedLastFetched(ctx context.Context, feedID int64) error
 	ListActiveDomainIndicators(ctx context.Context) ([]DomainIndicator, error)
+	ListMaliciousHashes(ctx context.Context) ([]MaliciousHash, error)
 	RefreshAllMaterializedViews(ctx context.Context) error
 }
 
@@ -57,11 +59,27 @@ type UpsertResult struct {
 	Deactivated int
 }
 
+// DomainIndicator is the repository output model for active domain indicators.
 type DomainIndicator struct {
 	ID             int64
 	IndicatorValue string
 	ThreatType     string
 	RiskScore      int
+}
+
+// MalwareHash is the repository input model for malware hash upsert operations.
+type MalwareHash struct {
+	SHA256     string
+	RiskScore  int
+	ThreatTags []string
+}
+
+// MaliciousHash is the repository output model for known-malicious attachment hashes.
+type MaliciousHash struct {
+	ID         int64
+	SHA256     string
+	RiskScore  int
+	ThreatTags []string
 }
 
 // PostgresTIRepository is the concrete pgx-backed implementation.
@@ -270,6 +288,142 @@ func (r *PostgresTIRepository) ListActiveDomainIndicators(ctx context.Context) (
 			IndicatorValue: row.IndicatorValue,
 			RiskScore:      int(row.RiskScore),
 			ThreatType:     threatType,
+		})
+	}
+
+	return items, nil
+}
+
+func (r *PostgresTIRepository) BulkUpsertMalwareHashes(ctx context.Context, hashes []MalwareHash) (result UpsertResult, err error) {
+	startedAt := time.Now().UTC()
+
+	ctx, span := tiRepoTracer.Start(ctx, "ti_repo.BulkUpsertMalwareHashes")
+	defer func() {
+		duration := time.Since(startedAt)
+		span.SetAttributes(
+			attribute.Int("hash_count", len(hashes)),
+			attribute.Float64("duration_seconds", duration.Seconds()),
+		)
+
+		if r != nil && r.syncDuration != nil {
+			r.syncDuration.Observe(duration.Seconds())
+		}
+
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+		}
+
+		span.End()
+	}()
+
+	if err = r.ensureReady(); err != nil {
+		return result, err
+	}
+
+	if len(hashes) == 0 {
+		return result, nil
+	}
+
+	tx, txErr := r.pool.Begin(ctx)
+	if txErr != nil {
+		return result, fmt.Errorf("begin malware hash upsert transaction: %w", txErr)
+	}
+	defer func() {
+		_ = tx.Rollback(ctx)
+	}()
+
+	qtx := r.q.WithTx(tx)
+
+	for chunkStart := 0; chunkStart < len(hashes); chunkStart += indicatorChunkSize {
+		chunkEnd := chunkStart + indicatorChunkSize
+		if chunkEnd > len(hashes) {
+			chunkEnd = len(hashes)
+		}
+
+		for _, h := range hashes[chunkStart:chunkEnd] {
+			sha := strings.TrimSpace(strings.ToLower(h.SHA256))
+			if sha == "" {
+				continue
+			}
+
+			riskScore := h.RiskScore
+			if riskScore < 0 || riskScore > 100 {
+				return result, fmt.Errorf("malware hash %q: risk_score must be between 0 and 100, got %d", sha, riskScore)
+			}
+
+			tags := append([]string(nil), h.ThreatTags...)
+			if tags == nil {
+				tags = []string{}
+			}
+
+			upsertErr := qtx.UpsertMalwareHash(ctx, db.UpsertMalwareHashParams{
+				Sha256: sha,
+				RiskScore: pgtype.Int4{
+					Int32: int32(riskScore),
+					Valid: true,
+				},
+				ThreatTags: tags,
+			})
+			if upsertErr != nil {
+				return result, fmt.Errorf("upsert malware hash %q: %w", sha, upsertErr)
+			}
+
+			// UpsertMalwareHash is :exec so we cannot distinguish insert vs update.
+			// Count every row as inserted for observability purposes.
+			result.Inserted++
+		}
+	}
+
+	if commitErr := tx.Commit(ctx); commitErr != nil {
+		return result, fmt.Errorf("commit malware hash upsert transaction: %w", commitErr)
+	}
+
+	r.observeUpsertMetrics("malware_hashes", result)
+	span.SetAttributes(
+		attribute.Int("inserted", result.Inserted),
+	)
+
+	return result, nil
+}
+
+func (r *PostgresTIRepository) ListMaliciousHashes(ctx context.Context) (items []MaliciousHash, err error) {
+	ctx, span := tiRepoTracer.Start(ctx, "ti_repo.ListMaliciousHashes")
+	defer func() {
+		span.SetAttributes(attribute.Int("hash_count", len(items)))
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+		}
+		span.End()
+	}()
+
+	if err = r.ensureReady(); err != nil {
+		return nil, err
+	}
+
+	rows, queryErr := r.q.ListMaliciousHashes(ctx)
+	if queryErr != nil {
+		return nil, fmt.Errorf("list malicious hashes: %w", queryErr)
+	}
+
+	items = make([]MaliciousHash, 0, len(rows))
+	for _, row := range rows {
+		riskScore := 0
+		if row.RiskScore.Valid {
+			riskScore = int(row.RiskScore.Int32)
+		}
+
+		tags := row.ThreatTags
+		if tags == nil {
+			tags = []string{}
+		}
+
+		items = append(items, MaliciousHash{
+			ID:         row.ID,
+			SHA256:     row.Sha256,
+			RiskScore:  riskScore,
+			ThreatTags: tags,
 		})
 	}
 
