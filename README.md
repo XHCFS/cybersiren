@@ -105,6 +105,13 @@ make demo svc=svc-11-ti-sync        # threat-intel sync with full observability
 make demo-all                       # ALL services at once
 ```
 
+Images are cached after the first run — startup is instant. Force a rebuild after code changes:
+
+```bash
+make demo-build svc=svc-11-ti-sync  # rebuild + start single service
+make demo-all-build                  # rebuild + start all services
+```
+
 Open http://localhost:8083 once the service prints `started port=8083`.
 
 | Port | Service |
@@ -163,8 +170,10 @@ make demo svc=svc-11-ti-sync
 ### Makefile targets
 
 ```bash
-make demo svc=<name>     # start service + full observability stack
-make demo-all            # start ALL services + full observability stack
+make demo svc=<name>         # start service + full observability stack (cached)
+make demo-build svc=<name>   # same but force-rebuilds image first
+make demo-all                # start ALL services + full observability stack (cached)
+make demo-all-build          # same but force-rebuilds all images first
 make jaeger              # start Jaeger standalone
 make open-grafana        # open Grafana in browser
 make open-prometheus     # open Prometheus in browser
