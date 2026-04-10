@@ -273,9 +273,29 @@ kafka-topics:
 check-tools:
 	@./scripts/dev/check_tools.sh
 
+# ── Service profile short-names ──────────────────────────────────────────────
+# Maps full service name to its docker-compose profile short-name.
+# Example: svc-03-url-analysis → svc-03, svc-11-ti-sync → svc-11
+svc-short-profile = $(shell echo $(1) | sed 's/^\(svc-[0-9]*\).*/\1/')
+
 # =============================================================================
 # ── Observability ────────────────────────────────────────────────────────────
 # =============================================================================
+
+## demo: Run a service with full observability stack (Prometheus, Grafana, Jaeger).
+##       Usage: make demo svc=svc-03-url-analysis
+##              make demo svc=svc-11-ti-sync
+demo: check-docker
+	@[ "$(svc)" ] || (echo "Usage: make demo svc=<service-name>"; exit 1)
+	$(DOCKER_COMPOSE) --profile postgres --profile valkey \
+	    --profile monitoring --profile observability \
+	    --profile $(call svc-short-profile,$(svc)) up -d --wait --build
+	@echo ""
+	@echo "  Service:     $(svc)"
+	@echo "  Grafana:     http://localhost:3001"
+	@echo "  Prometheus:  http://localhost:9092"
+	@echo "  Jaeger:      http://localhost:16686"
+	@echo ""
 
 ## jaeger: Start Jaeger standalone (use when already running infra separately)
 jaeger: check-docker
@@ -288,6 +308,14 @@ open:
 	@$(MAKE) _open-url url=http://localhost:8080
 	@$(MAKE) _open-url url=http://localhost:5050
 	@echo "Metrics endpoint (not a UI): http://localhost:$(METRICS_PORT)/metrics"
+
+## open-grafana: Open Grafana dashboards
+open-grafana:
+	@$(MAKE) _open-url url=http://localhost:3001
+
+## open-prometheus: Open Prometheus query UI
+open-prometheus:
+	@$(MAKE) _open-url url=http://localhost:9092
 
 ## open-jaeger: Open Jaeger tracing UI
 open-jaeger:
@@ -332,7 +360,8 @@ check-docker:
         test test-svc test-shared test-short test-cover \
         vet lint lint-fix tidy \
         valkey-cli kafka-topics check-tools \
-        jaeger open open-jaeger open-kafka-ui open-pgadmin _open-url \
+        demo jaeger \
+        open open-grafana open-prometheus open-jaeger open-kafka-ui open-pgadmin _open-url \
         help check-docker
 
 .DEFAULT_GOAL := help
