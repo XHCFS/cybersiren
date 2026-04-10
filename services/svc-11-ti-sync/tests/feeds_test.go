@@ -308,7 +308,8 @@ func TestThreatFoxFeed_Fetch(t *testing.T) {
 				{"id":"12","ioc_type":"domain","ioc":"evil.example","threat_type":"phishing","tags":["skip"],"confidence_level":55},
 				{"id":13,"ioc_type":"url","ioc":"https://high.example","threat_type":"malware","tags":"c2,botnet","confidence_level":150},
 				{"id":"14","ioc_type":"ip:port","ioc":"192.0.2.1:443","threat_type":"c2","tags":["botnet"],"confidence_level":70},
-				{"id":"15","ioc_type":"sha256_hash","ioc":"ABCDEF1234567890ABCDEF1234567890ABCDEF1234567890ABCDEF1234567890","threat_type":"malware","tags":["trojan"],"confidence_level":95}
+				{"id":"15","ioc_type":"sha256_hash","ioc":"ABCDEF1234567890ABCDEF1234567890ABCDEF1234567890ABCDEF1234567890","threat_type":"malware","tags":["trojan"],"confidence_level":95},
+				{"id":"16","ioc_type":"md5_hash","ioc":"d41d8cd98f00b204e9800998ecf8427e","threat_type":"malware","tags":["skip"],"confidence_level":10}
 			]}`,
 			expectCount: 5,
 			checkResponse: func(t *testing.T, indicators []ti.TIIndicator) {
@@ -344,7 +345,7 @@ func TestThreatFoxFeed_Fetch(t *testing.T) {
 
 				// Hash entry.
 				assert.Equal(t, "15", indicators[4].SourceID)
-				assert.Equal(t, "hash", indicators[4].IndicatorType)
+				assert.Equal(t, ti.HashIndicatorType, indicators[4].IndicatorType)
 				assert.Equal(t, "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890", indicators[4].IndicatorValue)
 				assert.Equal(t, 95, indicators[4].RiskScore)
 				assert.Contains(t, indicators[4].ThreatTags, "threatfox")
@@ -441,7 +442,7 @@ func TestMalwareBazaarFeed_Fetch(t *testing.T) {
 			checkResponse: func(t *testing.T, indicators []ti.TIIndicator) {
 				require.Len(t, indicators, 1)
 				ind := indicators[0]
-				assert.Equal(t, "hash", ind.IndicatorType)
+				assert.Equal(t, ti.HashIndicatorType, ind.IndicatorType)
 				assert.Equal(t, sha256Valid, ind.IndicatorValue)
 				assert.Equal(t, 90, ind.RiskScore)
 				assert.Equal(t, 0.95, ind.Confidence)

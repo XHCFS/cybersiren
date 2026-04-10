@@ -487,7 +487,7 @@
   <tr><td>Source</td><td><code>ListActiveDomainIndicators()</code> — all <code>is_active = TRUE</code> domain indicators</td></tr>
   <tr><td>Lookup method</td><td><code>IsBlocklisted(ctx, domain) → (hit bool, riskScore int, threatType string, err error)</code></td></tr>
   <tr><td>Normalization at lookup</td><td><code>normalization.NormalizeDomain()</code> applied before key lookup</td></tr>
-  <tr><td>Metrics</td><td><code>ti_cache_blocklist_lookups_total{hit="true"|"false"}</code>, <code>ti_cache_refresh_keys_total</code> gauge, <code>ti_cache_refresh_duration_seconds</code> histogram</td></tr>
+  <tr><td>Metrics</td><td><code>ti_cache_blocklist_lookups_total{hit="true"|"false"}</code>, <code>ti_cache_refresh_keys_total{cache_type="domain"|"hash"}</code> gauge, <code>ti_cache_refresh_duration_seconds{cache_type="domain"|"hash"}</code> histogram</td></tr>
 </table>
 
 <h3>6.2 Hash Cache — <code>ti_hash:{sha256}</code></h3>
@@ -496,7 +496,7 @@
   <tr><th>Aspect</th><th>Detail</th></tr>
   <tr><td>Key pattern</td><td><code>ti_hash:{sha256}</code> — SHA-256 in braces</td></tr>
   <tr><td>Value type</td><td>Hash (HSET)</td></tr>
-  <tr><td>Fields</td><td><code>is_malicious</code> ("true"), <code>risk_score</code> (int), <code>source</code> (comma-joined threat_tags)</td></tr>
+  <tr><td>Fields</td><td><code>type</code> ("sha256"), <code>risk_score</code> (int), <code>tags</code> (comma-joined threat_tags), <code>updated_at</code> (RFC3339 UTC timestamp)</td></tr>
   <tr><td>TTL</td><td>3,600 seconds (1 hour)</td></tr>
   <tr><td>Batch size</td><td>200 keys per <code>DoMulti</code> call</td></tr>
   <tr><td>Source</td><td><code>ListMaliciousHashes()</code> — all <code>is_malicious = TRUE</code>, <code>deleted_at IS NULL</code> rows from <code>attachment_library</code></td></tr>
@@ -575,8 +575,8 @@
   <tr><td><code>feed_sync_duration_seconds</code></td><td>Histogram</td><td>—</td><td>End-to-end SyncAll duration per cycle</td></tr>
   <tr><td><code>ti_repo_upsert_total</code></td><td>Counter</td><td><code>operation</code></td><td>Indicator and hash upsert counts at the repository layer</td></tr>
   <tr><td><code>ti_repo_upsert_duration_seconds</code></td><td>Histogram</td><td>—</td><td>Repository upsert batch duration</td></tr>
-  <tr><td><code>ti_cache_refresh_keys_total</code></td><td>Gauge</td><td>—</td><td>Number of domain cache keys written in the last refresh</td></tr>
-  <tr><td><code>ti_cache_refresh_duration_seconds</code></td><td>Histogram</td><td>—</td><td>Domain cache refresh duration</td></tr>
+  <tr><td><code>ti_cache_refresh_keys_total</code></td><td>Gauge</td><td><code>cache_type</code></td><td>Number of TI cache keys written in the last refresh, partitioned by <code>domain</code> or <code>hash</code></td></tr>
+  <tr><td><code>ti_cache_refresh_duration_seconds</code></td><td>Histogram</td><td><code>cache_type</code></td><td>TI cache refresh duration, partitioned by <code>domain</code> or <code>hash</code></td></tr>
   <tr><td><code>ti_cache_blocklist_lookups_total</code></td><td>Counter</td><td><code>hit</code> (true/false)</td><td>Domain cache lookup hit/miss rate</td></tr>
 </table>
 
