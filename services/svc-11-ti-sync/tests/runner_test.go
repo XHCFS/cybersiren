@@ -251,19 +251,34 @@ func (m *mockRepo) ListActiveDomainIndicators(_ context.Context) ([]repository.D
 	return nil, nil
 }
 
+func (m *mockRepo) BulkUpsertMalwareHashes(_ context.Context, _ []repository.MalwareHash) (repository.UpsertResult, error) {
+	return repository.UpsertResult{}, nil
+}
+
+func (m *mockRepo) ListMaliciousHashes(_ context.Context) ([]repository.MaliciousHash, error) {
+	return nil, nil
+}
+
 func (m *mockRepo) RefreshAllMaterializedViews(_ context.Context) error {
 	m.refreshMVCalled = true
 	return m.refreshMVErr
 }
 
 type mockCache struct {
-	refreshCalled bool
-	refreshErr    error
+	refreshCalled     bool
+	refreshErr        error
+	hashRefreshCalled bool
+	hashRefreshErr    error
 }
 
 func (m *mockCache) RefreshDomainCache(_ context.Context) error {
 	m.refreshCalled = true
 	return m.refreshErr
+}
+
+func (m *mockCache) RefreshHashCache(_ context.Context) error {
+	m.hashRefreshCalled = true
+	return m.hashRefreshErr
 }
 
 func (m *mockCache) IsBlocklisted(_ context.Context, _ string) (bool, int, string, error) {

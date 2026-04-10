@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"strings"
 
@@ -110,17 +111,64 @@ func (f *ThreatFoxFeed) Fetch(ctx context.Context) (indicators []ti.TIIndicator,
 			return nil, fmt.Errorf("threatfox: %w", decodeErr)
 		}
 
-		if !strings.EqualFold(strings.TrimSpace(entry.IOCType), ti.URLIndicatorType) {
-			continue
-		}
+		iocType := strings.ToLower(strings.TrimSpace(entry.IOCType))
+		var indicatorType string
+		var indicatorValue string
 
-		normalized, normErr := normalization.NormalizeURL(entry.IOC)
-		if normErr != nil {
-			f.log.Warn().
-				Err(normErr).
-				Str("source_id", ti.RawJSONToString(entry.ID)).
-				Str("raw_ioc", entry.IOC).
-				Msg("skipping invalid ThreatFox IOC URL")
+		switch {
+		case iocType == "url":
+			indicatorType = ti.URLIndicatorType
+			normalized, normErr := normalization.NormalizeURL(entry.IOC)
+			if normErr != nil {
+				f.log.Warn().
+					Err(normErr).
+					Str("source_id", ti.RawJSONToString(entry.ID)).
+					Str("raw_ioc", entry.IOC).
+					Msg("skipping invalid ThreatFox IOC URL")
+				continue
+			}
+			indicatorValue = normalized
+
+		case iocType == "domain":
+			indicatorType = ti.DomainIndicatorType
+			indicatorValue = normalization.NormalizeDomain(strings.TrimSpace(entry.IOC))
+			if indicatorValue == "" {
+				f.log.Warn().
+					Str("source_id", ti.RawJSONToString(entry.ID)).
+					Str("raw_ioc", entry.IOC).
+					Msg("skipping empty ThreatFox domain indicator")
+				continue
+			}
+
+		case strings.HasPrefix(iocType, "ip"):
+			indicatorType = ti.IPIndicatorType
+			raw := strings.TrimSpace(entry.IOC)
+			host := raw
+			if idx := strings.LastIndex(raw, ":"); idx > 0 {
+				h, _, splitErr := net.SplitHostPort(raw)
+				if splitErr == nil {
+					host = h
+				}
+			}
+			ip := net.ParseIP(host)
+			if ip == nil {
+				f.log.Warn().
+					Str("source_id", ti.RawJSONToString(entry.ID)).
+					Str("raw_ioc", entry.IOC).
+					Msg("skipping invalid ThreatFox IP indicator")
+				continue
+			}
+			indicatorValue = ip.String()
+
+		case strings.Contains(iocType, "hash"):
+			indicatorType = ti.HashIndicatorType
+			indicatorValue = strings.ToLower(strings.TrimSpace(entry.IOC))
+			if indicatorValue == "" {
+				continue
+			}
+
+		default:
+			f.log.Warn().Str("ioc_type", entry.IOCType).Msg("skipping unknown ThreatFox IOC type")
 			continue
 		}
 
@@ -129,8 +177,8 @@ func (f *ThreatFoxFeed) Fetch(ctx context.Context) (indicators []ti.TIIndicator,
 
 		indicators = append(indicators, ti.TIIndicator{
 			FeedID:         f.feedID,
-			IndicatorType:  ti.URLIndicatorType,
-			IndicatorValue: normalized,
+			IndicatorType:  indicatorType,
+			IndicatorValue: indicatorValue,
 			ThreatType:     strings.TrimSpace(entry.ThreatType),
 			ThreatTags:     tags,
 			RiskScore:      confidenceLevel,

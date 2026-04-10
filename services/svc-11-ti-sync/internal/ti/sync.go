@@ -169,6 +169,23 @@ func (r *Runner) SyncAll(ctx context.Context) (err error) {
 			Int("deactivated", upsertResult.Deactivated).
 			Msg("feed sync completed")
 
+		// Upsert hash-type indicators into the attachment_library table so
+		// that downstream attachment analysis can match against known malware.
+		hashIndicators := extractHashIndicators(indicators)
+		if len(hashIndicators) > 0 {
+			malwareResult, malwareErr := r.repo.BulkUpsertMalwareHashes(feedCtx, hashIndicators)
+			if malwareErr != nil {
+				r.log.Error().Err(malwareErr).Str("feed", feedName).Msg("malware hash upsert failed")
+				feedSpan.RecordError(malwareErr)
+				feedSpan.SetStatus(codes.Error, malwareErr.Error())
+			} else {
+				r.log.Info().
+					Str("feed", feedName).
+					Int("malware_hashes", malwareResult.Inserted).
+					Msg("malware hash upsert completed")
+			}
+		}
+
 		successCount++
 		if r.syncTotal != nil {
 			r.syncTotal.Inc()
@@ -190,6 +207,12 @@ func (r *Runner) SyncAll(ctx context.Context) (err error) {
 		r.log.Error().Msg("ti cache is nil, skipping domain cache refresh")
 	} else if cacheErr := r.cache.RefreshDomainCache(ctx); cacheErr != nil {
 		r.log.Error().Err(cacheErr).Msg("failed to refresh TI domain cache")
+	}
+
+	if r.cache != nil {
+		if cacheErr := r.cache.RefreshHashCache(ctx); cacheErr != nil {
+			r.log.Error().Err(cacheErr).Msg("failed to refresh TI hash cache")
+		}
 	}
 
 	if refreshErr := r.repo.RefreshAllMaterializedViews(ctx); refreshErr != nil {
@@ -290,6 +313,35 @@ func toRepositoryIndicators(feedName string, fallbackFeedID int64, indicators []
 	}
 
 	return converted
+}
+
+// extractHashIndicators filters hash-type indicators from a feed fetch result
+// and converts them into repository MalwareHash values for the attachment_library table.
+func extractHashIndicators(indicators []TIIndicator) []repository.MalwareHash {
+	hashes := make([]repository.MalwareHash, 0)
+	for _, ind := range indicators {
+		if strings.TrimSpace(ind.IndicatorType) != "hash" {
+			continue
+		}
+
+		sha := strings.TrimSpace(ind.IndicatorValue)
+		if sha == "" {
+			continue
+		}
+
+		tags := append([]string(nil), ind.ThreatTags...)
+		if tags == nil {
+			tags = []string{}
+		}
+
+		hashes = append(hashes, repository.MalwareHash{
+			SHA256:     sha,
+			RiskScore:  ind.RiskScore,
+			ThreatTags: tags,
+		})
+	}
+
+	return hashes
 }
 
 func registerCounter(registry *prometheus.Registry, counter prometheus.Counter) prometheus.Counter {

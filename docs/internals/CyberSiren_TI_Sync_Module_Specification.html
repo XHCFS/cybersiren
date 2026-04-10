@@ -1,0 +1,634 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>CyberSiren — Threat Intelligence Sync Module Specification (SVC-11)</title>
+<style>
+  @page { size: A4 portrait; margin: 12mm; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Courier New', 'Consolas', monospace;
+    background: #ffffff;
+    color: #111111;
+    padding: 28px 36px;
+    font-size: 11px;
+    line-height: 1.45;
+  }
+
+  h1 { font-size: 20px; font-weight: 700; border-bottom: 3px solid #111; padding-bottom: 6px; margin-bottom: 2px; letter-spacing: -0.3px; }
+  .doc-meta { font-size: 10px; color: #555; margin-bottom: 20px; border-bottom: 1px solid #999; padding-bottom: 8px; }
+  .doc-meta span { margin-right: 24px; }
+
+  h2 { font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: 1.5px; border-bottom: 2px solid #333; padding-bottom: 3px; margin: 22px 0 10px 0; }
+  h3 { font-size: 11.5px; font-weight: 700; margin: 12px 0 4px 0; }
+
+  table { border-collapse: collapse; width: 100%; margin: 6px 0 14px 0; font-size: 10.5px; }
+  th, td { border: 1px solid #888; padding: 4px 7px; text-align: left; vertical-align: top; }
+  th { background: #e8e8e8; font-weight: 700; white-space: nowrap; }
+  td { background: #fff; }
+  tr:nth-child(even) td { background: #f8f8f8; }
+  td.svc { font-weight: 700; }
+  td code, th code { font-family: inherit; background: #f0f0f0; padding: 1px 3px; font-size: 10px; }
+
+  .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .three-col { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; }
+
+  .note {
+    border: 1px solid #aaa;
+    background: #f9f9f9;
+    padding: 6px 10px;
+    margin: 6px 0;
+    font-size: 10px;
+  }
+  .note strong { font-size: 10px; }
+
+  .pipeline-step {
+    border: 2px solid #333;
+    margin-bottom: 10px;
+    page-break-inside: avoid;
+  }
+  .pipeline-step .step-header {
+    display: flex;
+    align-items: stretch;
+  }
+  .pipeline-step .step-num {
+    background: #333;
+    color: #fff;
+    font-weight: 700;
+    padding: 8px 12px;
+    min-width: 36px;
+    text-align: center;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 13px;
+  }
+  .pipeline-step .step-content {
+    padding: 8px 12px;
+    flex: 1;
+  }
+
+  .compact-table td, .compact-table th { padding: 3px 6px; font-size: 10px; }
+
+  .metric-block {
+    border: 2px solid #333;
+    padding: 10px 12px;
+    margin-bottom: 10px;
+    page-break-inside: avoid;
+  }
+  .metric-block .metric-header {
+    font-size: 12.5px;
+    font-weight: 700;
+    border-bottom: 1px solid #aaa;
+    padding-bottom: 4px;
+    margin-bottom: 6px;
+  }
+
+  hr { border: none; border-top: 1px solid #ccc; margin: 14px 0; }
+  .page-break { page-break-before: always; }
+
+  .feed-block {
+    border: 2px solid #333;
+    margin-bottom: 12px;
+    page-break-inside: avoid;
+  }
+  .feed-block .feed-header {
+    background: #333;
+    color: #fff;
+    padding: 6px 12px;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .feed-block .feed-header .feed-badge {
+    font-size: 9px;
+    background: #fff;
+    color: #333;
+    padding: 1px 5px;
+    font-weight: 700;
+  }
+  .feed-block .feed-body {
+    padding: 8px 12px;
+  }
+</style>
+</head>
+<body>
+
+<h1>CYBERSIREN — THREAT INTELLIGENCE SYNC MODULE SPECIFICATION</h1>
+<div class="doc-meta">
+  <span><strong>Document:</strong> TI-SPEC-v1.0</span>
+  <span><strong>Date:</strong> 2026-04-10</span>
+  <span><strong>Scope:</strong> SVC-11 TI Sync — Feed ingestion, repository layer, Valkey cache, runner lifecycle</span>
+  <span><strong>Classification:</strong> Internal / Graduation Project</span>
+</div>
+
+<div class="note">
+  <strong>Context:</strong> SVC-11 (ti-sync) is a standalone Go service that periodically fetches threat-intelligence indicators from external feeds, upserts them into PostgreSQL, refreshes materialized views, and rebuilds two Valkey caches: a domain blocklist cache (for URL analysis) and a malware hash cache (for attachment analysis). The service exposes Prometheus metrics and OpenTelemetry traces. It does not participate in the Kafka pipeline — it is a scheduled background synchronizer.
+</div>
+
+<div class="note">
+  <strong>Live run results (2026-04-10):</strong> 2,724 active indicators across 4 feeds — OpenPhish (300 URLs), URLhaus (1,907 URLs), ThreatFox (51 URLs + 406 domains + 39 IPs), MalwareBazaar (6 malware hashes in <code>attachment_library</code>). 426 domains and 6 hashes cached in Valkey.
+</div>
+
+
+<!-- ============================================================ -->
+<h2>1. Service Architecture</h2>
+
+<h3>1.1 Bootstrap Order</h3>
+<div class="pipeline-step">
+  <div class="step-header">
+    <div class="step-num">1</div>
+    <div class="step-content"><strong>Bootstrap logger</strong> — zerolog to stderr, RFC 3339 Nano timestamps. Unstructured until config is loaded.</div>
+  </div>
+</div>
+<div class="pipeline-step">
+  <div class="step-header">
+    <div class="step-num">2</div>
+    <div class="step-content"><strong>config.Load()</strong> — koanf: process env → <code>.env</code> file → <code>config.yaml</code> → defaults. Env prefix: <code>CYBERSIREN_</code>. Double underscore maps to nested struct (<code>CYBERSIREN_DB__PASSWORD</code> → <code>cfg.DB.Password</code>). Calls <code>cfg.Validate()</code> — fatal on missing required fields.</div>
+  </div>
+</div>
+<div class="pipeline-step">
+  <div class="step-header">
+    <div class="step-num">3</div>
+    <div class="step-content"><strong>Signal context</strong> — <code>signal.NotifyContext(ctx, SIGINT, SIGTERM)</code>. Cancels the root context on OS signal to trigger graceful shutdown.</div>
+  </div>
+</div>
+<div class="pipeline-step">
+  <div class="step-header">
+    <div class="step-num">4</div>
+    <div class="step-content"><strong>Tracing init</strong> — OTLP exporter if <code>CYBERSIREN_JAEGER_ENDPOINT</code> is set, otherwise noop tracer. Global tracer provider installed via <code>otel.SetTracerProvider</code>.</div>
+  </div>
+</div>
+<div class="pipeline-step">
+  <div class="step-header">
+    <div class="step-num">5</div>
+    <div class="step-content"><strong>Metrics server</strong> — Prometheus HTTP server on <code>CYBERSIREN_METRICS_PORT</code> (default 19090). Exposes <code>/metrics</code>. Runs as background goroutine.</div>
+  </div>
+</div>
+<div class="pipeline-step">
+  <div class="step-header">
+    <div class="step-num">6</div>
+    <div class="step-content"><strong>PostgreSQL pool</strong> — <code>pgx/v5</code> pool with OTel instrumentation. Verifies connectivity with ping.</div>
+  </div>
+</div>
+<div class="pipeline-step">
+  <div class="step-header">
+    <div class="step-num">7</div>
+    <div class="step-content"><strong>Valkey client</strong> — <code>valkey-go</code> client. Verifies connectivity with PING.</div>
+  </div>
+</div>
+<div class="pipeline-step">
+  <div class="step-header">
+    <div class="step-num">8</div>
+    <div class="step-content"><strong>Repository + cache init</strong> — <code>repository.NewTIRepository(pool, log, registry)</code> and <code>valkey.NewTICache(client, repo, log, registry)</code>.</div>
+  </div>
+</div>
+<div class="pipeline-step">
+  <div class="step-header">
+    <div class="step-num">9</div>
+    <div class="step-content"><strong>Feed discovery</strong> — queries <code>feeds</code> table for enabled rows (<code>enabled=true</code>, <code>deleted_at IS NULL</code>). Builds feed implementations via name switch. Skips unknown names with a warning.</div>
+  </div>
+</div>
+<div class="pipeline-step">
+  <div class="step-header">
+    <div class="step-num">10</div>
+    <div class="step-content"><strong>Runner.Start(ctx, interval)</strong> — executes initial sync immediately, then ticks on <code>CYBERSIREN_SYNC_INTERVAL_SECONDS</code> (default 21,600 s / 6 h). Fatal if no feeds are enabled.</div>
+  </div>
+</div>
+
+<h3>1.2 Configuration Reference</h3>
+<table class="compact-table">
+  <tr><th>Env Var</th><th>koanf Key</th><th>Default</th><th>Purpose</th></tr>
+  <tr><td><code>CYBERSIREN_DB__*</code></td><td><code>db.*</code></td><td>—</td><td>PostgreSQL connection (host, port, user, password, db, ssl_mode)</td></tr>
+  <tr><td><code>CYBERSIREN_VALKEY__ADDR</code></td><td><code>valkey.addr</code></td><td><code>localhost:6379</code></td><td>Valkey address</td></tr>
+  <tr><td><code>CYBERSIREN_SYNC_INTERVAL_SECONDS</code></td><td><code>sync_interval_seconds</code></td><td>21600</td><td>Feed sync cycle period. Must be &gt; 30 s.</td></tr>
+  <tr><td><code>CYBERSIREN_METRICS_PORT</code></td><td><code>metrics_port</code></td><td>19090</td><td>Prometheus /metrics HTTP port</td></tr>
+  <tr><td><code>CYBERSIREN_JAEGER_ENDPOINT</code></td><td><code>jaeger_endpoint</code></td><td>""</td><td>OTLP endpoint. Empty = noop tracer.</td></tr>
+  <tr><td><code>CYBERSIREN_FEED_PHISHTANK_API_KEY</code></td><td><code>feed_phishtank_api_key</code></td><td>""</td><td>PhishTank API key (required to enable feed)</td></tr>
+  <tr><td><code>CYBERSIREN_FEED_THREATFOX_API_KEY</code></td><td><code>feed_threatfox_api_key</code></td><td>""</td><td>ThreatFox Auth-Key header (optional, improves rate limits)</td></tr>
+  <tr><td><code>CYBERSIREN_FEED_OPENPHISH_API_KEY</code></td><td><code>feed_openphish_api_key</code></td><td>""</td><td>OpenPhish API key (free tier does not require one)</td></tr>
+  <tr><td><code>CYBERSIREN_FEED_MALWAREBAZAAR_API_KEY</code></td><td><code>feed_malwarebazaar_api_key</code></td><td>""</td><td>MalwareBazaar Auth-Key (required as of 2025)</td></tr>
+</table>
+
+
+<!-- ============================================================ -->
+<h2>2. Feed Interface &amp; Indicator Model</h2>
+
+<h3>2.1 Feed Interface</h3>
+<div class="note">
+  Every feed implementation satisfies this interface. The service discovers feeds at runtime from the DB. The Go switch in <code>main.go</code> maps the <code>feeds.name</code> row value to a concrete struct. Feed URL from the DB overrides the implementation's default constant.
+</div>
+<table class="compact-table" style="width:480px;">
+  <tr><th>Method</th><th>Returns</th><th>Purpose</th></tr>
+  <tr><td><code>Name() string</code></td><td>feed name</td><td>Matches <code>feeds.name</code> in DB. Used in logs and metrics labels.</td></tr>
+  <tr><td><code>FeedID() int64</code></td><td>feed row ID</td><td>Matches <code>feeds.id</code> in DB. Stored on each indicator.</td></tr>
+  <tr><td><code>Fetch(ctx) ([]TIIndicator, error)</code></td><td>indicators</td><td>Downloads and parses feed. Applies 60 s timeout via <code>FeedFetchTimeout</code>.</td></tr>
+</table>
+
+<h3>2.2 TIIndicator Struct (service layer)</h3>
+<table class="compact-table">
+  <tr><th>Field</th><th>Type</th><th>Notes</th></tr>
+  <tr><td><code>FeedID</code></td><td>int64</td><td>DB row ID of the source feed.</td></tr>
+  <tr><td><code>IndicatorType</code></td><td>string</td><td>One of: <code>url</code>, <code>domain</code>, <code>ip</code>, <code>cidr</code>, <code>hash</code>, <code>email_address</code>. Mapped to <code>ti_indicator_type</code> enum at repo layer.</td></tr>
+  <tr><td><code>IndicatorValue</code></td><td>string</td><td>Normalized value. URLs lowercased + scheme-normalized. IPs parsed via <code>net.ParseIP</code>. Hashes lowercased SHA-256.</td></tr>
+  <tr><td><code>ThreatType</code></td><td>string</td><td>Human-readable classification (e.g., "phishing", "malware_download", "botnet_cc"). Normalized at DB layer via trigger <code>fn_normalise_threat_type</code>.</td></tr>
+  <tr><td><code>ThreatTags</code></td><td>[]string</td><td>Feed-specific tags + feed name appended as last tag. Merged on upsert (distinct union, sorted).</td></tr>
+  <tr><td><code>RiskScore</code></td><td>int (0–100)</td><td>Feed-assigned risk score. GREATEST() wins on upsert conflict.</td></tr>
+  <tr><td><code>Confidence</code></td><td>float64 (0.0–1.0)</td><td>Feed-assigned confidence. Stored as nullable <code>double precision</code>.</td></tr>
+  <tr><td><code>SourceID</code></td><td>string</td><td>Feed's native identifier (ThreatFox IOC ID, URLhaus row ID, SHA-256 for MalwareBazaar). Used for deduplication reference.</td></tr>
+  <tr><td><code>RawMetadata</code></td><td>[]byte</td><td>Original JSON blob from feed API (where applicable). Stored as <code>jsonb</code> in DB.</td></tr>
+</table>
+
+
+<!-- ============================================================ -->
+<h2 class="page-break">3. Feed Implementations</h2>
+
+<div class="feed-block">
+  <div class="feed-header">
+    PHISHTANK
+    <span class="feed-badge">REQUIRES API KEY</span>
+  </div>
+  <div class="feed-body">
+    <table class="compact-table">
+      <tr><th>Property</th><th>Value</th></tr>
+      <tr><td>DB name</td><td><code>phishtank</code></td></tr>
+      <tr><td>Default URL</td><td><code>http://data.phishtank.com/data/{api_key}/online-valid.json</code></td></tr>
+      <tr><td>Protocol</td><td>HTTP GET. API key substituted into URL path.</td></tr>
+      <tr><td>Response format</td><td>JSON array of phishing entries.</td></tr>
+      <tr><td>Indicator types</td><td>URL only</td></tr>
+      <tr><td>Risk score</td><td>95</td></tr>
+      <tr><td>Confidence</td><td>0.95</td></tr>
+      <tr><td>Auth</td><td>API key required. <code>CYBERSIREN_FEED_PHISHTANK_API_KEY</code>. Feed skipped silently if key absent.</td></tr>
+      <tr><td>Normalization</td><td><code>normalization.NormalizeURL()</code> on each entry URL.</td></tr>
+      <tr><td>Tags</td><td><code>["phishtank"]</code></td></tr>
+    </table>
+  </div>
+</div>
+
+<div class="feed-block">
+  <div class="feed-header">
+    OPENPHISH
+    <span class="feed-badge">NON-COMMERCIAL FREE TIER</span>
+  </div>
+  <div class="feed-body">
+    <table class="compact-table">
+      <tr><th>Property</th><th>Value</th></tr>
+      <tr><td>DB name</td><td><code>openphish</code></td></tr>
+      <tr><td>Default URL</td><td><code>https://openphish.com/feed.txt</code></td></tr>
+      <tr><td>Protocol</td><td>HTTP GET. Plain text response.</td></tr>
+      <tr><td>Response format</td><td>One URL per line. Empty lines skipped.</td></tr>
+      <tr><td>Indicator types</td><td>URL only</td></tr>
+      <tr><td>Risk score</td><td>85</td></tr>
+      <tr><td>Confidence</td><td>0.80</td></tr>
+      <tr><td>Auth</td><td>None for free tier. Constructor emits warning: <em>non-commercial use only</em>.</td></tr>
+      <tr><td>Source ID</td><td>SHA-256 of normalized URL (no native ID in feed).</td></tr>
+      <tr><td>Normalization</td><td><code>normalization.NormalizeURL()</code> per line. Invalid URLs skipped with a warning log.</td></tr>
+      <tr><td>Tags</td><td><code>["openphish"]</code></td></tr>
+    </table>
+  </div>
+</div>
+
+<div class="feed-block">
+  <div class="feed-header">
+    URLHAUS (abuse.ch)
+    <span class="feed-badge">NO AUTH REQUIRED</span>
+  </div>
+  <div class="feed-body">
+    <table class="compact-table">
+      <tr><th>Property</th><th>Value</th></tr>
+      <tr><td>DB name</td><td><code>urlhaus</code></td></tr>
+      <tr><td>Default URL</td><td><code>https://urlhaus.abuse.ch/downloads/csv_recent/</code></td></tr>
+      <tr><td>Protocol</td><td>HTTP GET. CSV with comment lines prefixed by <code>#</code>.</td></tr>
+      <tr><td>Response format</td><td>CSV. Header row: <code>id, dateadded, url, url_status, last_online, threat, tags</code>. Comments stripped via <code>ti.StripCSVComments()</code>.</td></tr>
+      <tr><td>Indicator types</td><td>URL only</td></tr>
+      <tr><td>Risk score</td><td>80</td></tr>
+      <tr><td>Confidence</td><td>0.75</td></tr>
+      <tr><td>Filtering</td><td>Only <code>threat = "malware_download"</code> or <code>"phishing"</code> rows kept. <code>url_status = "offline"</code> rows skipped.</td></tr>
+      <tr><td>Resilience</td><td>Header row detection falls back to positional column mapping if CSV header is absent or malformed.</td></tr>
+      <tr><td>Normalization</td><td><code>normalization.NormalizeURL()</code>. Invalid URLs skipped with source_id + raw_url in warn log.</td></tr>
+      <tr><td>Tags</td><td>Comma-split tags from CSV column, plus <code>"urlhaus"</code> appended.</td></tr>
+    </table>
+  </div>
+</div>
+
+<div class="feed-block">
+  <div class="feed-header">
+    THREATFOX (abuse.ch)
+    <span class="feed-badge">MULTI-TYPE IOC</span>
+  </div>
+  <div class="feed-body">
+    <table class="compact-table">
+      <tr><th>Property</th><th>Value</th></tr>
+      <tr><td>DB name</td><td><code>threatfox</code></td></tr>
+      <tr><td>Default URL</td><td><code>https://threatfox-api.abuse.ch/api/v1/</code></td></tr>
+      <tr><td>Protocol</td><td>HTTP POST. JSON body: <code>{"query": "get_iocs", "days": 1}</code>. Auth-Key header sent if key configured.</td></tr>
+      <tr><td>Response format</td><td>JSON. Top-level: <code>query_status</code> (must equal <code>"ok"</code>) + <code>data</code> array of IOC entries.</td></tr>
+      <tr><td>Indicator types</td><td>URL, domain, IP (including ip:port — port stripped), hash (SHA-256/MD5/SHA-1)</td></tr>
+      <tr><td>Risk score</td><td><code>confidence_level</code> field (0–100). Clamped via <code>ti.ClampInt()</code>.</td></tr>
+      <tr><td>Confidence</td><td><code>confidence_level / 100.0</code></td></tr>
+      <tr><td>Auth</td><td>Optional. <code>CYBERSIREN_FEED_THREATFOX_API_KEY</code>. Key sent in both JSON body (<code>auth_key</code>) and HTTP header (<code>Auth-Key</code>).</td></tr>
+      <tr><td>IOC type mapping</td><td>
+        <table class="compact-table" style="margin:4px 0; border:none;">
+          <tr><th style="background:#eee;">ThreatFox <code>ioc_type</code></th><th style="background:#eee;">CyberSiren type</th><th style="background:#eee;">Normalization</th></tr>
+          <tr><td><code>"url"</code></td><td><code>url</code></td><td><code>normalization.NormalizeURL()</code></td></tr>
+          <tr><td><code>"domain"</code></td><td><code>domain</code></td><td><code>normalization.NormalizeDomain()</code></td></tr>
+          <tr><td><code>"ip:port"</code> / <code>"ip"</code></td><td><code>ip</code></td><td><code>net.SplitHostPort()</code> then <code>net.ParseIP()</code></td></tr>
+          <tr><td><code>*"hash"*</code></td><td><code>hash</code></td><td>Lowercased, trimmed</td></tr>
+          <tr><td>anything else</td><td>skipped</td><td>Warning logged with ioc_type value</td></tr>
+        </table>
+      </td></tr>
+      <tr><td>Tags</td><td>JSON array from <code>tags</code> field (parsed via <code>ti.ParseJSONTags()</code>), plus <code>"threatfox"</code> appended.</td></tr>
+    </table>
+  </div>
+</div>
+
+<div class="feed-block">
+  <div class="feed-header">
+    MALWAREBAZAAR (abuse.ch)
+    <span class="feed-badge">HASH INDICATORS → attachment_library</span>
+  </div>
+  <div class="feed-body">
+    <table class="compact-table">
+      <tr><th>Property</th><th>Value</th></tr>
+      <tr><td>DB name</td><td><code>malwarebazaar</code></td></tr>
+      <tr><td>Default URL</td><td><code>https://mb-api.abuse.ch/api/v1/</code></td></tr>
+      <tr><td>Protocol</td><td>HTTP POST. <code>Content-Type: application/x-www-form-urlencoded</code>. Body: <code>query=get_recent&amp;selector=time</code>. Auth-Key header required as of 2025.</td></tr>
+      <tr><td>Response format</td><td>JSON. Top-level: <code>query_status</code> (must equal <code>"ok"</code>) + <code>data</code> array of malware sample entries.</td></tr>
+      <tr><td>Indicator types</td><td>Hash only (<code>sha256_hash</code> field lowercased)</td></tr>
+      <tr><td>Risk score</td><td>Fixed: 90</td></tr>
+      <tr><td>Confidence</td><td>Fixed: 0.95</td></tr>
+      <tr><td>Auth</td><td>Required since 2025. <code>CYBERSIREN_FEED_MALWAREBAZAAR_API_KEY</code>. Free key from <code>https://auth.abuse.ch/</code>. Warning logged if absent; request will return HTTP 401.</td></tr>
+      <tr><td>ThreatType</td><td>From <code>signature</code> field. Falls back to <code>"malware"</code> if empty.</td></tr>
+      <tr><td>Tags</td><td>JSON array from <code>tags</code> field + <code>"malwarebazaar"</code> + <code>file_type</code> value (if non-empty).</td></tr>
+      <tr><td>Routing</td><td>Hash indicators bypass <code>ti_indicators</code> and are written to <code>attachment_library</code> via <code>BulkUpsertMalwareHashes()</code>. Also appear in Valkey as <code>ti_hash:{sha256}</code> keys.</td></tr>
+    </table>
+  </div>
+</div>
+
+
+<!-- ============================================================ -->
+<h2>4. Runner — Sync Lifecycle</h2>
+
+<h3>4.1 SyncAll() Flow</h3>
+<p style="margin-bottom:8px;">Called on startup and on each tick. Processes feeds sequentially. Per-feed errors do not abort remaining feeds.</p>
+
+<div class="pipeline-step">
+  <div class="step-header">
+    <div class="step-num">1</div>
+    <div class="step-content"><strong>FOR EACH feed:</strong> Call <code>feed.Fetch(feedCtx)</code>. On error: log error, increment <code>feed_sync_errors_total{feed_name}</code> label, update <code>feeds.last_fetched_at</code>, continue to next feed.</div>
+  </div>
+</div>
+<div class="pipeline-step">
+  <div class="step-header">
+    <div class="step-num">2</div>
+    <div class="step-content"><strong>BulkUpsertIndicators()</strong> — Passes all non-hash indicators to the repository. On error: log, continue. Success: log inserted/updated/deactivated counts.</div>
+  </div>
+</div>
+<div class="pipeline-step">
+  <div class="step-header">
+    <div class="step-num">3</div>
+    <div class="step-content"><strong>extractHashIndicators()</strong> — Filters indicators with <code>IndicatorType == "hash"</code>. If any found, calls <code>BulkUpsertMalwareHashes()</code> to write to <code>attachment_library</code>. Errors logged but non-fatal.</div>
+  </div>
+</div>
+<div class="pipeline-step">
+  <div class="step-header">
+    <div class="step-num">4</div>
+    <div class="step-content"><strong>UpdateFeedLastFetched()</strong> — Stamps <code>feeds.last_fetched_at = NOW()</code> for the feed row, regardless of fetch success or failure.</div>
+  </div>
+</div>
+<div class="pipeline-step">
+  <div class="step-header">
+    <div class="step-num">5</div>
+    <div class="step-content"><strong>RefreshDomainCache()</strong> — Rebuilds <code>ti_domain:{domain}</code> Valkey keys from all active domain indicators. Best-effort; cache failure does not abort the sync.</div>
+  </div>
+</div>
+<div class="pipeline-step">
+  <div class="step-header">
+    <div class="step-num">6</div>
+    <div class="step-content"><strong>RefreshHashCache()</strong> — Rebuilds <code>ti_hash:{sha256}</code> Valkey keys from all malicious attachment_library rows. Best-effort.</div>
+  </div>
+</div>
+<div class="pipeline-step">
+  <div class="step-header">
+    <div class="step-num">7</div>
+    <div class="step-content"><strong>RefreshAllMaterializedViews()</strong> — Runs <code>REFRESH MATERIALIZED VIEW CONCURRENTLY</code> on all TI-related views. Fatal error if this fails (only failure that returns an error from SyncAll).</div>
+  </div>
+</div>
+
+<h3>4.2 Tick Scheduling</h3>
+<table class="compact-table" style="width:600px;">
+  <tr><th>Behavior</th><th>Detail</th></tr>
+  <tr><td>Minimum interval</td><td>31 seconds. <code>Start()</code> returns error if interval ≤ 30 s.</td></tr>
+  <tr><td>Overlap protection</td><td><code>atomic.Bool cycleRunning</code>. If previous cycle still running when tick fires, tick is skipped with a warning log.</td></tr>
+  <tr><td>Cycle timeout</td><td><code>interval × 9/10</code>. A slow cycle cannot starve the next one.</td></tr>
+  <tr><td>Graceful shutdown</td><td>Context cancel (SIGINT/SIGTERM) breaks the ticker loop. <code>wg.Wait()</code> ensures active cycle completes before process exits.</td></tr>
+  <tr><td>All-feeds-failed</td><td><code>SyncAll</code> returns an error if <code>successCount == 0</code>. Logged as error; does not stop the runner.</td></tr>
+</table>
+
+
+<!-- ============================================================ -->
+<h2 class="page-break">5. Repository Layer</h2>
+
+<h3>5.1 TIRepository Interface</h3>
+<table class="compact-table">
+  <tr><th>Method</th><th>Signature</th><th>Purpose</th></tr>
+  <tr><td class="svc">BulkUpsertIndicators</td><td><code>(ctx, []TIIndicator) → (UpsertResult, error)</code></td><td>Upserts URL/domain/IP/CIDR/email indicators into <code>ti_indicators</code>. Chunks at 500. Returns inserted/updated/deactivated counts.</td></tr>
+  <tr><td class="svc">BulkUpsertMalwareHashes</td><td><code>(ctx, []MalwareHash) → (UpsertResult, error)</code></td><td>Upserts SHA-256 hashes into <code>attachment_library</code>. Chunks at 500. Sets <code>is_malicious = TRUE</code>, GREATEST risk_score, merged tags.</td></tr>
+  <tr><td class="svc">UpdateFeedLastFetched</td><td><code>(ctx, feedID int64) → error</code></td><td>Updates <code>feeds.last_fetched_at = NOW()</code> for a single feed row.</td></tr>
+  <tr><td class="svc">ListActiveDomainIndicators</td><td><code>(ctx) → ([]DomainIndicator, error)</code></td><td>Returns all active domain indicators for domain cache rebuild. Used by <code>RefreshDomainCache</code>.</td></tr>
+  <tr><td class="svc">ListMaliciousHashes</td><td><code>(ctx) → ([]MaliciousHash, error)</code></td><td>Returns all malicious hashes from <code>attachment_library</code> for hash cache rebuild.</td></tr>
+  <tr><td class="svc">RefreshAllMaterializedViews</td><td><code>(ctx) → error</code></td><td>Runs <code>REFRESH MATERIALIZED VIEW CONCURRENTLY</code> on all TI materialized views.</td></tr>
+</table>
+
+<h3>5.2 BulkUpsertIndicators — Upsert Semantics</h3>
+<div class="note">
+  Conflict key: <code>(feed_id, indicator_type, indicator_value)</code>. On conflict: <code>last_seen</code> updated to NOW, <code>threat_tags</code> merged via ARRAY DISTINCT union (sorted), <code>risk_score</code> = GREATEST of existing and new. <code>first_seen</code> and <code>created_at</code> are never overwritten. After each successful upsert batch, rows not seen since the start of the current sync are deactivated (<code>is_active = FALSE</code>).
+</div>
+<table class="compact-table" style="width:500px;">
+  <tr><th>Field</th><th>Conflict Resolution</th></tr>
+  <tr><td><code>last_seen</code></td><td>Always updated to EXCLUDED (current fetch time)</td></tr>
+  <tr><td><code>threat_tags</code></td><td>ARRAY DISTINCT union of existing + incoming, sorted alphabetically</td></tr>
+  <tr><td><code>risk_score</code></td><td>GREATEST(existing, incoming) — score never decreases</td></tr>
+  <tr><td><code>first_seen</code></td><td>Never overwritten — preserves original discovery time</td></tr>
+  <tr><td><code>is_active</code></td><td>Set TRUE on any insert/update. Stale rows set FALSE post-batch.</td></tr>
+  <tr><td><code>raw_metadata</code></td><td>Not updated on conflict — original JSON preserved</td></tr>
+</table>
+
+<h3>5.3 BulkUpsertMalwareHashes — Upsert Semantics</h3>
+<div class="note">
+  Conflict key: <code>sha256</code> (UNIQUE constraint on <code>attachment_library</code>). On conflict: <code>is_malicious</code> set TRUE, <code>risk_score</code> = GREATEST, <code>threat_tags</code> merged as above, <code>updated_at</code> = NOW(). Hashes written here represent files confirmed malicious by a TI feed; they may later be matched by SVC-05 attachment analysis.
+</div>
+
+<h3>5.4 Chunking &amp; Tracing</h3>
+<table class="compact-table" style="width:500px;">
+  <tr><th>Aspect</th><th>Detail</th></tr>
+  <tr><td>Chunk size</td><td>500 rows per batch (constant <code>indicatorChunkSize</code>)</td></tr>
+  <tr><td>OTel spans</td><td>One parent span per BulkUpsert call, child spans per chunk</td></tr>
+  <tr><td>Prometheus</td><td><code>ti_repo_upsert_total{operation}</code> counter, <code>ti_repo_upsert_duration_seconds</code> histogram</td></tr>
+  <tr><td>Error wrapping</td><td><code>fmt.Errorf("bulk upsert chunk %d: %w", chunkIdx, err)</code></td></tr>
+</table>
+
+
+<!-- ============================================================ -->
+<h2>6. Valkey Cache Design</h2>
+
+<h3>6.1 Domain Cache — <code>ti_domain:{domain}</code></h3>
+<p style="margin-bottom:6px;">Used by SVC-03 (URL analysis) and potentially SVC-08 (decision) to blocklist-check domains in sub-millisecond time without a DB query.</p>
+<table class="compact-table">
+  <tr><th>Aspect</th><th>Detail</th></tr>
+  <tr><td>Key pattern</td><td><code>ti_domain:{domain}</code> — domain in braces for Redis Cluster slot affinity</td></tr>
+  <tr><td>Value type</td><td>Hash (HSET)</td></tr>
+  <tr><td>Fields</td><td><code>ti_indicator_id</code> (int64), <code>risk_score</code> (int), <code>threat_type</code> (string)</td></tr>
+  <tr><td>TTL</td><td>3,600 seconds (1 hour). Set via EXPIRE after each HSET batch.</td></tr>
+  <tr><td>Batch size</td><td>200 keys per <code>DoMulti</code> call</td></tr>
+  <tr><td>Source</td><td><code>ListActiveDomainIndicators()</code> — all <code>is_active = TRUE</code> domain indicators</td></tr>
+  <tr><td>Lookup method</td><td><code>IsBlocklisted(ctx, domain) → (hit bool, riskScore int, threatType string, err error)</code></td></tr>
+  <tr><td>Normalization at lookup</td><td><code>normalization.NormalizeDomain()</code> applied before key lookup</td></tr>
+  <tr><td>Metrics</td><td><code>ti_cache_blocklist_lookups_total{hit="true"|"false"}</code>, <code>ti_cache_refresh_keys_total</code> gauge, <code>ti_cache_refresh_duration_seconds</code> histogram</td></tr>
+</table>
+
+<h3>6.2 Hash Cache — <code>ti_hash:{sha256}</code></h3>
+<p style="margin-bottom:6px;">Used by SVC-05 (attachment analysis) to check whether an uploaded file's SHA-256 is a known malicious sample.</p>
+<table class="compact-table">
+  <tr><th>Aspect</th><th>Detail</th></tr>
+  <tr><td>Key pattern</td><td><code>ti_hash:{sha256}</code> — SHA-256 in braces</td></tr>
+  <tr><td>Value type</td><td>Hash (HSET)</td></tr>
+  <tr><td>Fields</td><td><code>is_malicious</code> ("true"), <code>risk_score</code> (int), <code>source</code> (comma-joined threat_tags)</td></tr>
+  <tr><td>TTL</td><td>3,600 seconds (1 hour)</td></tr>
+  <tr><td>Batch size</td><td>200 keys per <code>DoMulti</code> call</td></tr>
+  <tr><td>Source</td><td><code>ListMaliciousHashes()</code> — all <code>is_malicious = TRUE</code>, <code>deleted_at IS NULL</code> rows from <code>attachment_library</code></td></tr>
+</table>
+
+
+<!-- ============================================================ -->
+<h2>7. Database Schema</h2>
+
+<h3>7.1 <code>ti_indicators</code> — Main Indicator Store</h3>
+<table class="compact-table">
+  <tr><th>Column</th><th>Type</th><th>Notes</th></tr>
+  <tr><td><code>id</code></td><td>bigint PK</td><td>Auto-increment sequence</td></tr>
+  <tr><td><code>feed_id</code></td><td>bigint FK → feeds</td><td>ON DELETE CASCADE. Indexed.</td></tr>
+  <tr><td><code>indicator_type</code></td><td>ti_indicator_type enum</td><td>Values: url, domain, ip, cidr, hash, email_address</td></tr>
+  <tr><td><code>indicator_value</code></td><td>text</td><td>Normalized value. Part of unique constraint.</td></tr>
+  <tr><td><code>threat_type</code></td><td>text</td><td>Normalized by trigger <code>fn_normalise_threat_type</code> on INSERT/UPDATE.</td></tr>
+  <tr><td><code>brand_id</code></td><td>bigint nullable FK → brands</td><td>Set NULL on brand delete. Optional brand association.</td></tr>
+  <tr><td><code>threat_tags</code></td><td>text[]</td><td>GIN indexed. Default <code>'{}'</code>.</td></tr>
+  <tr><td><code>source_id</code></td><td>text</td><td>Feed's native identifier for deduplication reference.</td></tr>
+  <tr><td><code>first_seen</code></td><td>timestamptz</td><td>Set on INSERT. Never updated.</td></tr>
+  <tr><td><code>last_seen</code></td><td>timestamptz</td><td>Updated on every upsert.</td></tr>
+  <tr><td><code>confidence</code></td><td>double precision nullable</td><td>CHECK: 0.0–1.0 or NULL.</td></tr>
+  <tr><td><code>risk_score</code></td><td>integer</td><td>CHECK: 0–100. GREATEST() on conflict.</td></tr>
+  <tr><td><code>is_active</code></td><td>boolean</td><td>False for stale (not seen in current sync). Used to filter cache and views.</td></tr>
+  <tr><td><code>raw_metadata</code></td><td>jsonb</td><td>Original API payload. Not overwritten on conflict.</td></tr>
+</table>
+
+<div class="note">
+  <strong>Unique constraint:</strong> <code>uq_ti_indicators_feed_type_value (feed_id, indicator_type, indicator_value)</code>. An indicator from two different feeds creates two separate rows. Same indicator appearing again from the same feed triggers the update path.
+</div>
+
+<h3>7.2 Key Indexes on <code>ti_indicators</code></h3>
+<table class="compact-table">
+  <tr><th>Index</th><th>Type</th><th>Purpose</th></tr>
+  <tr><td><code>idx_ti_indicators_active_value</code></td><td>btree partial (is_active=true)</td><td>Fast lookup of active indicators by type+value</td></tr>
+  <tr><td><code>idx_ti_indicators_type_value</code></td><td>btree</td><td>Cross-feed lookup by indicator_type + indicator_value</td></tr>
+  <tr><td><code>idx_ti_indicators_threat_tags</code></td><td>GIN</td><td>Array containment queries on tags</td></tr>
+  <tr><td><code>idx_ti_indicators_last_seen</code></td><td>btree</td><td>Stale indicator deactivation queries</td></tr>
+  <tr><td><code>uq_ti_indicators_feed_type_value</code></td><td>UNIQUE btree</td><td>Conflict target for ON CONFLICT upsert</td></tr>
+</table>
+
+<h3>7.3 <code>attachment_library</code> — Malware Hash Store</h3>
+<p style="margin-bottom:6px;">Also used by SVC-05 for uploaded attachment deduplication and malware matching. TI sync writes only to the TI-related fields.</p>
+<table class="compact-table">
+  <tr><th>Column</th><th>Type</th><th>TI relevance</th></tr>
+  <tr><td><code>sha256</code></td><td>text NOT NULL UNIQUE</td><td>Primary lookup key. Conflict target.</td></tr>
+  <tr><td><code>is_malicious</code></td><td>boolean</td><td>Set TRUE by TI sync. Default false.</td></tr>
+  <tr><td><code>risk_score</code></td><td>integer (0–100)</td><td>GREATEST() on TI upsert conflict.</td></tr>
+  <tr><td><code>threat_tags</code></td><td>text[]</td><td>Merged on conflict (distinct union, sorted).</td></tr>
+  <tr><td><code>md5</code>, <code>sha1</code></td><td>text nullable</td><td>Not written by TI sync; set by SVC-05 attachment uploads.</td></tr>
+  <tr><td><code>size_bytes</code>, <code>entropy</code></td><td>bigint / double</td><td>Not written by TI sync.</td></tr>
+  <tr><td><code>storage_uri</code></td><td>text nullable</td><td>Object storage path for uploaded files. Not set by TI sync.</td></tr>
+</table>
+
+<h3>7.4 <code>feeds</code> — Feed Registry</h3>
+<table class="compact-table">
+  <tr><th>Column</th><th>Type</th><th>Notes</th></tr>
+  <tr><td><code>name</code></td><td>text UNIQUE NOT NULL</td><td>Matches <code>Feed.Name()</code>. Switch key in main.go.</td></tr>
+  <tr><td><code>feed_type</code></td><td>feed_type_enum NOT NULL</td><td>Values: threat_intel, reputation, blocklist, sandbox, demo</td></tr>
+  <tr><td><code>url</code></td><td>text nullable</td><td>Overrides the implementation's default URL constant if non-null.</td></tr>
+  <tr><td><code>enabled</code></td><td>boolean</td><td>Default true. Only enabled feeds are loaded by service.</td></tr>
+  <tr><td><code>reliability_weight</code></td><td>double precision</td><td>CHECK: 0.0–10.0. Default 1.0. Reserved for future score weighting.</td></tr>
+  <tr><td><code>last_fetched_at</code></td><td>timestamptz nullable</td><td>Stamped by <code>UpdateFeedLastFetched()</code> after every fetch attempt.</td></tr>
+</table>
+
+
+<!-- ============================================================ -->
+<h2 class="page-break">8. Observability</h2>
+
+<h3>8.1 Prometheus Metrics</h3>
+<table class="compact-table">
+  <tr><th>Metric</th><th>Type</th><th>Labels</th><th>Description</th></tr>
+  <tr><td><code>feed_sync_total</code></td><td>Counter</td><td>—</td><td>Total successful feed sync operations (incremented once per successful feed per SyncAll call)</td></tr>
+  <tr><td><code>feed_sync_errors_total</code></td><td>Counter</td><td><code>feed_name</code></td><td>Total fetch/upsert errors per feed name</td></tr>
+  <tr><td><code>feed_sync_duration_seconds</code></td><td>Histogram</td><td>—</td><td>End-to-end SyncAll duration per cycle</td></tr>
+  <tr><td><code>ti_repo_upsert_total</code></td><td>Counter</td><td><code>operation</code></td><td>Indicator and hash upsert counts at the repository layer</td></tr>
+  <tr><td><code>ti_repo_upsert_duration_seconds</code></td><td>Histogram</td><td>—</td><td>Repository upsert batch duration</td></tr>
+  <tr><td><code>ti_cache_refresh_keys_total</code></td><td>Gauge</td><td>—</td><td>Number of domain cache keys written in the last refresh</td></tr>
+  <tr><td><code>ti_cache_refresh_duration_seconds</code></td><td>Histogram</td><td>—</td><td>Domain cache refresh duration</td></tr>
+  <tr><td><code>ti_cache_blocklist_lookups_total</code></td><td>Counter</td><td><code>hit</code> (true/false)</td><td>Domain cache lookup hit/miss rate</td></tr>
+</table>
+
+<h3>8.2 OpenTelemetry Spans</h3>
+<table class="compact-table">
+  <tr><th>Span Name</th><th>Package</th><th>Attributes</th></tr>
+  <tr><td><code>runner.SyncAll</code></td><td>ti/runner</td><td>feed_count, success_count, duration_seconds</td></tr>
+  <tr><td><code>runner.SyncAll.feed</code></td><td>ti/runner</td><td>feed.name</td></tr>
+  <tr><td><code>feeds.openphish.Fetch</code></td><td>ti/feeds</td><td>indicator_count</td></tr>
+  <tr><td><code>feeds.urlhaus.Fetch</code></td><td>ti/feeds</td><td>indicator_count</td></tr>
+  <tr><td><code>feeds.threatfox.Fetch</code></td><td>ti/feeds</td><td>indicator_count</td></tr>
+  <tr><td><code>feeds.malwarebazaar.Fetch</code></td><td>ti/feeds</td><td>indicator_count</td></tr>
+  <tr><td><code>feeds.phishtank.Fetch</code></td><td>ti/feeds</td><td>indicator_count</td></tr>
+  <tr><td>BulkUpsert spans</td><td>shared/postgres/repository</td><td>chunk_index, rows_in_chunk</td></tr>
+  <tr><td>Cache refresh spans</td><td>shared/valkey</td><td>keys_written, duration</td></tr>
+</table>
+
+<div class="note">
+  <strong>Tracer names:</strong> <code>services/svc-11-ti-sync/internal/ti/runner</code> (runner), <code>services/svc-11-ti-sync/internal/ti/feeds</code> (all feeds), <code>shared/postgres/repository/ti_repo</code> (repository), <code>shared/valkey/ti_cache</code> (cache). Enable Jaeger with <code>CYBERSIREN_JAEGER_ENDPOINT=http://localhost:4318</code>.
+</div>
+
+
+<!-- ============================================================ -->
+<h2>9. Design Decisions</h2>
+
+<table>
+  <tr><th>Decision</th><th>Rationale</th></tr>
+  <tr><td class="svc">Hash indicators routed to attachment_library</td><td>The TI indicator pipeline is optimized for URL/domain/IP blocklist lookups. Hashes represent file identity and belong alongside uploaded attachment records in <code>attachment_library</code>. Routing them there enables SVC-05 to join TI data without a separate table lookup and keeps <code>ti_indicators</code> focused on network-based IOCs.</td></tr>
+  <tr><td class="svc">Sequential feed processing</td><td>Each feed is fetched and upserted sequentially within SyncAll. This avoids connection pool exhaustion under load, simplifies error isolation, and keeps the sync cycle predictable. Feeds are fast enough (all complete in &lt;10 s total) that parallelism provides no meaningful benefit.</td></tr>
+  <tr><td class="svc">Conflict: GREATEST risk_score</td><td>Risk scores should never decrease. If a feed previously reported score 90 and now reports 70 (e.g., due to API changes), the historical high is preserved. Operators can manually decrease via the admin API.</td></tr>
+  <tr><td class="svc">Conflict: tag union not replacement</td><td>Tags from multiple sync cycles accumulate. A domain tagged <code>["phishing"]</code> in one cycle and <code>["malware", "botnet"]</code> in the next retains all three tags. This preserves historical context from feeds that rotate their tag classifications.</td></tr>
+  <tr><td class="svc">is_active deactivation</td><td>Indicators not seen in the current sync cycle are marked <code>is_active = FALSE</code> rather than deleted. This allows downstream services to distinguish between "currently blocklisted" and "was blocklisted" without losing the historical record.</td></tr>
+  <tr><td class="svc">Valkey cache TTL = 1 hour</td><td>With a 6-hour default sync interval, a 1-hour TTL ensures the cache never serves data older than 1 sync cycle + 1 cache window (7 hours maximum staleness). The cache is fully rebuilt on every sync, so staleness is bounded.</td></tr>
+  <tr><td class="svc">Feed URL from DB at runtime</td><td>The URL stored in the <code>feeds.url</code> column overrides the hardcoded default constant. This allows feed URLs to be updated via the admin API without a service redeployment. PhishTank uses a template URL; the API key is still injected from config, not the DB.</td></tr>
+  <tr><td class="svc">Atomic overlap guard</td><td><code>atomic.Bool cycleRunning</code> prevents two sync cycles from running simultaneously if the previous cycle overruns the interval. This is safer than a mutex approach because the check is non-blocking and a skipped tick is recoverable on the next tick.</td></tr>
+  <tr><td class="svc">MalwareBazaar Auth-Key requirement</td><td>As of 2025, abuse.ch requires authentication for all MalwareBazaar API calls (previously only the enhanced tier). The implementation sends the key as an <code>Auth-Key</code> HTTP header matching the pattern used by ThreatFox. A missing key logs a warning but does not prevent service startup; the feed will fail at fetch time with HTTP 401.</td></tr>
+  <tr><td class="svc">ThreatFox ip:port stripping</td><td>ThreatFox reports C2 servers as <code>1.2.3.4:6000</code> (ip:port format). The port is stripped via <code>net.SplitHostPort()</code> before storing the IP. CyberSiren's <code>ti_indicators</code> has no port field — indicators represent hosts, not endpoints. Port context is preserved in <code>raw_metadata</code>.</td></tr>
+</table>
+
+
+<!-- ============================================================ -->
+<h2>10. Limitations</h2>
+
+<table>
+  <tr><th>#</th><th>Limitation</th><th>Impact</th><th>Mitigation</th></tr>
+  <tr><td>1</td><td>No parallel feed fetching.</td><td>Total sync time = sum of all feed fetch times. Currently ~8 s for 4 feeds.</td><td>Acceptable at current scale. Parallel fetch can be added if feed count grows significantly.</td></tr>
+  <tr><td>2</td><td>No per-feed scheduling.</td><td>All feeds sync on the same interval (default 6 h). High-frequency feeds (URLhaus updates every 5 min) are under-sampled.</td><td>Use a shorter global interval or add per-feed cron support in a future iteration.</td></tr>
+  <tr><td>3</td><td>No distributed leader election.</td><td>Running multiple instances of svc-11 simultaneously will cause duplicate upsert contention. Upsert semantics are idempotent, so data integrity is maintained, but it wastes API calls and DB write pressure.</td></tr>
+  <tr><td>4</td><td>Hash cache holds entire malicious set in memory per refresh.</td><td>If <code>attachment_library</code> grows to millions of entries, the refresh will hold a large slice in RAM. Batch streaming would be needed.</td><td>Current scale (hundreds to low thousands of entries) is well within limits.</td></tr>
+  <tr><td>5</td><td>PhishTank feed disabled unless API key is provided.</td><td>PhishTank is the community-verified source with highest precision for known phishing URLs. Without it, URL coverage relies on OpenPhish + URLhaus.</td><td>Register at phishtank.org, set <code>CYBERSIREN_FEED_PHISHTANK_API_KEY</code>.</td></tr>
+  <tr><td>6</td><td>Raw metadata not updated on indicator conflict.</td><td>If a feed changes the payload for an existing IOC (new confidence level, additional fields), the stored <code>raw_metadata</code> jsonb reflects the first-seen payload only.</td><td>Risk score and tags are updated on conflict. For full payload history, store in an event log (not implemented).</td></tr>
+</table>
+
+</body>
+</html>
