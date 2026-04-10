@@ -112,7 +112,8 @@ make demo-build svc=svc-11-ti-sync  # rebuild + start single service
 make demo-all-build                  # rebuild + start all services
 ```
 
-Open http://localhost:8083 once the service prints `started port=8083`.
+**svc-03 only:** Open http://localhost:8083 for the URL scanner web UI.
+Other services have no web UI — use Grafana, Prometheus, and Jaeger below.
 
 | Port | Service |
 |------|---------|

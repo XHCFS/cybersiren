@@ -6,10 +6,12 @@ Every CyberSiren service ships with three observability pillars:
 
 | Tool | Purpose | Port/URL |
 |------|---------|----------|
-| **Prometheus** | Metrics (counters, histograms, gauges) | `:9090/metrics` inside container |
+| **Prometheus** | Scrapes service metrics; query UI on host | `http://localhost:9092` |
 | **Grafana** | Dashboards | `http://localhost:3001` |
 | **Jaeger** | Distributed tracing (OpenTelemetry) | `http://localhost:16686` |
 | **zerolog** | Structured JSON logging | stderr |
+
+> **Note:** Each Go service exposes its own `/metrics` endpoint on port 9090 *inside* the container. The host-side Prometheus UI at `localhost:9092` scrapes all of them.
 
 The shared packages in `shared/observability/` handle all boilerplate. You just need to make three calls in `main.go` and register your custom metrics.
 
@@ -48,7 +50,11 @@ func main() {
     reg := metrics.Init("svc-XX-myservice")
 
     // ③ Metrics HTTP server — serves /metrics and /healthz.
-    metricsShutdown := metrics.StartServer(cfg.MetricsPort, reg, log)
+    metricsShutdown, err := metrics.StartServer(cfg.MetricsPort, reg, log)
+    if err != nil {
+        log.Fatal().Err(err).Msg("failed to start metrics server")
+        return
+    }
     defer func() { _ = metricsShutdown(context.Background()) }()
 
     // Pass `reg` to any struct that registers custom metrics.
@@ -59,7 +65,7 @@ func main() {
 **What these do:**
 - `tracing.Init()` — sets up an OTLP HTTP exporter to Jaeger. If the endpoint is empty, it installs a noop tracer so `otel.Tracer()` calls are safe everywhere.
 - `metrics.Init()` — creates a new `*prometheus.Registry` with Go runtime and process collectors pre-registered.
-- `metrics.StartServer()` — starts a background HTTP server exposing `/metrics` (Prometheus scrape endpoint) and `/healthz` (liveness probe). Returns a shutdown function.
+- `metrics.StartServer()` — starts a background HTTP server exposing `/metrics` (Prometheus scrape endpoint) and `/healthz` (liveness probe). Returns a shutdown function and an error if the port bind fails.
 
 ### 1b. Add custom metrics
 
@@ -253,7 +259,7 @@ Use the existing `svc-11-ti-sync.json` as a template. Key fields:
 | Counter rate | `rate(metric_total{service="..."}[5m])` |
 | Histogram p50/p95/p99 | `histogram_quantile(0.95, rate(metric_bucket{service="..."}[5m]))` |
 | Goroutines | `go_goroutines{service="..."}` |
-| Memory (MiB) | `go_memstats_alloc_bytes{service="..."} / 1024 / 1024` |
+| Memory | `go_memstats_alloc_bytes{service="..."}` (use `unit: "bytes"` in Grafana) |
 | Open FDs | `process_open_fds{service="..."}` |
 
 **Always include** Go runtime panels (goroutines, memory, open FDs) — they come free from the registry and are useful for debugging. See `svc-11-ti-sync.json` for the full template.
