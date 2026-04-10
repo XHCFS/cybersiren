@@ -168,7 +168,7 @@ func (f *ThreatFoxFeed) Fetch(ctx context.Context) (indicators []ti.TIIndicator,
 			}
 
 		case strings.HasSuffix(iocType, "_hash"):
-			f.log.Warn().
+			f.log.Debug().
 				Str("source_id", ti.RawJSONToString(entry.ID)).
 				Str("ioc_type", entry.IOCType).
 				Str("raw_ioc", entry.IOC).

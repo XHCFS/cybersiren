@@ -20,10 +20,11 @@ import (
 )
 
 const (
-	tiDomainTTLSeconds   int64 = 3600
-	tiDomainRefreshBatch       = 200
-	tiHashTTLSeconds     int64 = 3600
-	tiHashRefreshBatch         = 200
+	tiDomainTTLSeconds    int64 = 3600
+	tiDomainRefreshBatch        = 200
+	tiHashTTLSeconds      int64 = 3600
+	tiHashRefreshBatch          = 200
+	tiHashCacheTypeSHA256       = "sha256"
 )
 
 var tiCacheTracer = tracing.Tracer("shared/valkey/ti_cache")
@@ -273,7 +274,7 @@ func (c *ValkeyTICache) RefreshHashCache(ctx context.Context) (err error) {
 			hsetCmd := c.client.B().Hset().
 				Key(key).
 				FieldValue().
-				FieldValue("type", "sha256").
+				FieldValue("type", tiHashCacheTypeSHA256).
 				FieldValue("risk_score", strconv.Itoa(h.RiskScore)).
 				FieldValue("tags", tags).
 				FieldValue("updated_at", updatedAt).
