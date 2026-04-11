@@ -97,13 +97,24 @@ cybersiren/
 
 ## Quick Start (Demo)
 
-Runs `svc-03-url-analysis` with Postgres, Valkey, Prometheus, Grafana, and Jaeger. No environment variables required.
+Runs any service with Postgres, Valkey, Prometheus, Grafana, and Jaeger.
 
 ```bash
-docker compose -f deploy/compose/docker-compose.yml --profile demo up --build
+cp deploy/compose/.env.example deploy/compose/.env  # one-time Docker Compose setup
+make demo svc=svc-03-url-analysis   # URL scanner with full observability
+make demo svc=svc-11-ti-sync        # threat-intel sync with full observability
+make demo-all                       # ALL services at once
 ```
 
-Open http://localhost:8083 once the service prints `started port=8083`.
+Images are cached after the first run — startup is instant. Force a rebuild after code changes:
+
+```bash
+make demo-build svc=svc-11-ti-sync  # rebuild + start single service
+make demo-all-build                  # rebuild + start all services
+```
+
+**svc-03 only:** Open http://localhost:8083 for the URL scanner web UI.
+Other services have no web UI — use Grafana, Prometheus, and Jaeger below.
 
 | Port | Service |
 |------|---------|
@@ -126,6 +137,54 @@ make build
 ```
 
 Config loads in priority order: defaults < `config.yaml` < environment variables (`CYBERSIREN_` prefix, `__` for nesting).
+
+---
+
+## Observability
+
+Every Go service exposes Prometheus metrics on its `METRICS_PORT` and optionally sends traces to Jaeger via OTLP. The shared package `shared/observability/metrics` provides a reusable metrics HTTP server, and `shared/observability/tracing` handles trace export.
+
+### Docker Compose profiles
+
+Observability infrastructure is split into composable profiles:
+
+| Profile | What it starts |
+|---------|---------------|
+| `monitoring` | Prometheus + Grafana (with auto-provisioned dashboards) |
+| `observability` | Jaeger (OTLP collector + UI) |
+| `svc-03` | svc-03-url-analysis container |
+| `svc-11` | svc-11-ti-sync container |
+
+Combine profiles as needed, or use `make demo` which activates all of them:
+
+```bash
+make demo svc=svc-11-ti-sync
+```
+
+### UIs
+
+| URL | Service | Credentials |
+|-----|---------|-------------|
+| http://localhost:3001 | Grafana | admin / admin |
+| http://localhost:9092 | Prometheus | — |
+| http://localhost:16686 | Jaeger | — |
+
+### Makefile targets
+
+```bash
+make demo svc=<name>         # start service + full observability stack (cached)
+make demo-build svc=<name>   # same but force-rebuilds image first
+make demo-all                # start ALL services + full observability stack (cached)
+make demo-all-build          # same but force-rebuilds all images first
+make jaeger              # start Jaeger standalone
+make open-grafana        # open Grafana in browser
+make open-prometheus     # open Prometheus in browser
+make open-jaeger         # open Jaeger in browser
+```
+
+### Adding observability to a new service
+
+See [docs/adding-observability.md](docs/adding-observability.md) for a step-by-step guide.
 
 ---
 

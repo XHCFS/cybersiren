@@ -14,6 +14,8 @@ endif
 
 DOCKER_COMPOSE := docker compose -f deploy/compose/docker-compose.yml \
                   --env-file deploy/compose/.env
+COMPOSE_ENV_FILE := deploy/compose/.env
+COMPOSE_ENV_EXAMPLE := deploy/compose/.env.example
 
 # Git SHA for image tagging — short SHA, falls back to "dev" if not in a git repo
 GIT_SHA := $(shell git rev-parse --short HEAD 2>/dev/null || echo "dev")
@@ -273,9 +275,70 @@ kafka-topics:
 check-tools:
 	@./scripts/dev/check_tools.sh
 
+# ── Service profile short-names ──────────────────────────────────────────────
+# Maps full service name to its docker-compose profile short-name.
+# Example: svc-03-url-analysis → svc-03, svc-11-ti-sync → svc-11
+svc-short-profile = $(shell echo $(1) | sed 's/^\(svc-[0-9]*\).*/\1/')
+
 # =============================================================================
 # ── Observability ────────────────────────────────────────────────────────────
 # =============================================================================
+
+## demo: Run a service with full observability stack (Prometheus, Grafana, Jaeger).
+##       Uses cached images — fast on repeat runs. Force a rebuild with: make demo-build svc=<name>
+##       Usage: make demo svc=svc-03-url-analysis
+##              make demo svc=svc-11-ti-sync
+demo: check-docker check-compose-env
+	@[ "$(svc)" ] || (echo "Usage: make demo svc=<service-name>"; exit 1)
+	$(DOCKER_COMPOSE) --profile postgres --profile valkey \
+	    --profile monitoring --profile observability \
+	    --profile $(call svc-short-profile,$(svc)) up -d --wait
+	@echo ""
+	@echo "  Service:     $(svc)"
+	@echo "  Grafana:     http://localhost:3001"
+	@echo "  Prometheus:  http://localhost:9092"
+	@echo "  Jaeger:      http://localhost:16686"
+	@echo ""
+
+## demo-build: Like demo but force-rebuilds the service image first.
+##             Use after code changes. Usage: make demo-build svc=svc-11-ti-sync
+demo-build: check-docker check-compose-env
+	@[ "$(svc)" ] || (echo "Usage: make demo-build svc=<service-name>"; exit 1)
+	$(DOCKER_COMPOSE) --profile postgres --profile valkey \
+	    --profile monitoring --profile observability \
+	    --profile $(call svc-short-profile,$(svc)) up -d --wait --build
+	@echo ""
+	@echo "  Service:     $(svc)"
+	@echo "  Grafana:     http://localhost:3001"
+	@echo "  Prometheus:  http://localhost:9092"
+	@echo "  Jaeger:      http://localhost:16686"
+	@echo ""
+
+## demo-all: Run ALL services with full observability stack.
+##           Uses cached images — fast on repeat runs. Force a rebuild with: make demo-all-build
+demo-all: check-docker check-compose-env
+	$(DOCKER_COMPOSE) --profile postgres --profile valkey \
+	    --profile monitoring --profile observability \
+	    --profile svc-03 --profile svc-11 up -d --wait
+	@echo ""
+	@echo "  Services:    svc-03-url-analysis, svc-11-ti-sync"
+	@echo "  Grafana:     http://localhost:3001"
+	@echo "  Prometheus:  http://localhost:9092"
+	@echo "  Jaeger:      http://localhost:16686"
+	@echo ""
+
+## demo-all-build: Like demo-all but force-rebuilds all service images first.
+##                 Use after code changes.
+demo-all-build: check-docker check-compose-env
+	$(DOCKER_COMPOSE) --profile postgres --profile valkey \
+	    --profile monitoring --profile observability \
+	    --profile svc-03 --profile svc-11 up -d --wait --build
+	@echo ""
+	@echo "  Services:    svc-03-url-analysis, svc-11-ti-sync"
+	@echo "  Grafana:     http://localhost:3001"
+	@echo "  Prometheus:  http://localhost:9092"
+	@echo "  Jaeger:      http://localhost:16686"
+	@echo ""
 
 ## jaeger: Start Jaeger standalone (use when already running infra separately)
 jaeger: check-docker
@@ -288,6 +351,14 @@ open:
 	@$(MAKE) _open-url url=http://localhost:8080
 	@$(MAKE) _open-url url=http://localhost:5050
 	@echo "Metrics endpoint (not a UI): http://localhost:$(METRICS_PORT)/metrics"
+
+## open-grafana: Open Grafana dashboards
+open-grafana:
+	@$(MAKE) _open-url url=http://localhost:3001
+
+## open-prometheus: Open Prometheus query UI
+open-prometheus:
+	@$(MAKE) _open-url url=http://localhost:9092
 
 ## open-jaeger: Open Jaeger tracing UI
 open-jaeger:
@@ -323,6 +394,10 @@ check-docker:
 	@docker info > /dev/null 2>&1 || \
 		(echo "Docker is not running — start Docker and retry"; exit 1)
 
+check-compose-env:
+	@test -f $(COMPOSE_ENV_FILE) || \
+		(echo "Missing $(COMPOSE_ENV_FILE). Copy $(COMPOSE_ENV_EXAMPLE) to $(COMPOSE_ENV_FILE) and retry."; exit 1)
+
 .PHONY: ci ci-integration check-tidy generate-check \
         docker-build docker-push docker-build-all \
         dev _db-setup-if-needed \
@@ -332,7 +407,8 @@ check-docker:
         test test-svc test-shared test-short test-cover \
         vet lint lint-fix tidy \
         valkey-cli kafka-topics check-tools \
-        jaeger open open-jaeger open-kafka-ui open-pgadmin _open-url \
-        help check-docker
+        demo demo-build demo-all demo-all-build jaeger \
+        open open-grafana open-prometheus open-jaeger open-kafka-ui open-pgadmin _open-url \
+        help check-docker check-compose-env
 
 .DEFAULT_GOAL := help
