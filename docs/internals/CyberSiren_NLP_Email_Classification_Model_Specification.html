@@ -1,0 +1,949 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>CyberSiren — ML Model Specification (SVC-06 NLP Email Classification)</title>
+<style>
+  @page { size: A4 portrait; margin: 12mm; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Courier New', 'Consolas', monospace;
+    background: #ffffff;
+    color: #111111;
+    padding: 28px 36px;
+    font-size: 11px;
+    line-height: 1.45;
+  }
+
+  h1 { font-size: 20px; font-weight: 700; border-bottom: 3px solid #111; padding-bottom: 6px; margin-bottom: 2px; letter-spacing: -0.3px; }
+  .doc-meta { font-size: 10px; color: #555; margin-bottom: 20px; border-bottom: 1px solid #999; padding-bottom: 8px; }
+  .doc-meta span { margin-right: 24px; }
+
+  h2 { font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: 1.5px; border-bottom: 2px solid #333; padding-bottom: 3px; margin: 22px 0 10px 0; }
+  h3 { font-size: 11.5px; font-weight: 700; margin: 12px 0 4px 0; }
+
+  table { border-collapse: collapse; width: 100%; margin: 6px 0 14px 0; font-size: 10.5px; }
+  th, td { border: 1px solid #888; padding: 4px 7px; text-align: left; vertical-align: top; }
+  th { background: #e8e8e8; font-weight: 700; white-space: nowrap; }
+  td { background: #fff; }
+  tr:nth-child(even) td { background: #f8f8f8; }
+  td.svc { font-weight: 700; }
+  td code, th code { font-family: inherit; background: #f0f0f0; padding: 1px 3px; font-size: 10px; }
+
+  .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .three-col { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; }
+
+  .note {
+    border: 1px solid #aaa;
+    background: #f9f9f9;
+    padding: 6px 10px;
+    margin: 6px 0;
+    font-size: 10px;
+  }
+  .note strong { font-size: 10px; }
+
+  .pipeline-step {
+    border: 2px solid #333;
+    margin-bottom: 10px;
+    page-break-inside: avoid;
+  }
+  .pipeline-step .step-header {
+    display: flex;
+    align-items: stretch;
+  }
+  .pipeline-step .step-num {
+    background: #333;
+    color: #fff;
+    font-weight: 700;
+    padding: 8px 12px;
+    min-width: 36px;
+    text-align: center;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 13px;
+  }
+  .pipeline-step .step-content {
+    padding: 8px 12px;
+    flex: 1;
+  }
+
+  .compact-table td, .compact-table th { padding: 3px 6px; font-size: 10px; }
+
+  .metric-block {
+    border: 2px solid #333;
+    padding: 10px 12px;
+    margin-bottom: 10px;
+    page-break-inside: avoid;
+  }
+  .metric-block .metric-header {
+    font-size: 12.5px;
+    font-weight: 700;
+    border-bottom: 1px solid #aaa;
+    padding-bottom: 4px;
+    margin-bottom: 6px;
+  }
+
+  hr { border: none; border-top: 1px solid #ccc; margin: 14px 0; }
+  .page-break { page-break-before: always; }
+
+  .ref-list { margin: 4px 0; padding-left: 18px; font-size: 10px; }
+  .ref-list li { margin-bottom: 3px; }
+
+  p { margin-bottom: 8px; }
+  ul, ol { margin: 4px 0 8px 18px; font-size: 10.5px; }
+  li { margin-bottom: 3px; }
+</style>
+</head>
+<body>
+
+<h1>CYBERSIREN — NLP EMAIL CLASSIFICATION MODEL SPECIFICATION</h1>
+<div class="doc-meta">
+  <span><strong>Document:</strong> NLP-SPEC-v1.0</span>
+  <span><strong>Date:</strong> 2026-04-10</span>
+  <span><strong>Scope:</strong> SVC-06 NLP Analysis — Phishing / Spam / Legitimate Email Text Classifier</span>
+  <span><strong>Classification:</strong> Internal / Graduation Project</span>
+</div>
+
+<div class="note">
+  <strong>Context:</strong> This document specifies the machine learning model to be deployed inside SVC-06 (NLP Analysis Service) as defined in ARCH-SPEC. The model runs as a Python FastAPI microservice invoked by the Go aggregator (SVC-07) over HTTP. It receives email subject + body text, classifies the email into {legitimate, spam, phishing}, extracts intent labels and urgency score, and returns a content risk score (int 0–100). Inference uses ONNX Runtime on CPU. Every design decision in this document traces to one or more papers from the 15-paper research corpus in the <code>LITERATURE/</code> folder, verified by full-text reading.
+</div>
+
+<div class="note">
+  <strong>Target Performance:</strong> Macro MCC &ge; 0.88 &nbsp;|&nbsp; Phishing Recall &ge; 96% &nbsp;|&nbsp; Legitimate FPR &lt; 0.5% &nbsp;|&nbsp; Phish-as-Legit Rate &lt; 2.0% &nbsp;|&nbsp; CPU Inference P95 &lt; 150 ms &nbsp;|&nbsp; ONNX INT8 Model &lt; 200 MB
+</div>
+
+
+<!-- ============================================================ -->
+<h2>1. Literature Foundation</h2>
+
+<p>Fifteen peer-reviewed papers and technical reports inform model architecture, training methodology, dataset selection, and evaluation protocol. All papers were read in full from the <code>LITERATURE/</code> folder. Every reference below has been verified against the actual PDF content.</p>
+
+<table>
+  <tr>
+    <th>Ref</th>
+    <th>Citation</th>
+    <th>Year</th>
+    <th>Venue</th>
+    <th>Contribution to This Work</th>
+  </tr>
+  <tr>
+    <td class="svc">[1]</td>
+    <td>I. Altan, A. Bachir, Y. Parbhulkar, A.M. Rizvi, M. Farazi. "Dual-Path Phishing Detection: Integrating Transformer-Based NLP with Structural URL Analysis." arXiv:2509.20972v1.</td>
+    <td>2025</td>
+    <td>ArXiv</td>
+    <td>Benchmarked DistilBERT (<strong>98.9%</strong> acc, F1 0.989) vs BERT-Base (99.4%) vs MiniLM-L12 (98.6%) vs BERT-Tiny (94.8%) on balanced email corpus of 7,500 samples. LR=2e-5, epochs=3, max_len=256. <strong>Primary basis for DistilBERT selection</strong> — best efficiency/accuracy trade-off among compact models.</td>
+  </tr>
+  <tr>
+    <td class="svc">[2]</td>
+    <td>S. Saha Roy, S. Nilizadeh. "PhishLang: A Real-Time, Fully Client-Side Phishing Detection Framework Using MobileBERT." arXiv:2408.05667v3.</td>
+    <td>2025</td>
+    <td>ACM CCS / ArXiv</td>
+    <td>MobileBERT: F1 0.96, 0.39s CPU, <strong>74 MB DRAM</strong>. DistilBERT: F1 0.94, 0.85s, 502 MB. DeBERTa: F1 0.84, 1,341 MB. TinyBERT: F1 0.84, 495 MB. 5-fold CV, 10 epochs. <strong>Latency/memory benchmarks. MobileBERT as fallback candidate.</strong> Open-source Chromium extension validates on-device deployment.</td>
+  </tr>
+  <tr>
+    <td class="svc">[3]</td>
+    <td>Sajad U P. "A Robust and Explainable Transformer-Based Framework for Phishing Email Detection." arXiv:2511.12085v2.</td>
+    <td>2026</td>
+    <td>ArXiv</td>
+    <td>DistilBERT + FGM (&epsilon;=0.01, &lambda;=0.5) + char-level noise (30% samples, 10% corruption). Clean: 98.1% &rarr; <strong>93.2% at 20% noise</strong> (vs baseline 54.5%). Cross-domain CEAS_08: 99.4% &rarr; 95.7%. LR=3e-5, max_len=256, batch=32, 3–6 epochs. XAI: LIME (1000 perturbations), SHAP (500 evaluations), IG (100 steps) + Flan-T5 explanations. <strong>Primary basis for FGM adversarial training, char-level augmentation, and XAI methodology.</strong></td>
+  </tr>
+  <tr>
+    <td class="svc">[4]</td>
+    <td>M. Tawfik, A.A. Abu-Ein, A.H. Abdelhaliem, Y.M. Al-Sharo, I.S. Fathi. "Explainable few-shot learning with modern BERT for detecting emerging phishing attacks using XF-PhishBERT." Scientific Reports 15, s41598-025-27500-0.</td>
+    <td>2025</td>
+    <td>Sci. Reports (Nature)</td>
+    <td>ModernBERT + prototypical networks + MAML: 10-shot <strong>99.99%</strong> acc, MCC <strong>0.998</strong>. Ablation: removing ModernBERT &rarr; &minus;4.54pp F1; BERT swap &rarr; &minus;2.69pp. LR=1e-5 (backbone), 3e-5 (heads). AdamW, cosine annealing, warmup=10%. SHAP + LIME + IG + counterfactuals. 95% CIs via 1000 bootstrap. <strong>Basis for ModernBERT stretch goal, SHAP integration, statistical significance methodology.</strong></td>
+  </tr>
+  <tr>
+    <td class="svc">[5]</td>
+    <td>M. Safran, A. Musleh. "PhishingGNN: Phishing Email Detection Using Graph Attention Networks and Transformer-Based Feature Extraction." IEEE Access 13, pp. 131390–131399.</td>
+    <td>2025</td>
+    <td>IEEE Access</td>
+    <td>DistilBERT feature extraction + GAT. CEAS_08 (39,154 samples): <strong>0.9939</strong> acc, F1 0.99, AUC <strong>1.00</strong>. Cross-dataset Nazario: 0.9910 acc. Max_len=128, batch=32, 5 epochs, LR=0.005. 60/20/20 stratified split. <strong>Evidence for DistilBERT as effective email feature extractor. Cross-dataset validation methodology. CEAS_08 as evaluation corpus.</strong></td>
+  </tr>
+  <tr>
+    <td class="svc">[6]</td>
+    <td>M.A. Uddin, Md. Mahiuddin, I.H. Sarker. "An Explainable Transformer-based Model for Phishing Email Detection: A Large Language Model Approach." arXiv:2402.13871v2.</td>
+    <td>2025</td>
+    <td>ArXiv</td>
+    <td>RoBERTa fine-tuned: <strong>98.45%</strong> acc (balanced). LR=2e-5, epochs=5, batch=32, max_len=512. 64/16/20 split. Synonym replacement for class balancing. LITA hybrid: LIME + Transformers Interpret (&alpha;=0.5). <strong>Basis for learning rate, max_len=512, synonym replacement augmentation.</strong></td>
+  </tr>
+  <tr>
+    <td class="svc">[7]</td>
+    <td>P. Mendes, E. Maia, I. Pra&ccedil;a. "MeAJOR Corpus: A Multi-Source Dataset for Phishing Email Detection." arXiv:2507.17978v2.</td>
+    <td>2025</td>
+    <td>ArXiv</td>
+    <td>Merged <strong>135,894</strong> emails from 5 sources (Nazario, Nigerian, TREC 05/06/07). XGB on text+URL: 98.37% acc, F1 98.34%. 5-fold CV + 80/20 holdout. <strong>Basis for multi-source dataset merging methodology, label harmonization, and minimum corpus size evidence.</strong></td>
+  </tr>
+  <tr>
+    <td class="svc">[8]</td>
+    <td>R. Toth, N. Gruschka, T. Bisztray. "The Phish, The Spam, and The Valid: Generating Feature-Rich Emails for Benchmarking LLMs." arXiv:2511.21448v5.</td>
+    <td>2025</td>
+    <td>ArXiv (U. Oslo)</td>
+    <td>PhishFuzzer: 23,100 3-class synthetic emails. Gemini F1<sub>phish</sub>=0.958 but F1<sub>spam</sub>=<strong>0.383</strong>. <strong>Core finding: spam&harr;legitimate confusion is the primary failure mode in 3-class NLP classification.</strong> Validates our focus on the spam/phishing decision boundary.</td>
+  </tr>
+  <tr>
+    <td class="svc">[9]</td>
+    <td>T. Saka, R. Jain, K. Vaniea, N. K&ouml;kciyan. "Phishing Codebook: A Structured Framework for the Characterization of Phishing Emails." arXiv:2408.08967v1.</td>
+    <td>2024</td>
+    <td>ArXiv</td>
+    <td>Eight high-level codes (Salutation, Threat, Urgency, Action-Generic/Specific, etc.) for phishing characterization. Inter-rater &kappa;=0.93. Nazario corpus: 1,688 processed emails. <strong>Basis for intent taxonomy design and urgency scoring categories.</strong></td>
+  </tr>
+  <tr>
+    <td class="svc">[10]</td>
+    <td>B. Lim, R. Huerta, A. Sotelo, A. Quintela, P. Kumar. "EXPLICATE: Enhancing Phishing Detection through Explainable AI and LLM-Powered Interpretability." arXiv:2503.20796v1.</td>
+    <td>2025</td>
+    <td>ArXiv</td>
+    <td>193,002 emails from CEAS-08/Enron/SpamAssassin/Nigerian Fraud. LR+TF-IDF: 98.4% acc. LIME+SHAP dual explanations + DeepSeek v3. 404 FP, 230 FN analyzed. <strong>Error analysis methodology — FP/FN categorization approach.</strong></td>
+  </tr>
+  <tr>
+    <td class="svc">[11]</td>
+    <td>H.A. Farhan. "Robust and Accurate Phishing Detection Using Enhanced DistilBERT: A Transformer-Based Approach."</td>
+    <td>2025</td>
+    <td>J. Al-Qadisiyah</td>
+    <td>Enhanced DistilBERT with FPR-aware loss. 82,500 emails. Adversarial noise: 5% &rarr; 92% prec/89% recall; 20% &rarr; <strong>85% prec/80% recall</strong>; 50% &rarr; 72%/65%. <strong>Quantifies DistilBERT robustness degradation under noise — validates need for adversarial training [3].</strong></td>
+  </tr>
+  <tr>
+    <td class="svc">[12]</td>
+    <td>S.P. Neshaei, Y. Boreshban, G. Ghassem-Sani, S.A. Mirroshandel. "The Impact of Quantization on the Robustness of Transformer-based Text Classifiers." arXiv:2403.05365v1.</td>
+    <td>2024</td>
+    <td>ArXiv</td>
+    <td>ONNX Runtime dynamic INT8 quantization. DistilBERT: <strong>255 MB &rarr; 132 MB</strong> (~52%). Clean accuracy drop: <strong>&sim;0.98%</strong> avg. Adversarial robustness <strong>+18.68%</strong> improvement post-quantization. <strong>Primary basis for ONNX INT8 quantization decision.</strong></td>
+  </tr>
+  <tr>
+    <td class="svc">[13]</td>
+    <td>L. Senevirathna, D. Sumanathilaka. "Efficient Financial Fraud Detection on Mobile Devices Using Lightweight Large Language Models." RANLP 2025.</td>
+    <td>2025</td>
+    <td>RANLP (Varna)</td>
+    <td>Llama-160M bnb4: 99.47%, 168 MB. INT8 "minimal loss." On Samsung S21+: <strong>&lt;500 ms inference, &lt;1 s model load</strong>. ONNX via HuggingFace Optimum. <strong>Additional evidence for on-device quantized NLP viability.</strong></td>
+  </tr>
+  <tr>
+    <td class="svc">[14]</td>
+    <td>S. Ibrahim, C. Catal, T. Kacem. "The use of multi-task learning in cybersecurity applications: a systematic literature review." Neural Computing and Applications.</td>
+    <td>2024</td>
+    <td>Springer</td>
+    <td>SLR of 28 primary studies (2017–2023). <strong>"Majority of multi-task models outperform single-task models"</strong> (Table 7 synthesis). Spam+phishing as related MTL scenario discussed in &sect;2.2. <strong>Basis for multi-task (classification + intent + urgency) architecture.</strong></td>
+  </tr>
+  <tr>
+    <td class="svc">[15]</td>
+    <td>O. Atanda, H. Aworinde, B. van Niekerk. "Lightweight transformer models for scalable phishing email detection: A comparative study of ALBERT and TinyBERT on a balanced email corpus." IJIRSS 9(2), 10–20.</td>
+    <td>2026</td>
+    <td>IJIRSS</td>
+    <td>ALBERT-base-v2: <strong>97.54%</strong> acc, AUC 0.9974. TinyBERT: 95.42%, AUC 0.992. 14,546 balanced emails, max_len=128, 80/20 split. ALBERT training ~5 min/epoch vs TinyBERT ~11 s/epoch. <strong>Model candidate benchmark. ALBERT as backup option.</strong></td>
+  </tr>
+</table>
+
+<div class="note">
+  <strong>Foundational references (not in LITERATURE/ folder but universally cited):</strong> Sanh et al. "DistilBERT" (arXiv:1910.01108, 2019); Kendall, Gal, Cipolla "Multi-Task Learning Using Uncertainty" (CVPR 2018); Lin et al. "Focal Loss" (ICCV 2017); Goodfellow et al. "Explaining and Harnessing Adversarial Examples" (ICLR 2015); Ribeiro et al. "LIME" (KDD 2016); Lundberg & Lee "SHAP" (NeurIPS 2017); Sundararajan et al. "Integrated Gradients" (ICML 2017).
+</div>
+
+
+<!-- ============================================================ -->
+<h2>2. Data Pipeline</h2>
+
+<h3>2.1 Source Datasets</h3>
+<p>Six datasets selected after inspection (originally seven planned; D3 and D5 excluded — see §2.2). Criteria: contains actual email body text (not just URLs or metadata), publicly accessible on Kaggle or HuggingFace, and labeled for phishing/spam/legitimate classification. Selection informed by [7]'s multi-source merging methodology and [8]'s 3-class evaluation showing spam&harr;legitimate confusion requires dedicated spam data.</p>
+
+<div class="note">
+  <strong>Post-inspection update (v1.1):</strong> Row counts, label semantics, and dataset composition corrected based on comprehensive data profiling. D3 and D5 moved to excluded. D7 label=1 confirmed as SPAM (not phishing) — all 7 sub-datasets are historically spam corpora. D6 combined file is preprocessed (unusable); only Nazario and Nigerian Fraud sub-files used.
+</div>
+
+<table class="compact-table">
+  <tr><th>ID</th><th>Name</th><th>Source</th><th>Rows</th><th>Labels</th><th>Role</th><th>Ref</th></tr>
+  <tr><td class="svc">D1</td><td>Biggest Phishing Spam Ham Dataset</td><td>Kaggle (akshatsharma2)</td><td>365,448</td><td>3-class {Ham=0, Spam=1, Phish=2}</td><td><strong>Foundation.</strong> Only dataset with native 3-class labels. Note: 12,477 internal label conflicts (same text, different labels) resolved via majority vote.</td><td>—</td></tr>
+  <tr><td class="svc">D2</td><td>EduPhish</td><td>Kaggle</td><td>16,942</td><td>Binary {Safe=0, Phish=1}</td><td>Modern 2025 educational phishing campaigns. Full body + metadata. Maps 1&rarr;2 (phishing).</td><td>—</td></tr>
+  <tr><td class="svc">D4</td><td>Human-LLM Phishing Emails</td><td>Kaggle</td><td>3,595 (3,353 usable)</td><td>Binary + generation source</td><td><strong>AI-generated phishing</strong> for detecting modern LLM-crafted lures. 240 rows dropped (no text). Has subject+body for human-generated, text-only for LLM-generated.</td><td>—</td></tr>
+  <tr><td class="svc">D6n</td><td>Nazario Phishing Corpus</td><td>Kaggle (n.abdullah) sub-file</td><td>1,565</td><td>Phishing-only (label=1)</td><td>Real-world phishing campaigns 2004–2017. Has subject+body. Maps 1&rarr;2 (phishing).</td><td>[5][9]</td></tr>
+  <tr><td class="svc">D6f</td><td>Nigerian 419 Fraud</td><td>Kaggle (n.abdullah) sub-file</td><td>3,332</td><td>Phishing-only (label=1)</td><td>Advance-fee fraud emails. Has subject+body. Maps 1&rarr;2 (phishing).</td><td>—</td></tr>
+  <tr><td class="svc">D7</td><td>Seven Phishing Email Datasets</td><td>HuggingFace (puyang2025)</td><td>162,413</td><td>Binary {Legit=0, <strong>Spam=1</strong>}</td><td><strong>Spam + legitimate corpus.</strong> Contains TREC-05/06/07, CEAS-08, Enron, SpamAssassin, LingSpam. All sub-datasets are historically spam corpora &mdash; label=1 maps to spam (1), NOT phishing. Has subject+body.</td><td>[7]</td></tr>
+</table>
+
+<h3>2.2 Excluded Datasets (with reason)</h3>
+<table class="compact-table">
+  <tr><th>Name</th><th>Rows</th><th>Reason for Exclusion</th></tr>
+  <tr><td><strong>D3: Phishing &amp; Legitimate Emails 2026</strong></td><td>10,000</td><td><strong>SYNTHETIC.</strong> Only 873 unique words across 10K texts (ratio 0.0023). Coefficient of variation 0.26 — uniform template generation. Zero overlap with any real dataset. Will not generalize to production email. Intent taxonomy (10 phishing types) retained as reference for our intent head design.</td></tr>
+  <tr><td><strong>D5: Urgency &amp; Persuasion</strong></td><td>1,000</td><td><strong>Only 79 unique texts</strong> (92.1% duplicates). Template-based short phrases (median 85 chars), not representative of real phishing campaigns. Category labels (urgency/authority/persuasion) inform our intent taxonomy but data is unusable.</td></tr>
+  <tr><td><strong>D6: Combined file (text_combined)</strong></td><td>82,486</td><td><strong>PREPROCESSED.</strong> Zero uppercase characters, zero punctuation, zero stopwords. Tokenized/stemmed data unusable for a model that must handle raw email text. Sub-files CEAS_08, SpamAssassin, Enron, Ling already present in D7 in cleaned form.</td></tr>
+  <tr><td>TREC Spam Tracks (standalone)</td><td>92,000+</td><td>Requires NIST agreement. Included via D7 which contains TREC-05/06/07 (100K+ rows).</td></tr>
+  <tr><td>Enron Email Dataset (standalone)</td><td>517,401</td><td>No labels. Included via D7 which contains a labeled Enron subset (23,849 rows).</td></tr>
+  <tr><td>zefang-liu/phishing-email-dataset</td><td>18,650</td><td>Binary only (no spam class). Used in [3] for adversarial training evaluation — too small for 3-class training.</td></tr>
+</table>
+
+<h3>2.3 Label Unification</h3>
+<div class="note">
+  All datasets mapped to the CyberSiren 3-class schema matching <code>VerdictLabel</code> in <code>shared/models/verdict.go</code>: <strong>{0: "legitimate", 1: "spam", 2: "phishing"}</strong>. [8] PhishFuzzer demonstrates that 3-class distinction (phishing/spam/valid) is the correct formulation — binary conflates spam and phishing which have different risk profiles. [8] found Gemini achieves F1<sub>phish</sub>=0.958 but F1<sub>spam</sub>=0.383, confirming the spam class requires dedicated modeling.
+</div>
+
+<table class="compact-table">
+  <tr><th>Source Label</th><th>&rarr; Unified</th><th>Datasets</th><th>Notes</th></tr>
+  <tr><td>"ham", "safe", "legitimate", "benign", 0</td><td>0 (legitimate)</td><td>D1, D2, D7 (label=0), D4 (_d4_class="legitimate")</td><td></td></tr>
+  <tr><td>"spam", "junk", "bulk", D7 label=1</td><td>1 (spam)</td><td>D1 (label=1), <strong>D7 (label=1)</strong></td><td><strong>Critical:</strong> D7's 7 sub-datasets (TREC-05/06/07, CEAS-08, Enron, SpamAssassin, LingSpam) are all historically spam corpora. label=1 = spam, not phishing.</td></tr>
+  <tr><td>"phish", "phishing", "malicious", "scam"</td><td>2 (phishing)</td><td>D1 (label=2), D2 (label=1), D4 (_d4_class="phishing"), D6n, D6f</td><td>D2 and D4 binary label=1 confirmed as phishing via content inspection.</td></tr>
+</table>
+
+<h3>2.4 Text Preprocessing (Standardization)</h3>
+<p>Applied to ALL samples before splitting. Preprocessing design follows [3]'s methodology of handling character-level obfuscation and [6]'s subject+body concatenation.</p>
+
+<table class="compact-table">
+  <tr><th>Step</th><th>Action</th><th>Justification</th></tr>
+  <tr><td>1</td><td>HTML stripping: BeautifulSoup <code>.get_text(separator=' ')</code></td><td>[11]: phishing uses CSS tricks to inject hidden text.</td></tr>
+  <tr><td>2</td><td>Unicode NFKC normalization</td><td>[3] &sect;3.1.2: collapses homoglyphs (Cyrillic "а" &rarr; Latin "a").</td></tr>
+  <tr><td>3</td><td>Zero-width character removal: U+200B/200C/200D/FEFF/00AD/FE00–FE0F</td><td>[3] &sect;3.2.2: prevents tokenizer fragmentation from adversarial ZWS injection.</td></tr>
+  <tr><td>4</td><td>Whitespace normalization: collapse multiple spaces/newlines</td><td>[3] &sect;3.1.2: "extra whitespace is removed to ensure textual consistency."</td></tr>
+  <tr><td>5</td><td>Text composition: <code>"Subject: {subject}\n\nBody: {body_plain}"</code></td><td>[6]: subject contains key signals (urgency cues, sender impersonation).</td></tr>
+  <tr><td>6</td><td>Length filtering: drop <code>len(text) &lt; 20</code> or <code>&gt; 50,000</code></td><td>[5]: "Emails with fewer than two valid tokens were excluded." Short samples lack signal.</td></tr>
+  <tr><td>7</td><td>Obfuscation flag: compare raw vs normalized text</td><td>[3] &sect;3.2.2: turns obfuscation into a detectable feature. If texts differ &rarr; <code>obfuscation_detected=true</code>.</td></tr>
+</table>
+
+<h3>2.5 Deduplication</h3>
+<table class="compact-table">
+  <tr><th>Phase</th><th>Method</th><th>Threshold</th><th>Justification</th></tr>
+  <tr><td>Exact</td><td>SHA256 of normalized text</td><td>—</td><td>Campaign templates repeat across datasets. [7]: MeAJOR reduced 220K &rarr; 135K via cleaning.</td></tr>
+  <tr><td>Near-duplicate</td><td>MinHash (128 permutations) + LSH</td><td>Jaccard &ge; 0.80</td><td>Keep longest sample per cluster. Essential for campaign-aware splitting.</td></tr>
+</table>
+
+<h3>2.6 Train / Validation / Test Split</h3>
+<div class="note">
+  <strong>Random splitting is unacceptable.</strong> Phishing campaigns reuse templates. If the same template appears in train and test, metrics are inflated. [7] uses 5-fold CV + 80/20 holdout. [3] uses 70/15/15 stratified. [5] uses 60/20/20 stratified. [6] uses 64/16/20.
+</div>
+
+<table class="compact-table">
+  <tr><th>Step</th><th>Action</th><th>Justification</th></tr>
+  <tr><td>1</td><td>Campaign grouping: <code>fingerprint = SHA256(subject + "|" + first_100_chars)</code></td><td>Groups template variants together.</td></tr>
+  <tr><td>2</td><td>Stratified group split: <code>GroupShuffleSplit</code> with <code>groups=fingerprint</code></td><td>All campaign variants go to the same split.</td></tr>
+  <tr><td>3</td><td>Split ratio: <strong>70% train / 15% validation / 15% test</strong></td><td>[3] uses 70/15/15. Matches URL model spec convention.</td></tr>
+  <tr><td>4</td><td>Assert zero fingerprint overlap between splits</td><td>Prevents information leakage.</td></tr>
+  <tr><td>5</td><td>Assert class ratios within 5% of target per split</td><td>Stratification quality check.</td></tr>
+</table>
+
+<h3>2.7 Target Corpus Composition</h3>
+<div class="note"><strong>Post-inspection (v1.1):</strong> D7 reclassification (label=1&rarr;spam) significantly increases spam availability from ~43K (D1-only) to ~118K (D1+D7). Phishing comes from D1 (154K), D2 (8K), D4 (1.6K), D6n (1.6K), D6f (3.3K). After deduplication (~471K&rarr;~425K unique), all three classes comfortably fill targets.</div>
+<div class="two-col">
+  <table class="compact-table">
+    <tr><th>Class</th><th>Target Count</th><th>Target %</th></tr>
+    <tr><td class="svc">Legitimate</td><td>60,000</td><td>40%</td></tr>
+    <tr><td class="svc">Phishing</td><td>60,000</td><td>40%</td></tr>
+    <tr><td class="svc">Spam</td><td>30,000</td><td>20%</td></tr>
+    <tr><td class="svc"><strong>Total</strong></td><td><strong>150,000</strong></td><td>100%</td></tr>
+  </table>
+  <div class="note">
+    <strong>Rationale for 40/40/20:</strong> Phishing detection is the primary mission. Over-representing phishing ensures the model learns the phishing decision boundary deeply. Spam at 20% prevents spam&rarr;phishing misclassification — the failure mode [8] PhishFuzzer identifies (F1<sub>spam</sub>=0.383 in 3-class LLM evaluation). [7] assembled 135K for reliable training.
+  </div>
+</div>
+
+
+<!-- ============================================================ -->
+<h2 class="page-break">3. Model Architecture</h2>
+
+<h3>3.1 Candidates Evaluated</h3>
+<p>Six models evaluated. Selection driven by paper evidence from [1], [2], [4], [15].</p>
+
+<table class="compact-table">
+  <tr><th>Model</th><th>Params</th><th>Est. ONNX INT8</th><th>Est. CPU Latency</th><th>Paper Evidence</th></tr>
+  <tr><td class="svc">DistilBERT-base-uncased</td><td>66M</td><td>~132 MB [12]</td><td>~85–230 ms</td><td>[1]: <strong>98.9%</strong> on email phishing. [3]: 98.1% + adversarial robustness. [5]: powers PhishingGNN (99.39%). [11]: Enhanced variant tested.</td></tr>
+  <tr><td>MobileBERT-uncased</td><td>25M</td><td>~25 MB</td><td>~62–390 ms</td><td>[2]: F1 0.96, 74 MB, 0.39s median. <strong>Smallest viable option.</strong></td></tr>
+  <tr><td>ALBERT-base-v2</td><td>12M</td><td>~15 MB</td><td>~80 ms</td><td>[15]: <strong>97.54%</strong> acc, AUC 0.9974. Best parameter efficiency.</td></tr>
+  <tr><td>ModernBERT-base</td><td>149M</td><td>~145 MB</td><td>~42 ms (FlashAttn)</td><td>[4]: <strong>99.99%</strong> with few-shot. 8K context. GeGLU, rotary embeddings. <strong>Requires GPU.</strong></td></tr>
+  <tr><td>TinyBERT_6L_768D</td><td>67M</td><td>~65 MB</td><td>~78–95 ms</td><td>[2]: F1 0.84, 495 MB. [15]: 95.42% acc, AUC 0.992. <strong>Inferior to DistilBERT in all benchmarks.</strong></td></tr>
+  <tr><td>RoBERTa-base</td><td>125M</td><td>~125 MB</td><td>~150 ms</td><td>[6]: 98.45% balanced accuracy. Larger than necessary for marginal gain.</td></tr>
+</table>
+
+<h3>3.2 Selection Decision</h3>
+<div class="metric-block">
+  <div class="metric-header">Primary: <code>distilbert-base-uncased</code> (66M parameters)</div>
+  <table class="compact-table">
+    <tr><td>Accuracy evidence</td><td>[1]: 98.9% on balanced email corpus. [3]: 98.1% clean, 93.2% under 20% adversarial noise. [5]: 99.39% as feature extractor.</td></tr>
+    <tr><td>Adversarial evidence</td><td>[3]: FGM+char-noise training boosts 20%-noise accuracy from 54.5% to 93.2%. Cross-domain from 67.6% to 95.7%. [11]: without adversarial training, 20% noise drops to 85% precision.</td></tr>
+    <tr><td>Quantization evidence</td><td>[12]: ONNX INT8 reduces 255 MB &rarr; 132 MB with ~0.98% clean accuracy drop. Adversarial robustness <em>improves</em> +18.68% post-quantization.</td></tr>
+    <tr><td>Deployment</td><td>[2]: 502 MB unquantized, 0.85s CPU. After ONNX INT8 [12]: ~132 MB, est. ~85–120 ms.</td></tr>
+    <tr><td>Ecosystem</td><td>Most extensively benchmarked model for phishing email classification across [1][3][5][6][11]. Known failure modes documented.</td></tr>
+  </table>
+</div>
+
+<div class="note">
+  <strong>Fallback:</strong> <code>albert-base-v2</code> (12M params). [15]: 97.54% accuracy. ~15 MB ONNX INT8. ~80 ms CPU. If DistilBERT latency exceeds target.
+  &nbsp;|&nbsp; <strong>Stretch goal:</strong> <code>answerdotai/ModernBERT-base</code> (149M params). [4]: 99.99% few-shot. 8K context eliminates truncation. Requires GPU.
+</div>
+
+<h3>3.3 Multi-Task Architecture</h3>
+<p>Three task-specific heads sharing a single DistilBERT backbone. [14] reviews 28 cybersecurity MTL studies and finds "majority of multi-task models outperform single-task models." The shared backbone learns richer representations when trained on related tasks simultaneously.</p>
+
+<table>
+  <tr><th>Head</th><th>Output</th><th>Activation</th><th>Loss Function</th><th>Evidence</th></tr>
+  <tr>
+    <td class="svc">Classification</td>
+    <td>3-class: {legit, spam, phish}</td>
+    <td>Softmax</td>
+    <td>Focal Loss (&gamma;=2.0) with class weights</td>
+    <td>[3] uses CE. Focal Loss extends CE for hard-example mining. [8]: spam class needs extra focus (F1<sub>spam</sub>=0.383 in LLM benchmark).</td>
+  </tr>
+  <tr>
+    <td class="svc">Intent</td>
+    <td>11-class multi-label</td>
+    <td>Sigmoid (per-class)</td>
+    <td>Binary Cross-Entropy</td>
+    <td>[9]: co-occurring phishing codes (Urgency + Action-Specific). Multi-label via sigmoid allows simultaneous intent detection.</td>
+  </tr>
+  <tr>
+    <td class="svc">Urgency</td>
+    <td>Scalar 0.0–1.0</td>
+    <td>Sigmoid</td>
+    <td>MSE Loss</td>
+    <td>[9]: Urgency is a key phishing characterization code. [3] Table 6: urgency tokens ("immediate", "failure", "minutes") drive phishing classification.</td>
+  </tr>
+</table>
+
+<h3>3.4 Multi-Task Loss Combination</h3>
+<p>Homoscedastic uncertainty weighting (Kendall, Gal, Cipolla, CVPR 2018). Learns &sigma;&sup2; per task to balance loss contributions automatically. Prevents the easier classification task from dominating training.</p>
+<div class="note">
+  <code>L_total = exp(-log_var_class) &times; L_class + log_var_class + exp(-log_var_intent) &times; L_intent + log_var_intent + exp(-log_var_urgency) &times; L_urgency + log_var_urgency</code>
+  <br>Where <code>log_var_*</code> are learnable <code>nn.Parameter(torch.zeros(1))</code>.
+  <br><strong>Handling missing labels:</strong> Only D3/D5 have intent/urgency annotations. Loss is masked: intent/urgency loss computed only on samples with those labels. Classification loss always computed.
+</div>
+
+<h3>3.5 Intent Taxonomy</h3>
+<p>Derived from [9]'s Phishing Codebook (inter-rater &kappa;=0.93) and [3]'s token attribution analysis showing which semantic categories drive classification decisions.</p>
+<table class="compact-table">
+  <tr><th>#</th><th>Intent Label</th><th>Description</th><th>Codebook Ref</th></tr>
+  <tr><td>0</td><td class="svc">credential_harvest</td><td>Request for login, password, PIN</td><td>[9]: Action-Specific</td></tr>
+  <tr><td>1</td><td class="svc">payment_fraud</td><td>Wire transfer, invoice fraud, financial request</td><td>[9]: Action-Specific</td></tr>
+  <tr><td>2</td><td class="svc">malware_delivery</td><td>Attachment or link to download</td><td>[9]: Action-Generic</td></tr>
+  <tr><td>3</td><td class="svc">account_verification</td><td>"Verify your account" / security alerts</td><td>[3]: FP in Table 6 (legit security alert misclassified as phish with conf 0.59)</td></tr>
+  <tr><td>4</td><td class="svc">prize_scam</td><td>Lottery, prize notification</td><td>[9]: Main Topic</td></tr>
+  <tr><td>5</td><td class="svc">impersonation</td><td>Brand, executive, authority impersonation</td><td>[9]: From-Company</td></tr>
+  <tr><td>6</td><td class="svc">data_exfiltration</td><td>Request for PII, SSN, DOB</td><td>[9]: Action-Specific</td></tr>
+  <tr><td>7</td><td class="svc">urgency_threat</td><td>"Act now or else" — deadline/penalty</td><td>[9]: Urgency, Threat</td></tr>
+  <tr><td>8</td><td class="svc">social_engineering</td><td>Relationship-building, trust exploitation</td><td>[9]: Salutation analysis</td></tr>
+  <tr><td>9</td><td class="svc">marketing_spam</td><td>Unsolicited commercial content</td><td>[8]: valid/spam class</td></tr>
+  <tr><td>10</td><td class="svc">benign_notification</td><td>Legitimate transactional/system email</td><td>—</td></tr>
+</table>
+
+<h3>3.6 Input Representation</h3>
+<table class="compact-table">
+  <tr><th>Parameter</th><th>Value</th><th>Evidence</th></tr>
+  <tr><td>Input format</td><td><code>"Subject: {subject}\n\nBody: {body_visible}"</code></td><td>[6]: concatenates subject + body.</td></tr>
+  <tr><td>Tokenizer</td><td><code>DistilBertTokenizerFast</code></td><td>[3] &sect;3.1.3: "tokenized using DistilBertTokenizerFast."</td></tr>
+  <tr><td>Max tokens</td><td>512</td><td>[6]: max_len=512. [3]: 256 (conservative). [5]: 128 (minimal). We use 512 for full DistilBERT capacity.</td></tr>
+  <tr><td>Truncation</td><td><strong>Head-Tail:</strong> first 128 + last 384 tokens</td><td>Hook/lure in opening. CTA/obfuscation in footer. [3] Table 6: FN occurs when "neutral service-notification tone" with "attachment-based delivery" — footer signals critical.</td></tr>
+  <tr><td>Obfuscation flag</td><td>Compare raw vs NFKC-normalized text</td><td>[3] &sect;3.2.2: adversarial character defense.</td></tr>
+</table>
+
+
+<!-- ============================================================ -->
+<h2 class="page-break">4. Training Recipe</h2>
+
+<h3>4.1 Hyperparameters</h3>
+<table>
+  <tr><th>Parameter</th><th>Value</th><th>Paper Evidence</th></tr>
+  <tr><td class="svc">Optimizer</td><td>AdamW</td><td>[4]: AdamW. [6]: AdamW. Standard for transformer fine-tuning.</td></tr>
+  <tr><td class="svc">Learning rate</td><td>2e-5</td><td>[6]: 2e-5. [1]: 2e-5. [3]: 3e-5. Consensus range 1e-5 to 3e-5. 2e-5 is empirical median.</td></tr>
+  <tr><td class="svc">LR schedule</td><td>Linear with warmup</td><td>[4]: cosine annealing + warmup=10%. We use simpler linear (validated in [6]).</td></tr>
+  <tr><td class="svc">Warmup ratio</td><td>0.1 (10% of total steps)</td><td>[4]: warmup=10%. Prevents early gradient explosions in task-specific heads.</td></tr>
+  <tr><td class="svc">Batch size</td><td>16 (effective 32 via grad accumulation)</td><td>[3]: batch=32. [6]: batch=32. [1]: batch=8. We use 16 + 2-step accumulation for P100 VRAM fit.</td></tr>
+  <tr><td class="svc">Gradient accumulation</td><td>2 steps</td><td>Effective batch=32 matches [3][6].</td></tr>
+  <tr><td class="svc">Epochs</td><td>5 with early stopping (patience=2)</td><td>[6]: 5 epochs. [1]: 3 epochs. [3]: 3–6 epochs. [5]: 5 epochs. Early stop on validation MCC.</td></tr>
+  <tr><td class="svc">Weight decay</td><td>0.01</td><td>[4]: gradient clipping + dropout + weight decay standard. AdamW default.</td></tr>
+  <tr><td class="svc">Dropout (heads)</td><td>0.3</td><td>[4]: dropout 0.1–0.5 by depth. Higher dropout for small task-specific heads.</td></tr>
+  <tr><td class="svc">Focal Loss &gamma;</td><td>2.0</td><td>Standard value (Lin et al., ICCV 2017). Higher &gamma; = more focus on hard examples (spam&harr;phishing boundary per [8]).</td></tr>
+  <tr><td class="svc">Class weights &alpha;</td><td>Inverse class frequency</td><td>[3] &sect;3.1.4: "class-weighted cross-entropy loss, with weights computed from training data using balanced weighting."</td></tr>
+  <tr><td class="svc">FGM &epsilon;</td><td>0.01</td><td>[3] &sect;3.2.3: "&epsilon;=0.01 based on preliminary tuning." [3] adversarial weight &lambda;=0.5.</td></tr>
+  <tr><td class="svc">Max sequence length</td><td>512</td><td>[6]: 512. Reduce to 384 if latency exceeds target.</td></tr>
+  <tr><td class="svc">Seed</td><td>42 (primary); 123, 456 (significance)</td><td>[3] &sect;3.3: "random seed fixed at 42 across all runs." [4]: seeds for bootstrap CIs.</td></tr>
+</table>
+
+<h3>4.2 Adversarial Training (FGM)</h3>
+<div class="note">
+  <strong>Evidence:</strong> [3] Table 2 — proposed framework (FGM + char-noise) achieves <strong>93.2%</strong> accuracy at 20% char-level noise vs <strong>54.5%</strong> for baseline DistilBERT. A <strong>38.7 percentage-point improvement</strong>. Cross-domain on CEAS_08: 95.7% vs 67.6% baseline. [11] independently confirms: without adversarial training, DistilBERT drops to 85% precision at 20% noise.
+  <br><br>[12] adds that INT8 quantization itself provides +18.68% adversarial robustness improvement — complementary to FGM training.
+</div>
+
+<div class="pipeline-step">
+  <div class="step-header">
+    <div class="step-num">1</div>
+    <div class="step-content"><strong>Character-level noise augmentation</strong> — 30% of training samples, ~10% character corruption per selected sample. Operations: insertion, deletion, substitution (biased toward visually similar chars: o&rarr;0, l&rarr;1, a&rarr;@). Applied to raw text <em>before</em> tokenization. [3] &sect;3.2.2.</div>
+  </div>
+</div>
+<div class="pipeline-step">
+  <div class="step-header">
+    <div class="step-num">2</div>
+    <div class="step-content"><strong>Clean forward pass</strong> — Compute L<sub>clean</sub> using original embeddings. Class-weighted Focal Loss.</div>
+  </div>
+</div>
+<div class="pipeline-step">
+  <div class="step-header">
+    <div class="step-num">3</div>
+    <div class="step-content"><strong>Adversarial perturbation</strong> — &delta; = &epsilon; &middot; &nabla;<sub>e</sub>L<sub>clean</sub> / ||&nabla;<sub>e</sub>L<sub>clean</sub>||<sub>2</sub>. Perturbation magnitude &epsilon;=0.01. Detached from computational graph (no second-order gradients). [3] Eq. 1.</div>
+  </div>
+</div>
+<div class="pipeline-step">
+  <div class="step-header">
+    <div class="step-num">4</div>
+    <div class="step-content"><strong>Adversarial forward pass</strong> — e<sub>adv</sub> = e + &delta;. Compute L<sub>adv</sub>.</div>
+  </div>
+</div>
+<div class="pipeline-step">
+  <div class="step-header">
+    <div class="step-num">5</div>
+    <div class="step-content"><strong>Joint optimization</strong> — L<sub>total</sub> = L<sub>clean</sub> + &lambda;&middot;L<sub>adv</sub>, where &lambda;=0.5. [3] Eq. 2: "equal weighting to both loss components."</div>
+  </div>
+</div>
+
+<h3>4.3 Data Augmentation</h3>
+<p>Applied ONLY to training set, ONLY after train/val/test split.</p>
+<table>
+  <tr><th>Technique</th><th>Applied To</th><th>Ratio</th><th>Evidence</th></tr>
+  <tr><td class="svc">Adversarial character injection</td><td>30% of phishing train samples</td><td>1.0x (in-place on copies)</td><td>[3] &sect;3.2.2: char-level noise (insertion, deletion, substitution) at 10% corruption rate per sample.</td></tr>
+  <tr><td class="svc">Synonym replacement</td><td>Phishing minority (if underrepresented)</td><td>1.3x</td><td>[6]: "synonym-replacement oversampling of the minority (phishing) class" to balance classes.</td></tr>
+  <tr><td class="svc">Back-translation (EN&rarr;DE&rarr;EN)</td><td>Phishing minority</td><td>1.5x</td><td>Standard NLP augmentation. Preserves semantic content while varying surface form.</td></tr>
+  <tr><td class="svc">LLM paraphrasing</td><td>Complex BEC phishing</td><td>1.2x</td><td>[8] PhishFuzzer: demonstrates LLM-seeded expansion with entity/length controls preserves intent.</td></tr>
+</table>
+
+<div class="note">
+  <strong>What NOT to augment:</strong> Do not apply random word deletion to email addresses, URLs, or domain names. Do not augment the legitimate class (inflates majority). Do not use synonym replacement on trigger words ("password", "verify", "urgent") — they ARE the signal. [3] Table 6: LIME identifies "your", "account", "identity", "unauthorized" as top phishing tokens.
+</div>
+
+<h3>4.4 Cross-Validation Strategy</h3>
+<table class="compact-table">
+  <tr><th>Method</th><th>Details</th><th>Evidence</th></tr>
+  <tr><td class="svc">Primary</td><td>Hold-out with campaign-aware split (&sect;2.6)</td><td>[3]: 70/15/15 stratified. Standard single-holdout evaluation.</td></tr>
+  <tr><td class="svc">Supplementary</td><td>5-fold Stratified Group K-Fold (groups=campaign fingerprints)</td><td>[2]: 5-fold CV. [7]: 5-fold CV + 80/20 holdout. Mean &plusmn; std across folds.</td></tr>
+  <tr><td class="svc">Statistical significance</td><td>3 random seeds (42, 123, 456). Report mean &plusmn; std. If MCC std &gt; 0.02 &rarr; unstable.</td><td>[4]: 1000 bootstrap iterations for 95% CIs. [4] Table 6: reports confidence intervals for all metrics.</td></tr>
+</table>
+
+
+<!-- ============================================================ -->
+<h2 class="page-break">5. Evaluation Protocol</h2>
+
+<h3>5.1 Primary Metrics</h3>
+<table>
+  <tr><th>Metric</th><th>Scope</th><th>Target</th><th>Hard Floor</th><th>Evidence</th></tr>
+  <tr>
+    <td class="svc">Macro MCC</td>
+    <td>All 3 classes</td>
+    <td>&ge; 0.88</td>
+    <td>&ge; 0.82</td>
+    <td>[4]: MCC 0.998 (2-class). URL model spec uses MCC as primary metric. MCC accounts for all four confusion matrix quadrants.</td>
+  </tr>
+  <tr>
+    <td class="svc">Phishing Recall</td>
+    <td>Phishing class</td>
+    <td>&ge; 0.96</td>
+    <td>&ge; 0.92</td>
+    <td>Missing a phish (FN) is the worst outcome. [3] Table 6: FN with "neutral tone" phishing at 0.71 confidence.</td>
+  </tr>
+  <tr>
+    <td class="svc">Legitimate FPR</td>
+    <td>Legit &rarr; (Spam&cup;Phish)</td>
+    <td>&lt; 0.5%</td>
+    <td>&lt; 2.0%</td>
+    <td>[3] Table 6: FP with legit security alert misclassified at 0.59 confidence. [10]: 404 FP out of ~38K.</td>
+  </tr>
+  <tr>
+    <td class="svc">Phish-as-Legit Rate</td>
+    <td>Phish &rarr; Legit</td>
+    <td>&lt; 2.0%</td>
+    <td>&lt; 5.0%</td>
+    <td>Most dangerous error. Missed phishing reaches user inbox.</td>
+  </tr>
+  <tr>
+    <td class="svc">CPU P95 Latency</td>
+    <td>Single email</td>
+    <td>&lt; 150 ms</td>
+    <td>&lt; 200 ms</td>
+    <td>[2]: MobileBERT 0.39s CPU. [13]: &lt;500 ms on mobile after quantization. DistilBERT + ONNX INT8 est. ~85–120 ms.</td>
+  </tr>
+  <tr>
+    <td class="svc">ONNX Model Size</td>
+    <td>INT8 quantized</td>
+    <td>&lt; 200 MB</td>
+    <td>&lt; 300 MB</td>
+    <td>[12]: DistilBERT ONNX INT8 = 132 MB.</td>
+  </tr>
+</table>
+
+<h3>5.2 Secondary Metrics</h3>
+<table class="compact-table">
+  <tr><th>Metric</th><th>Scope</th><th>Notes</th></tr>
+  <tr><td>Per-class Precision, Recall, F1</td><td>All 3 classes</td><td>[1][3][5] all report per-class metrics. Standard classification report.</td></tr>
+  <tr><td>Macro F1</td><td>All 3 classes</td><td>Complementary to MCC. [1]: reports F1 for all models.</td></tr>
+  <tr><td>ROC-AUC (one-vs-rest)</td><td>Per class</td><td>[5]: AUC 1.00 on CEAS_08. [15]: AUC 0.9974 for ALBERT.</td></tr>
+  <tr><td>PR-AUC</td><td>Per class</td><td>Better than ROC-AUC for imbalanced production deployment (~85/5/10).</td></tr>
+  <tr><td>Brier Score</td><td>Per class probability</td><td>Calibration quality measurement.</td></tr>
+  <tr><td>ECE (Expected Calibration Error)</td><td>Overall</td><td>Ensures 90% confidence &asymp; 90% accuracy. Binned (15 bins).</td></tr>
+  <tr><td>Full 3&times;3 confusion matrix</td><td>All classes</td><td>[5]: confusion matrix shows 15 FP, 58 FN. [10]: 404 FP, 230 FN analyzed.</td></tr>
+</table>
+
+<h3>5.3 Robustness Evaluation</h3>
+<div class="note">
+  <strong>Adversarial stress test following [3] &sect;3.4:</strong> Evaluate on test set with 0%, 5%, 10%, 20% character-level corruption rates. Identical perturbed samples across all model variants. Report accuracy at each noise level. Target: &lt;5 percentage-point drop at 20% noise (proposed framework in [3]: 4.9pp drop). Compare against [11]: Enhanced DistilBERT without FGM drops to 85% precision at 20% noise.
+</div>
+
+<table class="compact-table">
+  <tr><th>Noise Level</th><th>[3] Baseline DistilBERT</th><th>[3] Proposed (FGM+Char)</th><th>Our Target</th></tr>
+  <tr><td>0% (clean)</td><td>98.0%</td><td>98.1%</td><td>&ge; 97%</td></tr>
+  <tr><td>5%</td><td>94.3%</td><td>97.3%</td><td>&ge; 96%</td></tr>
+  <tr><td>10%</td><td>84.2%</td><td>97.0%</td><td>&ge; 94%</td></tr>
+  <tr><td>20%</td><td>54.5%</td><td>93.2%</td><td>&ge; 90%</td></tr>
+</table>
+
+<h3>5.4 Calibration Analysis</h3>
+<ol>
+  <li>Plot reliability diagrams (calibration curves) for each class.</li>
+  <li>Compute ECE (binned, 15 bins).</li>
+  <li>If ECE &gt; 0.05 &rarr; apply temperature scaling on validation set.</li>
+  <li>Re-plot calibration curves after temperature scaling.</li>
+  <li>Report ECE before and after.</li>
+</ol>
+<div class="note">
+  <strong>Threshold optimization:</strong> Sweep phishing threshold from 0.1 to 0.9. For each: if P(phishing) &gt; threshold &rarr; classify as phishing; else argmax of remaining classes. Find threshold giving Phishing Recall &ge; 0.96 with minimum FPR. Store optimal threshold in <code>config.json</code>.
+</div>
+
+<h3>5.5 Cross-Domain Validation</h3>
+<p>Following [3] &sect;4.4 and [5] cross-dataset methodology:</p>
+<table class="compact-table">
+  <tr><th>Experiment</th><th>Description</th><th>Baseline</th></tr>
+  <tr><td>Train on D1+D2+D3 &rarr; Test on D6</td><td>Cross-corpus generalization</td><td>[3]: CEAS_08 cross-domain = 99.4% clean, 95.7% at 20% noise.</td></tr>
+  <tr><td>Train on merged &rarr; Test on CEAS_08 subset</td><td>Historical corpus robustness</td><td>[5]: 0.9939 accuracy on CEAS_08. [5] cross-dataset Nazario: 0.9910.</td></tr>
+</table>
+
+
+<!-- ============================================================ -->
+<h2 class="page-break">6. Error Analysis Framework</h2>
+
+<h3>6.1 Confusion Matrix Deep-Dive</h3>
+<p>Focus areas by danger level, informed by [3] Table 6 and [10]'s FP/FN analysis:</p>
+<table>
+  <tr><th>Error Type</th><th>True &rarr; Predicted</th><th>Danger</th><th>Evidence</th></tr>
+  <tr><td class="svc">Missed phish</td><td>Phishing &rarr; Legitimate</td><td>CRITICAL</td><td>[3] Table 6 Email 6: FN — "neutral service-notification tone" with "attachment-based delivery" classified legitimate at 0.71 confidence.</td></tr>
+  <tr><td class="svc">Phish as spam</td><td>Phishing &rarr; Spam</td><td>HIGH</td><td>[8]: F1<sub>spam</sub>=0.383 in 3-class LLM evaluation. Spam&harr;phishing boundary is the hardest decision.</td></tr>
+  <tr><td class="svc">False alarm</td><td>Legitimate &rarr; Phishing</td><td>MEDIUM</td><td>[3] Table 6 Email 5: FP — legit security alert ("new sign-in detected") classified phishing at 0.59. Urgency cues in legitimate alerts cause confusion.</td></tr>
+  <tr><td class="svc">Spam as legit</td><td>Spam &rarr; Legitimate</td><td>LOW</td><td>Annoyance, not security risk.</td></tr>
+</table>
+
+<h3>6.2 Error Taxonomy</h3>
+<table class="compact-table">
+  <tr><th>Error Type</th><th>Description</th><th>Diagnostic</th><th>Evidence</th></tr>
+  <tr><td>Short text</td><td>&lt; 50 tokens, insufficient signal</td><td>MCC by text-length bin</td><td>[5]: max_len=128 (minimal) still achieves 99.39%. Short texts viable.</td></tr>
+  <tr><td>Ambiguous intent</td><td>Marketing vs spam boundary</td><td>Manual review</td><td>[8]: spam&harr;valid confusion F1=0.383.</td></tr>
+  <tr><td>Adversarial obfuscation</td><td>Unicode tricks, homoglyphs</td><td><code>obfuscation_detected</code> flag</td><td>[3]: char-noise resilience; [11]: noise degradation quantified.</td></tr>
+  <tr><td>Topic confusion</td><td>Legit email about security topics</td><td>FP analysis</td><td>[3] Table 6 Email 5: legit security alert classified as phishing.</td></tr>
+  <tr><td>Subtle phishing (FN)</td><td>No explicit triggers, attachment-based</td><td>FN analysis</td><td>[3] Table 6 Email 6: "avoids explicit urgency, threats, or credential requests."</td></tr>
+  <tr><td>Non-English content</td><td>Non-English emails tokenized poorly</td><td>Per-language MCC</td><td>[2] &sect;5.4.1: 118 FN were non-English (Japanese 57, Spanish 36, German 18).</td></tr>
+  <tr><td>Data quality</td><td>Mislabeled in source dataset</td><td>Per-dataset MCC</td><td>[7]: merging requires cleaning. 200-sample audit per class.</td></tr>
+</table>
+
+<h3>6.3 Analyses to Perform</h3>
+<table class="compact-table">
+  <tr><th>Analysis</th><th>Method</th><th>Output</th></tr>
+  <tr><td>Confidence vs correctness</td><td>Histogram of confidence for correct vs incorrect predictions</td><td>[3] Table 6: confidence 0.59 (FP), 0.71 (FN) — identifies overconfident errors.</td></tr>
+  <tr><td>High-confidence errors</td><td>Samples where confidence &gt; 0.8 AND prediction wrong</td><td>Most dangerous — model wrong AND sure.</td></tr>
+  <tr><td>MCC vs text length</td><td>Bin by token count [0-100, 100-300, 300-500, 500+]</td><td>Identifies length sensitivity.</td></tr>
+  <tr><td>Per-dataset MCC</td><td>MCC computed per source dataset (D1–D7)</td><td>Identifies dataset quality issues.</td></tr>
+  <tr><td>Token attribution (top 50 errors)</td><td>LIME on highest-confidence misclassifications</td><td>[3] Tables 3–5: token attributions reveal semantic vs surface-form reliance. [4]: SHAP + attention heatmaps.</td></tr>
+  <tr><td>Adversarial stress test</td><td>0/5/10/20% char-noise on test set</td><td>[3] Table 2: accuracy at each noise level. [11]: per-noise precision/recall.</td></tr>
+</table>
+
+
+<!-- ============================================================ -->
+<h2 class="page-break">7. Explainability (XAI)</h2>
+
+<p>Following [3]'s systematic comparison of LIME, SHAP, and IG on adversarially trained DistilBERT, with natural-language explanations via Flan-T5.</p>
+
+<h3>7.1 Attribution Methods</h3>
+<table>
+  <tr><th>Method</th><th>Implementation</th><th>Parameters</th><th>Evidence</th></tr>
+  <tr>
+    <td class="svc">LIME</td>
+    <td>LimeTextExplainer</td>
+    <td>1,000 perturbation samples</td>
+    <td>[3] &sect;3.2.5: "LIME's locality, model-agnostic nature, and focused attribution scores align well with intuitive phishing indicators." Selected for downstream explanation generation.</td>
+  </tr>
+  <tr>
+    <td class="svc">SHAP</td>
+    <td>Partition SHAP</td>
+    <td>500 model evaluations</td>
+    <td>[3]: approximate Shapley values. [4]: SHAP global feature importance + waterfall plots. [10]: SHAP as primary explanation.</td>
+  </tr>
+  <tr>
+    <td class="svc">Integrated Gradients</td>
+    <td>Captum IG</td>
+    <td>100 integration steps, zero baseline</td>
+    <td>[3] &sect;3.2.5: "gradient-based attributions along a path from baseline to actual input." [4]: 50 Riemann steps.</td>
+  </tr>
+</table>
+
+<h3>7.2 Explanation Stability</h3>
+<div class="note">
+  [3] &sect;4.2: Under character-level perturbations, the adversarially-trained framework maintains "comparatively stable attribution patterns." The baseline DistilBERT shows "substantial reordering of important tokens, polarity reversals, and attribution concentration on fragmented subword units (e.g., <code>ac</code>)." The proposed framework "encourages reliance on more generalizable contextual representations rather than brittle surface forms." This validates our FGM training — it produces not only better classification but also more stable explanations.
+</div>
+
+<h3>7.3 Production Explanation Output</h3>
+<p>Token-level LIME attributions feed into the API response <code>explanation</code> field. Top-10 tokens with attribution scores enable downstream security analysts to understand classification decisions. Following [3] Table 6's example format.</p>
+
+
+<!-- ============================================================ -->
+<h2>8. ONNX Export &amp; Production Integration</h2>
+
+<h3>8.1 Export Procedure</h3>
+<div class="pipeline-step">
+  <div class="step-header">
+    <div class="step-num">1</div>
+    <div class="step-content"><strong>Export PyTorch &rarr; ONNX</strong> — opset 14, dynamic batch axis. Export all three heads as unified model.</div>
+  </div>
+</div>
+<div class="pipeline-step">
+  <div class="step-header">
+    <div class="step-num">2</div>
+    <div class="step-content"><strong>Apply ONNX Runtime dynamic INT8 quantization</strong> — [12]: DistilBERT 255 MB &rarr; 132 MB. Clean accuracy drop ~0.98%. Adversarial robustness <em>improves</em> +18.68%. [13]: INT8 "minimal loss" confirmed on fraud detection.</div>
+  </div>
+</div>
+<div class="pipeline-step">
+  <div class="step-header">
+    <div class="step-num">3</div>
+    <div class="step-content"><strong>Validate</strong> — 100 validation samples through both PyTorch and ONNX. Assert max logit difference &lt; 0.01. Classification agreement &gt; 99.5%. MCC difference &lt; 0.005.</div>
+  </div>
+</div>
+
+<h3>8.2 Latency Benchmarking</h3>
+<table class="compact-table">
+  <tr><th>ONNX RT Option</th><th>Value</th><th>Evidence</th></tr>
+  <tr><td><code>graph_optimization_level</code></td><td><code>ORT_ENABLE_ALL</code></td><td>[12]: ONNX Runtime configuration.</td></tr>
+  <tr><td><code>intra_op_num_threads</code></td><td>Physical CPU cores</td><td>Parallel computation within operations.</td></tr>
+  <tr><td><code>inter_op_num_threads</code></td><td>1</td><td>Sequential between operations for determinism.</td></tr>
+  <tr><td><code>execution_mode</code></td><td><code>ORT_SEQUENTIAL</code></td><td>Single email inference path.</td></tr>
+</table>
+<p>Benchmark: 100 single-email inferences. Report P50, P95, P99 latency. Warm-up: 10 dummy inferences.</p>
+
+<h3>8.3 Production Endpoint (FastAPI)</h3>
+<p>Matches SVC-06 interface defined in ARCH-SPEC. Default: <code>CYBERSIREN_ML__NLP_SERVICE_URL = http://localhost:8001</code>.</p>
+
+<div class="two-col">
+  <div class="metric-block">
+    <div class="metric-header">Request</div>
+    <pre style="font-size:9px; margin:0;">POST /predict
+{
+  "subject": "string",
+  "body_plain": "string",
+  "body_html": "string (optional)"
+}</pre>
+  </div>
+  <div class="metric-block">
+    <div class="metric-header">Response</div>
+    <pre style="font-size:9px; margin:0;">{
+  "classification": "phishing|spam|legitimate",
+  "confidence": 0.0-1.0,
+  "phishing_probability": 0.0-1.0,
+  "spam_probability": 0.0-1.0,
+  "content_risk_score": 0-100,
+  "intent_labels": ["credential_harvest"],
+  "urgency_score": 0.0-1.0,
+  "obfuscation_detected": false,
+  "top_tokens": [{"token":"verify","score":0.42}]
+}</pre>
+  </div>
+</div>
+
+<div class="note">
+  <code>content_risk_score</code> mapping: <code>round(phishing_probability * 100)</code>. This feeds into <code>emails.content_risk_score</code> and <code>FinalVerdict.ContentRiskScore</code> in <code>shared/models/verdict.go</code>. <code>intent_labels</code> feeds <code>nlp_facets.intent_label</code> used for campaign fingerprinting in <code>DECISIONS.MD</code>.
+</div>
+
+<h3>8.4 Exported Artifacts</h3>
+<table class="compact-table">
+  <tr><th>File</th><th>Est. Size</th><th>Contents</th></tr>
+  <tr><td class="svc"><code>model_int8.onnx</code></td><td>~132 MB</td><td>INT8 quantized DistilBERT + 3 heads. [12]: 255&rarr;132 MB.</td></tr>
+  <tr><td class="svc"><code>tokenizer/</code></td><td>~1 MB</td><td>HuggingFace tokenizer files (vocab.txt, tokenizer_config.json).</td></tr>
+  <tr><td class="svc"><code>config.json</code></td><td>&lt; 1 KB</td><td>Model metadata, thresholds, label maps, intent taxonomy.</td></tr>
+  <tr><td class="svc"><code>metrics.json</code></td><td>&lt; 1 KB</td><td>Test set performance metrics for monitoring.</td></tr>
+</table>
+
+
+<!-- ============================================================ -->
+<h2 class="page-break">9. Design Justifications</h2>
+
+<p>Every major decision traced to specific paper evidence.</p>
+
+<table>
+  <tr><th>Decision</th><th>Rationale</th><th>Paper Evidence</th></tr>
+  <tr>
+    <td class="svc">DistilBERT over ModernBERT</td>
+    <td>Most extensively benchmarked for phishing email across 5 papers. 66M vs 149M params. Known failure modes. ModernBERT newer with less email-specific validation.</td>
+    <td>[1]: 98.9% email. [3]: adversarial robustness. [5]: feature extraction. [11]: enhanced variant. [6]: XAI pipeline.</td>
+  </tr>
+  <tr>
+    <td class="svc">DistilBERT over ALBERT</td>
+    <td>DistilBERT has more adversarial training research ([3][11]). ALBERT 97.54% [15] vs DistilBERT 98.9% [1]. DistilBERT wider community support.</td>
+    <td>[1]: DistilBERT 98.9%. [15]: ALBERT 97.54%. [3]: FGM validated on DistilBERT.</td>
+  </tr>
+  <tr>
+    <td class="svc">FGM adversarial training</td>
+    <td>38.7pp improvement under 20% noise. Cross-domain CEAS_08 28.1pp improvement. Single-step — minimal training overhead (~2x).</td>
+    <td>[3] Table 2: 93.2% vs 54.5% at 20% noise. Table 7: 95.7% vs 67.6% cross-domain. [11]: confirms degradation without FGM.</td>
+  </tr>
+  <tr>
+    <td class="svc">Char-level noise augmentation</td>
+    <td>[3] shows char-noise alone achieves 91.6% at 20% noise. Combined with FGM: 93.2%. Simulates real phishing obfuscation (o&rarr;0, l&rarr;1).</td>
+    <td>[3] Table 2: char-noise 91.6% vs FGM-only 60.5% at 20% noise.</td>
+  </tr>
+  <tr>
+    <td class="svc">Focal Loss over plain CE</td>
+    <td>Focal Loss down-weights easy examples, focuses on spam&harr;phishing boundary. Standard &gamma;=2.0.</td>
+    <td>[8]: spam F1=0.383 shows spam boundary is hardest. Focal Loss (Lin, ICCV 2017) is strict CE generalization.</td>
+  </tr>
+  <tr>
+    <td class="svc">Multi-task architecture</td>
+    <td>Classification + intent + urgency on shared backbone. Additional params negligible vs 66M backbone.</td>
+    <td>[14]: "majority of multi-task models outperform single-task" in 28-study SLR. [9]: intent taxonomy validated at &kappa;=0.93.</td>
+  </tr>
+  <tr>
+    <td class="svc">Homoscedastic uncertainty weighting</td>
+    <td>Automatically learns optimal loss weights. Prevents classification from dominating. Manual weights fragile.</td>
+    <td>Kendall, Gal, Cipolla (CVPR 2018). Standard MTL methodology.</td>
+  </tr>
+  <tr>
+    <td class="svc">Campaign-aware splitting</td>
+    <td>Random splitting leaks templates across splits, inflating metrics. GroupShuffleSplit enforces campaign separation.</td>
+    <td>[7]: multi-source merging creates template duplicates. [3]: stratified splitting used.</td>
+  </tr>
+  <tr>
+    <td class="svc">3-class (legit/spam/phish)</td>
+    <td>Binary conflates spam and phishing which have different risk profiles and require different handling.</td>
+    <td>[8]: 3-class is correct formulation. F1<sub>spam</sub>=0.383 shows spam needs dedicated modeling.</td>
+  </tr>
+  <tr>
+    <td class="svc">ONNX INT8 quantization</td>
+    <td>~48% size reduction. ~0.98% accuracy cost. Adversarial robustness <em>improves</em> +18.68%.</td>
+    <td>[12]: DistilBERT 255&rarr;132 MB. [13]: INT8 "minimal loss" on fraud detection, &lt;500ms mobile.</td>
+  </tr>
+  <tr>
+    <td class="svc">MCC as primary metric</td>
+    <td>Accounts for all confusion matrix quadrants. F1 ignores TN. Accuracy treats all errors equally. Consistent with URL model spec.</td>
+    <td>[4]: MCC 0.998. URL-SPEC &sect;6.1 uses MCC. [1][15]: report accuracy + F1 + AUC but not MCC — we add it.</td>
+  </tr>
+  <tr>
+    <td class="svc">Head-Tail truncation (128+384)</td>
+    <td>Hook/lure in opening (subject + first paragraph). CTA/link/obfuscation in footer. Pure head-truncation misses footer.</td>
+    <td>[3] Table 6 Email 6: FN uses "attachment-based delivery" — footer-region signal. [6]: subject+body concatenation.</td>
+  </tr>
+  <tr>
+    <td class="svc">LR 2e-5</td>
+    <td>Consensus of [1] (2e-5), [3] (3e-5), [6] (2e-5), [4] (1e-5 backbone). 2e-5 is empirical median.</td>
+    <td>[6]: 2e-5. [1]: 2e-5. [3]: 3e-5 on DistilBERT. Range validated across 4 papers.</td>
+  </tr>
+  <tr>
+    <td class="svc">LIME for production explanations</td>
+    <td>Model-agnostic, focused attributions, well-aligned with phishing indicators.</td>
+    <td>[3] &sect;3.2.6: "LIME-based token attributions are selected... focused attribution scores align well with intuitive phishing indicators."</td>
+  </tr>
+</table>
+
+
+<!-- ============================================================ -->
+<h2>10. Limitations</h2>
+
+<table>
+  <tr><th>#</th><th>Limitation</th><th>Impact</th><th>Mitigation</th><th>Evidence</th></tr>
+  <tr>
+    <td>1</td>
+    <td>DistilBERT latency may exceed 200ms on some CPUs</td>
+    <td>Deployment constraint</td>
+    <td>Fallback to ALBERT (12M, ~80ms) [15]. Reduce max_len to 384.</td>
+    <td>[2]: DistilBERT 0.85s unoptimized. [12]: ONNX INT8 reduces latency.</td>
+  </tr>
+  <tr>
+    <td>2</td>
+    <td>Intent/urgency training data scarce (~11K labeled)</td>
+    <td>Intent/urgency heads may underperform</td>
+    <td>Use as auxiliary outputs. Primary: classification head. Intent is "best effort."</td>
+    <td>[14]: MTL still helps even with partial labels (masked loss).</td>
+  </tr>
+  <tr>
+    <td>3</td>
+    <td>English-only tokenizer on multilingual input</td>
+    <td>Non-English emails tokenized poorly</td>
+    <td>Language detection + preprocessing. Fallback to multilingual DistilBERT (134M).</td>
+    <td>[2] &sect;5.4.1: 118 FN were non-English. [5]: English-only limitation noted.</td>
+  </tr>
+  <tr>
+    <td>4</td>
+    <td>512 token limit loses long email content</td>
+    <td>Long marketing/phishing emails truncated</td>
+    <td>Head-Tail truncation. ModernBERT (8K context) as stretch goal.</td>
+    <td>[4]: ModernBERT 8K context. [3]: 256 tokens sufficient for most emails.</td>
+  </tr>
+  <tr>
+    <td>5</td>
+    <td>Adversarial evasion evolves continuously</td>
+    <td>New obfuscation bypasses trained defenses</td>
+    <td>FGM + char-noise training. Unicode normalization. Monthly retraining.</td>
+    <td>[3] &sect;5.1: "do not fully capture optimized adversarial attacks, semantic paraphrasing."</td>
+  </tr>
+  <tr>
+    <td>6</td>
+    <td>40/40/20 balance &ne; production distribution (~85/5/10)</td>
+    <td>Threshold calibration required</td>
+    <td>Optimize threshold on production-representative validation set.</td>
+    <td>[4]: class imbalance >99% legitimate in real traffic vs balanced benchmarks.</td>
+  </tr>
+  <tr>
+    <td>7</td>
+    <td>Subtle spear-phishing with "neutral tone" evades detection</td>
+    <td>FN on sophisticated attacks</td>
+    <td>Multi-modal analysis (URL + header + NLP combined in SVC-07 aggregator).</td>
+    <td>[3] Table 6 Email 6: FN at 0.71 confidence. [2] &sect;5.4.1: 25 subtle landing pages missed.</td>
+  </tr>
+</table>
+
+
+<!-- ============================================================ -->
+<h2>11. References</h2>
+
+<h3>Research Papers (Verified from LITERATURE/ folder)</h3>
+<ol class="ref-list">
+  <li><strong>[1]</strong> I. Altan, A. Bachir, Y. Parbhulkar, A.M. Rizvi, M. Farazi. "Dual-Path Phishing Detection: Integrating Transformer-Based NLP with Structural URL Analysis." arXiv:2509.20972v1, 2025.</li>
+  <li><strong>[2]</strong> S. Saha Roy, S. Nilizadeh. "PhishLang: A Real-Time, Fully Client-Side Phishing Detection Framework Using MobileBERT." arXiv:2408.05667v3, 2025.</li>
+  <li><strong>[3]</strong> Sajad U P. "A Robust and Explainable Transformer-Based Framework for Phishing Email Detection." arXiv:2511.12085v2, 2026.</li>
+  <li><strong>[4]</strong> M. Tawfik, A.A. Abu-Ein, A.H. Abdelhaliem, Y.M. Al-Sharo, I.S. Fathi. "Explainable few-shot learning with modern BERT for detecting emerging phishing attacks using XF-PhishBERT." Scientific Reports 15, s41598-025-27500-0, 2025.</li>
+  <li><strong>[5]</strong> M. Safran, A. Musleh. "PhishingGNN: Phishing Email Detection Using Graph Attention Networks and Transformer-Based Feature Extraction." IEEE Access 13, pp. 131390–131399, 2025.</li>
+  <li><strong>[6]</strong> M.A. Uddin, Md. Mahiuddin, I.H. Sarker. "An Explainable Transformer-based Model for Phishing Email Detection: A Large Language Model Approach." arXiv:2402.13871v2, 2025.</li>
+  <li><strong>[7]</strong> P. Mendes, E. Maia, I. Pra&ccedil;a. "MeAJOR Corpus: A Multi-Source Dataset for Phishing Email Detection." arXiv:2507.17978v2, 2025.</li>
+  <li><strong>[8]</strong> R. Toth, N. Gruschka, T. Bisztray. "The Phish, The Spam, and The Valid: Generating Feature-Rich Emails for Benchmarking LLMs." arXiv:2511.21448v5, 2025.</li>
+  <li><strong>[9]</strong> T. Saka, R. Jain, K. Vaniea, N. K&ouml;kciyan. "Phishing Codebook: A Structured Framework for the Characterization of Phishing Emails." arXiv:2408.08967v1, 2024.</li>
+  <li><strong>[10]</strong> B. Lim, R. Huerta, A. Sotelo, A. Quintela, P. Kumar. "EXPLICATE: Enhancing Phishing Detection through Explainable AI and LLM-Powered Interpretability." arXiv:2503.20796v1, 2025.</li>
+  <li><strong>[11]</strong> H.A. Farhan. "Robust and Accurate Phishing Detection Using Enhanced DistilBERT: A Transformer-Based Approach." J. Al-Qadisiyah Comp. Sci. Math., 2025.</li>
+  <li><strong>[12]</strong> S.P. Neshaei, Y. Boreshban, G. Ghassem-Sani, S.A. Mirroshandel. "The Impact of Quantization on the Robustness of Transformer-based Text Classifiers." arXiv:2403.05365v1, 2024.</li>
+  <li><strong>[13]</strong> L. Senevirathna, D. Sumanathilaka. "Efficient Financial Fraud Detection on Mobile Devices Using Lightweight Large Language Models." RANLP 2025, Varna.</li>
+  <li><strong>[14]</strong> S. Ibrahim, C. Catal, T. Kacem. "The use of multi-task learning in cybersecurity applications: a systematic literature review." Neural Computing and Applications, 2024.</li>
+  <li><strong>[15]</strong> O. Atanda, H. Aworinde, B. van Niekerk. "Lightweight transformer models for scalable phishing email detection: A comparative study of ALBERT and TinyBERT on a balanced email corpus." IJIRSS 9(2), 10–20, 2026.</li>
+</ol>
+
+<h3>Foundational References</h3>
+<ol class="ref-list" start="16">
+  <li><strong>[F1]</strong> V. Sanh, L. Debut, J. Chaumond, T. Wolf. "DistilBERT, a distilled version of BERT: smaller, faster, cheaper and lighter." arXiv:1910.01108, 2019.</li>
+  <li><strong>[F2]</strong> A. Kendall, Y. Gal, R. Cipolla. "Multi-Task Learning Using Uncertainty to Weigh Losses for Scene Geometry and Semantics." CVPR, 2018.</li>
+  <li><strong>[F3]</strong> T.-Y. Lin, P. Goyal, R. Girshick, K. He, P. Doll&aacute;r. "Focal Loss for Dense Object Detection." ICCV, 2017.</li>
+  <li><strong>[F4]</strong> I.J. Goodfellow, J. Shlens, C. Szegedy. "Explaining and Harnessing Adversarial Examples." ICLR, 2015.</li>
+  <li><strong>[F5]</strong> M.T. Ribeiro, S. Singh, C. Guestrin. "Why Should I Trust You?: Explaining the Predictions of Any Classifier." KDD, 2016.</li>
+  <li><strong>[F6]</strong> S.M. Lundberg, S.I. Lee. "A Unified Approach to Interpreting Model Predictions." NeurIPS, 2017.</li>
+  <li><strong>[F7]</strong> M. Sundararajan, A. Taly, Q. Yan. "Axiomatic Attribution for Deep Networks." ICML, 2017.</li>
+</ol>
+
+<h3>CyberSiren Internal</h3>
+<ul class="ref-list">
+  <li><code>docs/internals/CyberSiren_URL_Low_latency_Model_Specification.html</code> — URL model spec (ML-SPEC-v1.1)</li>
+  <li><code>docs/decisions/DECISIONS.MD</code> — Key technical decisions (campaign fingerprinting, NLP integration)</li>
+  <li><code>shared/models/verdict.go</code> — VerdictLabel enum, ContentRiskScore</li>
+  <li><code>shared/models/email.go</code> — ParsedEmail struct (Subject, BodyPlain, BodyHTML)</li>
+  <li><code>shared/config/config.go</code> — MLConfig.NLPServiceURL (http://localhost:8001)</li>
+  <li><code>deploy/docker/Dockerfile.nlp</code> — Container specification (python:3.12-slim, port 8001)</li>
+</ul>
+
+<hr>
+<div class="doc-meta" style="margin-top: 14px; text-align: center;">
+  <span><strong>End of NLP-SPEC-v1.0</strong></span>
+  <span><strong>All 15 literature papers verified from full-text PDF reading.</strong></span>
+  <span><strong>Status:</strong> Pre-Training — Pending dataset gathering and notebook construction.</span>
+</div>
+
+</body>
+</html>
