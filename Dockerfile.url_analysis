@@ -1,0 +1,31 @@
+# ── svc-03-url-analysis ──────────────────────────────────────────────────────
+# Analyses URLs extracted from emails against TI feeds and ML models.
+# Requires Python 3 + joblib + numpy + lightgbm + xgboost + scikit-learn + tldextract
+# at runtime for the ML model subprocess (champion may be LightGBM or XGBoost).
+
+# Stage 1: Go builder
+FROM golang:1.25-alpine AS builder
+WORKDIR /app
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" 
+    -o /bin/service ./services/svc-03-url-analysis/cmd/url-analysis/
+
+# Stage 2: final
+FROM alpine:3.19
+RUN apk --no-cache add ca-certificates tzdata
+RUN apk add --no-cache python3 py3-pip libgomp gcc g++ cmake make musl-dev python3-dev linux-headers \
+    && pip3 install --no-cache-dir --break-system-packages joblib numpy lightgbm xgboost scikit-learn tldextract \
+    && apk del gcc g++ cmake make musl-dev python3-dev linux-headers
+
+WORKDIR /app
+COPY --from=builder /bin/service /bin/service
+COPY services/svc-03-url-analysis/ml/inference_script.py /app/ml/inference_script.py
+COPY services/svc-03-url-analysis/ml/model.joblib /app/ml/model.joblib
+COPY services/svc-03-url-analysis/ml/config.json /app/ml/config.json
+COPY services/svc-03-url-analysis/ml/data/top-1m.csv /app/ml/data/top-1m.csv
+COPY services/svc-03-url-analysis/static/ /app/static/
+
+ENV CYBERSIREN_ML__URL_MODEL_PATH=/app/ml/inference_script.py
+ENTRYPOINT ["/bin/service"]
