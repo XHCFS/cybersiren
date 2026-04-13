@@ -1,0 +1,3 @@
+Place tokenizer files here (from cybersiren_nlp_out/tokenizer/).
+Expected files: vocab.txt, tokenizer.json, tokenizer_config.json, config.json
+If absent the service downloads distilbert-base-uncased from HuggingFace at startup.
