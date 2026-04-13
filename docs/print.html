@@ -246,6 +246,11 @@
   content.appendChild(fragment);
   status.style.display = 'none';
   btn.style.display = 'block';
+
+  // If opened from the index button, auto-trigger print immediately
+  if (window.opener) {
+    window.print();
+  }
 })();
 </script>
 </body>
