@@ -1,0 +1,42 @@
+{
+  "sections": [
+    {
+      "name": "ARCHITECTURE",
+      "folder": "architecture",
+      "docs": [
+        {
+          "file": "architecture/architecture-spec-detail.html",
+          "title": "CyberSiren — System Architecture Specification"
+        }
+      ]
+    },
+    {
+      "name": "DIAGRAMS",
+      "folder": "diagrams",
+      "docs": [
+        {
+          "file": "diagrams/architecture-diagram.html",
+          "title": "CyberSiren — System Architecture Diagram"
+        }
+      ]
+    },
+    {
+      "name": "INTERNALS",
+      "folder": "internals",
+      "docs": [
+        {
+          "file": "internals/CyberSiren_NLP_Email_Classification_Model_Specification.html",
+          "title": "CyberSiren — ML Model Specification (SVC-06 NLP Email Classification)"
+        },
+        {
+          "file": "internals/CyberSiren_TI_Sync_Module_Specification.html",
+          "title": "CyberSiren — Threat Intelligence Sync Module Specification (SVC-11)"
+        },
+        {
+          "file": "internals/CyberSiren_URL_Low_latency_Model_Specification.html",
+          "title": "CyberSiren — ML Model Specification (SVC-03 URL Analysis)"
+        }
+      ]
+    }
+  ]
+}
