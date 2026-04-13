@@ -295,6 +295,7 @@ demo: check-docker check-compose-env
 	    --profile $(call svc-short-profile,$(svc)) up -d --wait
 	@echo ""
 	@echo "  Service:     $(svc)"
+	@echo "  Demo Dashboard:   http://localhost:8083"
 	@echo "  Grafana:     http://localhost:3001"
 	@echo "  Prometheus:  http://localhost:9092"
 	@echo "  Jaeger:      http://localhost:16686"
@@ -309,6 +310,7 @@ demo-build: check-docker check-compose-env
 	    --profile $(call svc-short-profile,$(svc)) up -d --wait --build
 	@echo ""
 	@echo "  Service:     $(svc)"
+	@echo "  Demo Dashboard:   http://localhost:8083"
 	@echo "  Grafana:     http://localhost:3001"
 	@echo "  Prometheus:  http://localhost:9092"
 	@echo "  Jaeger:      http://localhost:16686"
@@ -322,6 +324,7 @@ demo-all: check-docker check-compose-env
 	    --profile svc-03 --profile svc-11 up -d --wait
 	@echo ""
 	@echo "  Services:    svc-03-url-analysis, svc-11-ti-sync"
+	@echo "  Demo Dashboard:   http://localhost:8083"
 	@echo "  Grafana:     http://localhost:3001"
 	@echo "  Prometheus:  http://localhost:9092"
 	@echo "  Jaeger:      http://localhost:16686"
@@ -335,10 +338,18 @@ demo-all-build: check-docker check-compose-env
 	    --profile svc-03 --profile svc-11 up -d --wait --build
 	@echo ""
 	@echo "  Services:    svc-03-url-analysis, svc-11-ti-sync"
+	@echo "  Demo Dashboard:   http://localhost:8083"
 	@echo "  Grafana:     http://localhost:3001"
 	@echo "  Prometheus:  http://localhost:9092"
 	@echo "  Jaeger:      http://localhost:16686"
 	@echo ""
+
+## demo-stop-all: Stop all demo containers (preserves volumes).
+demo-stop-all: check-docker
+	$(DOCKER_COMPOSE) --profile postgres --profile valkey \
+	    --profile monitoring --profile observability \
+	    --profile svc-03 --profile svc-11 down
+	@echo "All demo containers stopped."
 
 ## jaeger: Start Jaeger standalone (use when already running infra separately)
 jaeger: check-docker
@@ -407,7 +418,7 @@ check-compose-env:
         test test-svc test-shared test-short test-cover \
         vet lint lint-fix tidy \
         valkey-cli kafka-topics check-tools \
-        demo demo-build demo-all demo-all-build jaeger \
+        demo demo-build demo-all demo-all-build demo-stop-all jaeger \
         open open-grafana open-prometheus open-jaeger open-kafka-ui open-pgadmin _open-url \
         help check-docker check-compose-env
 
