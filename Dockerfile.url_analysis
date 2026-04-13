@@ -9,15 +9,15 @@ WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" 
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" \
     -o /bin/service ./services/svc-03-url-analysis/cmd/url-analysis/
 
-# Stage 2: final
-FROM alpine:3.19
-RUN apk --no-cache add ca-certificates tzdata
-RUN apk add --no-cache python3 py3-pip libgomp gcc g++ cmake make musl-dev python3-dev linux-headers \
-    && pip3 install --no-cache-dir --break-system-packages joblib numpy lightgbm xgboost scikit-learn tldextract \
-    && apk del gcc g++ cmake make musl-dev python3-dev linux-headers
+# Stage 2: final (python:3.12-slim has pre-built wheels — no C++ compilation)
+FROM python:3.12-slim
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates tzdata libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+RUN pip install --no-cache-dir joblib numpy lightgbm xgboost scikit-learn tldextract
 
 WORKDIR /app
 COPY --from=builder /bin/service /bin/service
