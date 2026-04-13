@@ -393,6 +393,10 @@ _open-url:
 		echo "Open manually: $(url)"; \
 	fi
 
+## docs-manifest: Regenerate docs/manifest.json (run after adding any new HTML doc)
+docs-manifest:
+	python3 docs/generate_manifest.py
+
 ## help: Print all targets with descriptions
 help:
 	@grep -E '^##' Makefile | sed 's/^## //' | column -t -s ':'
@@ -420,6 +424,7 @@ check-compose-env:
         valkey-cli kafka-topics check-tools \
         demo demo-build demo-all demo-all-build demo-stop-all jaeger \
         open open-grafana open-prometheus open-jaeger open-kafka-ui open-pgadmin _open-url \
+        docs-manifest \
         help check-docker check-compose-env
 
 .DEFAULT_GOAL := help

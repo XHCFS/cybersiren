@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CyberSiren — Print All Documentation</title>
+<style>
+  /* ── Page setup ─────────────────────────────────────────────────────────── */
+  @page {
+    size: A4 portrait;
+    margin: 12mm;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: 'Courier New', 'Consolas', monospace;
+    background: #ffffff;
+    color: #111111;
+    font-size: 11px;
+    line-height: 1.45;
+  }
+
+  /* ── Shared doc typography (mirrors all spec docs) ───────────────────────── */
+  h1 { font-size: 20px; font-weight: 700; border-bottom: 3px solid #111; padding-bottom: 6px; margin-bottom: 2px; letter-spacing: -0.3px; }
+  h2 { font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: 1.5px; border-bottom: 2px solid #333; padding-bottom: 3px; margin: 22px 0 10px 0; }
+  h3 { font-size: 11.5px; font-weight: 700; margin: 12px 0 4px 0; }
+  h4 { font-size: 11px; font-weight: 700; margin: 8px 0 3px 0; }
+
+  p { margin: 4px 0 8px 0; }
+  ul, ol { margin: 4px 0 8px 16px; }
+  li { margin-bottom: 2px; }
+
+  table { border-collapse: collapse; width: 100%; margin: 6px 0 14px 0; font-size: 10.5px; }
+  th, td { border: 1px solid #888; padding: 4px 7px; text-align: left; vertical-align: top; }
+  th { background: #e8e8e8; font-weight: 700; white-space: nowrap; }
+  td { background: #fff; }
+  tr:nth-child(even) td { background: #f8f8f8; }
+  td.svc { font-weight: 700; }
+  td code, th code { font-family: inherit; background: #f0f0f0; padding: 1px 3px; font-size: 10px; }
+
+  code { font-family: inherit; background: #f0f0f0; padding: 1px 3px; font-size: 10px; }
+  pre { background: #f4f4f4; border: 1px solid #ccc; padding: 8px 10px; margin: 6px 0 12px 0; font-size: 10px; white-space: pre-wrap; word-break: break-word; }
+
+  .doc-meta { font-size: 10px; color: #555; margin-bottom: 20px; border-bottom: 1px solid #999; padding-bottom: 8px; }
+  .doc-meta span { margin-right: 24px; }
+
+  .two-col   { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .three-col { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; }
+
+  .note { border: 1px solid #aaa; background: #f9f9f9; padding: 6px 10px; margin: 6px 0; font-size: 10px; }
+  .note strong { font-size: 10px; }
+
+  .pipeline-step { border: 2px solid #333; margin-bottom: 10px; page-break-inside: avoid; }
+  .pipeline-step .step-header { display: flex; align-items: stretch; }
+  .pipeline-step .step-num { background: #333; color: #fff; font-weight: 700; padding: 8px 12px; min-width: 36px; text-align: center; display: flex; align-items: center; justify-content: center; font-size: 13px; }
+  .pipeline-step .step-content { padding: 8px 12px; flex: 1; }
+
+  .compact-table td, .compact-table th { padding: 3px 6px; font-size: 10px; }
+
+  .metric-block { border: 2px solid #333; padding: 10px 12px; margin-bottom: 10px; page-break-inside: avoid; }
+  .metric-block .metric-header { font-size: 12.5px; font-weight: 700; border-bottom: 1px solid #aaa; padding-bottom: 4px; margin-bottom: 6px; }
+
+  .formula-block { background: #f4f4f4; border: 1px solid #ccc; padding: 8px 12px; margin: 6px 0; font-size: 10.5px; }
+
+  strong { font-weight: 700; }
+  em { font-style: italic; }
+  a { color: #111; }
+
+  /* ── Section divider (folder = section) ─────────────────────────────────── */
+  .section-divider {
+    margin: 0;
+    padding: 10px 28px 6px 28px;
+    background: #111;
+    color: #fff;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    page-break-after: avoid;
+  }
+
+  /* ── Per-document wrapper ────────────────────────────────────────────────── */
+  .doc-wrapper {
+    padding: 28px 36px;
+    page-break-before: always;
+  }
+
+  .doc-wrapper:first-of-type {
+    page-break-before: avoid;
+  }
+
+  /* ── Status / loading states (screen only) ───────────────────────────────── */
+  #status {
+    padding: 28px 36px;
+    font-size: 12px;
+    color: #555;
+  }
+
+  #status.error {
+    color: #c00;
+  }
+
+  /* ── Floating print button (screen only) ─────────────────────────────────── */
+  #print-btn {
+    position: fixed;
+    top: 16px;
+    right: 20px;
+    z-index: 9999;
+    background: #111;
+    color: #fff;
+    border: none;
+    font-family: 'Courier New', 'Consolas', monospace;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    padding: 8px 16px;
+    cursor: pointer;
+    display: none;   /* shown once docs are loaded */
+  }
+
+  #print-btn:hover {
+    background: #333;
+  }
+
+  @media print {
+    #print-btn { display: none !important; }
+    #status     { display: none !important; }
+
+    .doc-wrapper { padding: 0; }
+
+    /* Suppress individual doc @page rules that may re-apply inside iframes;
+       these don't apply here, but this ensures our single @page is in control. */
+  }
+
+  @media screen {
+    body { max-width: 960px; margin: 0 auto; }
+  }
+</style>
+</head>
+<body>
+
+<button id="print-btn" onclick="window.print()">⎙ PRINT ALL</button>
+<div id="status">Loading documentation…</div>
+<div id="content"></div>
+
+<script>
+(async function () {
+  const status  = document.getElementById('status');
+  const content = document.getElementById('content');
+  const btn     = document.getElementById('print-btn');
+
+  // ── 1. Load manifest ────────────────────────────────────────────────────
+  let manifest;
+  try {
+    const res = await fetch('manifest.json');
+    if (!res.ok) throw new Error(`manifest.json → HTTP ${res.status}`);
+    manifest = await res.json();
+  } catch (err) {
+    status.textContent = `Failed to load manifest.json: ${err.message}`;
+    status.className = 'error';
+    return;
+  }
+
+  // ── 2. Collect all docs across sections ────────────────────────────────
+  // Build a flat list: { sectionName, file, title }
+  const allDocs = [];
+  for (const section of manifest.sections) {
+    for (const doc of section.docs) {
+      allDocs.push({ sectionName: section.name, ...doc });
+    }
+  }
+
+  if (allDocs.length === 0) {
+    status.textContent = 'manifest.json has no documents.';
+    return;
+  }
+
+  status.textContent = `Loading ${allDocs.length} documents…`;
+
+  // ── 3. Fetch and render each doc ────────────────────────────────────────
+  let loadedCount = 0;
+  let lastSection = null;
+  const fragment = document.createDocumentFragment();
+
+  for (const doc of allDocs) {
+    // Section header when the section changes
+    if (doc.sectionName !== lastSection) {
+      const divider = document.createElement('div');
+      divider.className = 'section-divider';
+      divider.textContent = `── ${doc.sectionName} ──`;
+      // Don't page-break before the very first section header
+      if (lastSection !== null) {
+        divider.style.pageBreakBefore = 'always';
+      }
+      fragment.appendChild(divider);
+      lastSection = doc.sectionName;
+    }
+
+    const wrapper = document.createElement('div');
+    wrapper.className = 'doc-wrapper';
+
+    try {
+      const res = await fetch(doc.file);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const html = await res.text();
+
+      // Parse the fetched HTML
+      const parser = new DOMParser();
+      const fetched = parser.parseFromString(html, 'text/html');
+
+      // Inject any <style> tags from the fetched doc's <head> into our <head>
+      // (deduplicates by content so identical boilerplate is only added once)
+      fetched.querySelectorAll('head style').forEach(style => {
+        const text = style.textContent.trim();
+        // Skip @page rules — we control the page layout from our own @page
+        const stripped = text.replace(/@page\s*\{[^}]*\}/g, '').trim();
+        if (!stripped) return;
+        // Check for duplicate
+        const existing = Array.from(document.head.querySelectorAll('style'));
+        const isDupe = existing.some(s => s.dataset.src === doc.file
+          ? false
+          : s.textContent.trim() === stripped);
+        if (!isDupe) {
+          const s = document.createElement('style');
+          s.dataset.src = doc.file;
+          s.textContent = stripped;
+          document.head.appendChild(s);
+        }
+      });
+
+      // Extract body content
+      wrapper.innerHTML = fetched.body.innerHTML;
+
+    } catch (err) {
+      wrapper.innerHTML = `<p style="color:#c00;font-weight:700;">
+        Failed to load <code>${doc.file}</code>: ${err.message}
+      </p>`;
+    }
+
+    fragment.appendChild(wrapper);
+    loadedCount++;
+    status.textContent = `Loading… (${loadedCount}/${allDocs.length})`;
+  }
+
+  content.appendChild(fragment);
+  status.style.display = 'none';
+  btn.style.display = 'block';
+})();
+</script>
+</body>
+</html>
