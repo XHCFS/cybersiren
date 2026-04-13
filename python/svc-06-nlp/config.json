@@ -1,0 +1,30 @@
+{
+  "model_name": "distilbert-base-uncased",
+  "model_version": "NLP-SPEC-v1.0",
+  "trained_on": "cybersiren_nlp_dataset_v1 (149,998 rows)",
+  "label_map": {
+    "0": "legitimate",
+    "1": "spam",
+    "2": "phishing"
+  },
+  "intent_taxonomy": {
+    "0": "credential_harvest",
+    "1": "payment_fraud",
+    "2": "malware_delivery",
+    "3": "account_verification",
+    "4": "prize_scam",
+    "5": "impersonation",
+    "6": "data_exfiltration",
+    "7": "urgency_threat",
+    "8": "social_engineering",
+    "9": "marketing_spam",
+    "10": "benign_notification"
+  },
+  "max_length": 256,
+  "head_tokens": 64,
+  "tail_tokens": 190,
+  "input_format": "Subject: {subject}\n\nBody: {body_plain}",
+  "temperature": 1.0,
+  "phish_threshold": 0.8,
+  "runtime": "onnxruntime INT8"
+}
