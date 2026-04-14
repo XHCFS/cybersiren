@@ -308,7 +308,7 @@
 <h2 class="page-break">5. Feature Importance — Measured from Champion Model</h2>
 
 <div class="note">
-  <strong>Method:</strong> LightGBM <code>feature_importances_</code> attribute. Values are split counts across all trees. Top 4 features account for 53.6% of total model importance. Two of four are novel derived features from [5]; two are Shannon entropy variants from [2].
+  <strong>Method:</strong> deployed champion model <code>feature_importances_</code> attribute (XGBoost artifact in <code>config.json</code>). Values are split/importance scores across trees.
 </div>
 
 <table>
@@ -355,9 +355,9 @@
   <strong>Ranking metric: MCC</strong> (Matthews Correlation Coefficient). [5] uses MCC as primary metric (Eq. 7). MCC accounts for all four confusion matrix quadrants. F1 ignores true negatives. Accuracy treats all errors equally. With 45.2/54.8 class split, MCC is the most informative single metric. Range: −1 to +1.
 </div>
 
-<h3>6.2 Why LightGBM over XGBoost</h3>
+<h3>6.2 Why XGBoost is the deployed champion</h3>
 <p style="margin-bottom:14px;">
-XGBoost achieved highest accuracy in [5] Table 3 (99.993%). In our benchmark, LightGBM ranks #1 by MCC (0.99564 vs 0.99542). Single-inference latency: 1,582 μs vs 4,385 μs. Training: 3.8s vs 3.7s. LightGBM is faster at inference with higher MCC. For a low-latency production service, this is the correct choice.
+The deployed artifact in <code>services/svc-03-url-analysis/ml/config.json</code> uses <strong>XGBoost</strong> with a production threshold of <code>0.85</code>. This section documents deployed behavior, while model-comparison tables remain historical benchmark context.
 </p>
 
 
@@ -376,7 +376,7 @@ XGBoost achieved highest accuracy in [5] Table 3 (99.993%). In our benchmark, Li
   <tr><td>StackingEnsemble</td><td>0.99817</td><td>0.99833</td><td>0.99631</td><td><strong>0.99936</strong></td><td>0.01090</td><td>0.00118</td><td><strong>0.00236</strong></td></tr>
 </table>
 
-<h3>7.2 Champion: LightGBM</h3>
+<h3>7.2 Champion: XGBoost (deployed artifact)</h3>
 <div class="two-col">
   <div class="metric-block">
     <div class="metric-header">Classification Metrics</div>
@@ -451,14 +451,12 @@ XGBoost achieved highest accuracy in [5] Table 3 (99.993%). In our benchmark, Li
 
 <h3>8.2 Confidence-Gated Routing</h3>
 <div class="note">
-  Follows [5] security profile design (§4.2.2). Different thresholds accommodate different risk tolerances. URLs in the uncertainty band are candidates for SVC-03's enrichment path (WHOIS, SSL, DNS) before final scoring.
+  Runtime routing is guardrail-based. SVC-03 routes to enrichment only when <code>probability &gt;= 0.85</code> and the structural-shortcut guardrail conditions are met in <code>inference_script.py</code>.
 </div>
 <table style="width:600px;">
   <tr><th>Probability</th><th>Risk Level</th><th>SVC-03 Action</th></tr>
-  <tr><td>0.85 – 1.00</td><td class="svc">DANGEROUS</td><td>If not flagged by structural-shortcut guardrail, label phishing and emit immediately.</td></tr>
-  <tr><td>0.50 – 0.85</td><td class="svc">SUSPICIOUS</td><td>Route to enrichment (WHOIS/SSL/DNS). Score = enriched model or ml_score.</td></tr>
-  <tr><td>0.30 – 0.50</td><td class="svc">UNCERTAIN</td><td>Route to enrichment (WHOIS/SSL/DNS). Score = enriched model or ml_score.</td></tr>
-  <tr><td>0.00 – 0.30</td><td class="svc">SAFE</td><td>Score = ml_score. Skip enrichment. Emit immediately.</td></tr>
+  <tr><td>0.85 – 1.00</td><td class="svc">HIGH</td><td>Label phishing unless the structural-shortcut guardrail routes to enrichment.</td></tr>
+  <tr><td>0.00 – 0.85</td><td class="svc">LOW/MEDIUM</td><td>No stage-B routing from probability band alone; pass-through unless separate service logic marks suspicious.</td></tr>
 </table>
 
 <h3>8.3 Exported Artifacts</h3>
@@ -476,7 +474,7 @@ XGBoost achieved highest accuracy in [5] Table 3 (99.993%). In our benchmark, Li
 <table>
   <tr><th>Decision</th><th>Rationale</th></tr>
   <tr><td class="svc">URL-only features</td><td>[2] deliberately excluded content features "to optimize speed and responsiveness." [5] §3.1.2: URL features have high potential but cannot be sole defense — hence two-tier architecture. Content features reserved for enrichment path.</td></tr>
-  <tr><td class="svc">LightGBM over XGBoost</td><td>LightGBM ranks #1 by MCC on both validation (0.99564) and test (0.99645). Single-inference: 1,582 μs vs 4,385 μs. Train: 3.8s vs 3.7s. Faster at inference with higher MCC.</td></tr>
+  <tr><td class="svc">Deployed artifact lock</td><td>Service runtime follows the artifact declared in <code>ml/config.json</code>. Current deployed champion is XGBoost with threshold 0.85 and stage-B structural-shortcut routing.</td></tr>
   <tr><td class="svc">MCC for ranking</td><td>[5] uses MCC as primary metric (Eq. 7). Accounts for all four confusion matrix quadrants. F1 ignores TN. Accuracy treats all errors equally. With 45/55 class split, MCC is most informative.</td></tr>
   <tr><td class="svc">Strict hostname IP detection</td><td>Original regex matched against full URL string. False positive on <code>http://192.168.1.1.example.com</code>. Fix: anchored regex on parsed hostname only. Also guards TLD/domain/subdomain fallback parsers from treating IP octets as TLD components.</td></tr>
   <tr><td class="svc">Raw delimiter query counting</td><td><code>parse_qs</code> groups duplicate keys. <code>?id=1&amp;id=2&amp;id=3</code> returns length 1. [1] feature #11 counts total components. Raw <code>'&amp;'</code> counting preserves this intent.</td></tr>

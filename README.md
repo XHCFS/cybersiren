@@ -103,14 +103,14 @@ Runs any service with Postgres, Valkey, Prometheus, Grafana, and Jaeger.
 cp deploy/compose/.env.example deploy/compose/.env  # one-time Docker Compose setup
 make demo svc=svc-03-url-analysis   # URL scanner with full observability
 make demo svc=svc-11-ti-sync        # threat-intel sync with full observability
-make demo-all                       # ALL services at once
+make demo-all                       # demo service bundle (svc-03 + svc-11)
 ```
 
 Images are cached after the first run — startup is instant. Force a rebuild after code changes:
 
 ```bash
 make demo-build svc=svc-11-ti-sync  # rebuild + start single service
-make demo-all-build                  # rebuild + start all services
+make demo-all-build                  # rebuild + start demo service bundle
 ```
 
 **svc-03 only:** Open http://localhost:8083 for the URL scanner web UI.
@@ -128,7 +128,7 @@ Other services have no web UI — use Grafana, Prometheus, and Jaeger below.
 ## Development
 
 ```bash
-make up                              # start infra (postgres, valkey, kafka)
+make up                              # start infra (postgres, valkey, kafka, jaeger)
 make dev svc=svc-03-url-analysis     # run one service natively
 make test-short                      # unit tests, no infra required
 make test-svc svc=svc-03-url-analysis
@@ -174,8 +174,8 @@ make demo svc=svc-11-ti-sync
 ```bash
 make demo svc=<name>         # start service + full observability stack (cached)
 make demo-build svc=<name>   # same but force-rebuilds image first
-make demo-all                # start ALL services + full observability stack (cached)
-make demo-all-build          # same but force-rebuilds all images first
+make demo-all                # start svc-03 + svc-11 + full observability stack (cached)
+make demo-all-build          # same but force-rebuilds svc-03 + svc-11 images first
 make jaeger              # start Jaeger standalone
 make open-grafana        # open Grafana in browser
 make open-prometheus     # open Prometheus in browser

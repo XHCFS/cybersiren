@@ -13,7 +13,7 @@ CyberSiren is a phishing defense platform using a microservices monorepo archite
 ```bash
 # Development
 make dev svc=svc-10-api-dashboard  # Start infra + run one service natively
-make up                            # Start all infra (postgres, valkey, kafka)
+make up                            # Start all infra (postgres, valkey, kafka, jaeger)
 make down                          # Stop containers (keep volumes)
 
 # Build
@@ -92,10 +92,10 @@ All services import from these shared packages:
 ### ML Model Integration
 
 **URL Model (XGBoost):** Go spawns Python subprocesses (process pool) for inference.
-- 30 features, JSON on stdin/stdout, 5-second timeout
+- 30 active features, JSON on stdin/stdout, 5-second timeout
 - Process pool size configurable (default: 3)
-- Model binary: `services/svc-03-url-analysis/ml/model.joblib`
-- Inference script: `services/svc-03-url-analysis/ml/inference_script.py`
+- `CYBERSIREN_ML__URL_MODEL_PATH` points to the inference script path (for example: `./ml/inference_script.py`)
+- Model binary: `services/svc-03-url-analysis/ml/model.joblib` (loaded by the Python script)
 - Fallback: default risk score of 50 on failure (never hard-fail)
 
 **NLP Model (DistilBERT):** HTTP microservice (FastAPI + ONNX Runtime)
@@ -130,7 +130,7 @@ See `.env.example` for all available variables.
 
 See `DECISIONS.MD` for the full decision log. Critical decisions:
 
-- **XGBoost chosen as URL model champion** (0.933 MCC, 4,509 μs latency, 1.1 MB size) — Optuna-tuned, leakage-free training
+- **XGBoost chosen as URL model champion** (leakage-free retrain; production threshold 0.85) — see `docs/decisions/DECISIONS.MD`
 - **Go feature extraction must match Python within 0.001 tolerance** (verified at train time)
 - **Max 5 concurrent enrichments** to avoid WHOIS API rate limiting
 - **Default risk score 50** on ML failure — system fails gracefully, never hard-fails
