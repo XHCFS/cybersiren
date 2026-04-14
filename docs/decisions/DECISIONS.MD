@@ -12,7 +12,7 @@ March 24, 2026
 - Features passed as JSON via stdin
 - Predictions returned as JSON via stdout
 - Process pooling to avoid spawn overhead (configurable, default 3 processes)
-- 5s timeout for LightGBM URL model, 10s timeout for NLP (DistilBERT/ONNX)
+- 5s timeout for URL-model Python subprocess, 10s timeout for NLP (DistilBERT/ONNX)
 
 **Fallback Plan:**
 If subprocess approach proves unreliable in production:
