@@ -170,12 +170,12 @@ func scanHandler(model *urlpkg.URLModel, tiChecker *urlpkg.TIChecker, log zerolo
 		}
 
 		var (
-			mlScore int
-			mlProb  float64
-			routed  bool
-			reason  string
+			mlScore  int
+			mlProb   float64
+			routed   bool
+			reason   string
 			tiResult urlpkg.TIResult
-			wg      sync.WaitGroup
+			wg       sync.WaitGroup
 		)
 
 		wg.Add(2)

@@ -244,7 +244,16 @@ func (m *URLModel) Predict(ctx context.Context, rawURL string) (score int, proba
 
 // PredictWithRoute mirrors Predict but also returns whether inference requested
 // stage-B enrichment routing and its reason.
-func (m *URLModel) PredictWithRoute(ctx context.Context, rawURL string) (score int, probability float64, routeToEnrichment bool, routeReason string, err error) {
+func (m *URLModel) PredictWithRoute(
+	ctx context.Context,
+	rawURL string,
+) (
+	score int,
+	probability float64,
+	routeToEnrichment bool,
+	routeReason string,
+	err error,
+) {
 	// Fast path: if the model is already closed, return neutral without blocking.
 	select {
 	case <-m.done:
