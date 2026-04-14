@@ -27,10 +27,12 @@ type inferRequest struct {
 }
 
 type inferResponse struct {
-	Score       int     `json:"score"`
-	Probability float64 `json:"probability"`
-	Label       string  `json:"label"`
-	Error       string  `json:"error,omitempty"`
+	Score             int     `json:"score"`
+	Probability       float64 `json:"probability"`
+	Label             string  `json:"label"`
+	RouteToEnrichment bool    `json:"route_to_enrichment,omitempty"`
+	RouteReason       string  `json:"route_reason,omitempty"`
+	Error             string  `json:"error,omitempty"`
 }
 
 // workerProcess wraps a live Python subprocess with its stdin/stdout pipes.
@@ -236,10 +238,17 @@ func (m *URLModel) replaceAsync() {
 // DECISIONS.MD. The pipeline is never hard-failed.
 // Calling Predict on a closed URLModel returns neutral immediately.
 func (m *URLModel) Predict(ctx context.Context, rawURL string) (score int, probability float64, err error) {
+	score, probability, _, _, err = m.PredictWithRoute(ctx, rawURL)
+	return score, probability, err
+}
+
+// PredictWithRoute mirrors Predict but also returns whether inference requested
+// stage-B enrichment routing and its reason.
+func (m *URLModel) PredictWithRoute(ctx context.Context, rawURL string) (score int, probability float64, routeToEnrichment bool, routeReason string, err error) {
 	// Fast path: if the model is already closed, return neutral without blocking.
 	select {
 	case <-m.done:
-		return neutralScore, neutralProbability, nil
+		return neutralScore, neutralProbability, false, "", nil
 	default:
 	}
 
@@ -253,7 +262,7 @@ func (m *URLModel) Predict(ctx context.Context, rawURL string) (score int, proba
 	p, ok := m.acquire(ctx)
 	if !ok {
 		// Pool fully occupied, closed, or ctx cancelled — return neutral.
-		return neutralScore, neutralProbability, nil
+		return neutralScore, neutralProbability, false, "", nil
 	}
 
 	req := inferRequest{URL: rawURL}
@@ -261,7 +270,7 @@ func (m *URLModel) Predict(ctx context.Context, rawURL string) (score int, proba
 	if marshalErr != nil {
 		m.logError("url model: marshal features", marshalErr)
 		m.release(p)
-		return neutralScore, neutralProbability, nil
+		return neutralScore, neutralProbability, false, "", nil
 	}
 	reqBytes = append(reqBytes, '\n')
 
@@ -269,7 +278,7 @@ func (m *URLModel) Predict(ctx context.Context, rawURL string) (score int, proba
 		m.logError("url model: write to worker stdin", writeErr)
 		p.kill()
 		m.replaceAsync()
-		return neutralScore, neutralProbability, nil
+		return neutralScore, neutralProbability, false, "", nil
 	}
 
 	type readResult struct {
@@ -288,33 +297,33 @@ func (m *URLModel) Predict(ctx context.Context, rawURL string) (score int, proba
 			m.logError("url model: read from worker stdout", result.err)
 			p.kill()
 			m.replaceAsync()
-			return neutralScore, neutralProbability, nil
+			return neutralScore, neutralProbability, false, "", nil
 		}
 		var resp inferResponse
 		if jsonErr := json.Unmarshal([]byte(strings.TrimSpace(result.line)), &resp); jsonErr != nil {
 			m.logError("url model: unmarshal response", jsonErr)
 			p.kill()
 			m.replaceAsync()
-			return neutralScore, neutralProbability, nil
+			return neutralScore, neutralProbability, false, "", nil
 		}
 		if resp.Error != "" {
 			m.logError("url model: inference error from worker", fmt.Errorf("%s", resp.Error))
 			m.release(p)
-			return neutralScore, neutralProbability, nil
+			return neutralScore, neutralProbability, false, "", nil
 		}
 		m.release(p)
-		return resp.Score, resp.Probability, nil
+		return resp.Score, resp.Probability, resp.RouteToEnrichment, resp.RouteReason, nil
 
 	case <-m.done:
 		// Model shutting down — kill the held worker and return immediately.
 		p.kill()
-		return neutralScore, neutralProbability, nil
+		return neutralScore, neutralProbability, false, "", nil
 
 	case <-ctx.Done():
 		m.logError("url model: inference timeout", ctx.Err())
 		p.kill()
 		m.replaceAsync()
-		return neutralScore, neutralProbability, nil
+		return neutralScore, neutralProbability, false, "", nil
 	}
 }
 
