@@ -143,6 +143,8 @@ type scanResponse struct {
 	Score        int     `json:"score"`
 	Probability  float64 `json:"probability"`
 	Label        string  `json:"label"`
+	Routed       bool    `json:"routed_to_enrichment"`
+	RouteReason  string  `json:"route_reason,omitempty"`
 	TIMatch      bool    `json:"ti_match"`
 	TIThreatType string  `json:"ti_threat_type"`
 	TIRiskScore  int     `json:"ti_risk_score"`
@@ -168,17 +170,19 @@ func scanHandler(model *urlpkg.URLModel, tiChecker *urlpkg.TIChecker, log zerolo
 		}
 
 		var (
-			mlScore  int
-			mlProb   float64
+			mlScore int
+			mlProb  float64
+			routed  bool
+			reason  string
 			tiResult urlpkg.TIResult
-			wg       sync.WaitGroup
+			wg      sync.WaitGroup
 		)
 
 		wg.Add(2)
 
 		go func() {
 			defer wg.Done()
-			mlScore, mlProb, _ = model.Predict(ctx.Request().Context(), normalized)
+			mlScore, mlProb, routed, reason, _ = model.PredictWithRoute(ctx.Request().Context(), normalized)
 		}()
 
 		go func() {
@@ -188,13 +192,15 @@ func scanHandler(model *urlpkg.URLModel, tiChecker *urlpkg.TIChecker, log zerolo
 
 		wg.Wait()
 
-		label := classifyLabel(mlScore, tiResult)
+		label := classifyLabel(mlScore, tiResult, routed)
 		degraded := mlScore == 50 && mlProb == 0.5
 
 		log.Debug().
 			Str("url", normalized).
 			Int("ml_score", mlScore).
 			Float64("ml_prob", mlProb).
+			Bool("routed", routed).
+			Str("route_reason", reason).
 			Bool("ti_match", tiResult.Matched).
 			Str("ti_threat", tiResult.ThreatType).
 			Int("ti_risk", tiResult.RiskScore).
@@ -207,6 +213,8 @@ func scanHandler(model *urlpkg.URLModel, tiChecker *urlpkg.TIChecker, log zerolo
 			Score:        mlScore,
 			Probability:  mlProb,
 			Label:        label,
+			Routed:       routed,
+			RouteReason:  reason,
 			TIMatch:      tiResult.Matched,
 			TIThreatType: tiResult.ThreatType,
 			TIRiskScore:  tiResult.RiskScore,
@@ -215,9 +223,12 @@ func scanHandler(model *urlpkg.URLModel, tiChecker *urlpkg.TIChecker, log zerolo
 	}
 }
 
-func classifyLabel(mlScore int, ti urlpkg.TIResult) string {
+func classifyLabel(mlScore int, ti urlpkg.TIResult, routed bool) string {
 	if ti.Matched && ti.RiskScore >= 80 {
 		return "phishing"
+	}
+	if routed {
+		return "suspicious"
 	}
 	switch {
 	case mlScore >= 70:

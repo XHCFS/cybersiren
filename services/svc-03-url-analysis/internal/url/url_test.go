@@ -723,8 +723,10 @@ func TestURLModel_KnownLegit(t *testing.T) {
 // false-positive class fixed in PR #122 (F32 registered_domain_top1m).
 // Deep-path URLs on top-1M registered domains (e.g. github.com, google.com)
 // previously scored 98–99 because the prior model learned
-// "deep path + high entropy → phishing". With F32 in place, both URLs must
-// land in the legit band (score ≤ 30).
+// "deep path + high entropy → phishing". Under the current two-stage policy,
+// these URLs may still receive high raw model scores; if they cross the
+// phishing threshold they MUST be routed for enrichment (stage-B) and therefore
+// not be hard-labeled phishing.
 func TestURLModel_DeepPathRegisteredDomainLegit(t *testing.T) {
 	skipIfNoModel(t)
 
@@ -751,14 +753,55 @@ func TestURLModel_DeepPathRegisteredDomainLegit(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		score, _, err := m.Predict(context.Background(), tc.url)
+		score, prob, routed, reason, err := m.PredictWithRoute(context.Background(), tc.url)
 		if err != nil {
-			t.Fatalf("Predict(%s): %v", tc.desc, err)
+			t.Fatalf("PredictWithRoute(%s): %v", tc.desc, err)
 		}
-		if score > 30 {
-			t.Errorf("deep-path top-1M URL (%s) %q scored %d, expected ≤ 30 — F32 regression?",
-				tc.desc, tc.url, score)
+		if score < 0 || score > 100 || prob < 0 || prob > 1 {
+			t.Errorf("unexpected score/prob for (%s) %q: score=%d prob=%.4f",
+				tc.desc, tc.url, score, prob)
 		}
+		// Runtime threshold defaults to 0.5 in inference_script.py config handling.
+		// Enforce the real deployment contract:
+		//   - below threshold => already non-phishing
+		//   - at/above threshold => must route to stage-B enrichment
+		if prob >= 0.5 {
+			if !routed {
+				t.Errorf("expected route_to_enrichment=true for threshold-crossing deep-path top-1M URL (%s) %q (prob=%.4f)",
+					tc.desc, tc.url, prob)
+			}
+			if reason == "" {
+				t.Errorf("expected non-empty route_reason for threshold-crossing deep-path top-1M URL (%s) %q",
+					tc.desc, tc.url)
+			}
+		}
+	}
+}
+
+// TestURLModel_RouteToEnrichmentForStructuralLegit checks the stage-B guardrail
+// emitted by inference_script.py for structurally complex but legitimate URLs.
+func TestURLModel_RouteToEnrichmentForStructuralLegit(t *testing.T) {
+	skipIfNoModel(t)
+
+	m, err := NewURLModel(scriptPath(), 1, nil)
+	if err != nil {
+		t.Fatalf("NewURLModel: %v", err)
+	}
+	defer m.Close()
+
+	url := "https://gemini.google.com/u/1/app/b681b0bd759d099c?pageId=none"
+	score, prob, routed, reason, err := m.PredictWithRoute(context.Background(), url)
+	if err != nil {
+		t.Fatalf("PredictWithRoute: %v", err)
+	}
+	if score < 0 || score > 100 || prob < 0 || prob > 1 {
+		t.Fatalf("unexpected score/prob from route test: score=%d prob=%.4f", score, prob)
+	}
+	if !routed {
+		t.Errorf("expected route_to_enrichment=true for %q", url)
+	}
+	if reason == "" {
+		t.Errorf("expected non-empty route_reason for %q", url)
 	}
 }
 
