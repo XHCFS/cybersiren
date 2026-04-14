@@ -102,11 +102,11 @@
 </div>
 
 <div class="note">
-  <strong>Context:</strong> This document specifies the machine learning model deployed inside SVC-03 (URL Analysis Service) as defined in ARCH-SPEC-v2.1. The model runs as a Python subprocess invoked by the Go service. It receives a raw URL string, extracts 28 structural features, and returns a phishing probability. No network calls or page downloads occur at inference time. The model file is 0.8 MB (joblib-compressed LightGBM).
+  <strong>Context:</strong> This document specifies the machine learning model deployed inside SVC-03 (URL Analysis Service) as defined in ARCH-SPEC-v2.1. The model runs as a Python subprocess invoked by the Go service. It receives a raw URL string, extracts 30 structural features, and returns a phishing probability. No network calls or page downloads occur at inference time. The deployed artifact currently uses XGBoost (<code>config.json.champion_name</code>).
 </div>
 
 <div class="note">
-  <strong>Champion Model:</strong> LightGBM &nbsp;|&nbsp; <strong>Test Accuracy:</strong> 99.824% &nbsp;|&nbsp; <strong>Test MCC:</strong> 0.99645 &nbsp;|&nbsp; <strong>Test AUC-ROC:</strong> 0.99929 &nbsp;|&nbsp; <strong>False Positive Rate:</strong> 0.099% &nbsp;|&nbsp; <strong>False Negative Rate:</strong> 0.240% &nbsp;|&nbsp; <strong>Single-Inference Latency:</strong> 1,582 μs
+  <strong>Champion Model (deployed artifact):</strong> XGBoost &nbsp;|&nbsp; <strong>Decision threshold:</strong> 0.85 &nbsp;|&nbsp; <strong>Feature count:</strong> 30 &nbsp;|&nbsp; <strong>Routing:</strong> stage-B enrichment guardrail enabled for structural-shortcut cases.
 </div>
 
 
@@ -249,13 +249,13 @@
 
 
 <!-- ============================================================ -->
-<h2 class="page-break">4. Feature Specification — 30 Defined / 28 Active</h2>
+<h2 class="page-break">4. Feature Specification — 30 Active</h2>
 
 <div class="note">
   <strong>Extraction:</strong> All features extracted from the raw URL string at inference time. No network calls. No page downloads. No third-party API lookups. Feature extraction is vectorized using pandas string operations for batch processing (~60,000 URLs/sec). Single-URL extraction uses per-row functions.
 </div>
 <div class="note">
-  <strong>Pruned features:</strong> <code>has_ip_address</code> (F04) and <code>double_slash_in_path</code> (F24) contributed 0 splits in the champion LightGBM model and have been removed from the active feature set. Both are defined below for completeness but are not passed to the model at inference time.
+  <strong>Runtime feature vector:</strong> 30 features are active in the deployed XGBoost artifact, including <code>min_brand_levenshtein</code> and <code>registered_domain_top1m</code> as legitimacy anchors for deep-path/high-entropy URLs.
 </div>
 
 <h3>4.1 Tier 1 — Strongest Features (5/5 or 4/5 paper support, HEFS-validated)</h3>
@@ -428,7 +428,7 @@ XGBoost achieved highest accuracy in [5] Table 3 (99.993%). In our benchmark, Li
   <div class="step-header">
     <div class="step-num">2</div>
     <div class="step-content">
-      <strong>FEATURE EXTRACTION:</strong> Extract 28 active features from URL string (30 defined; has_ip_address and double_slash_in_path excluded). No network calls. Uses pre-loaded lookup tables (CHAR_PROB_TABLE, TLD_LEGIT_PROB, SENSITIVE_WORDS). Parse URL components via regex. Compute entropy, char probabilities, continuation rate.
+      <strong>FEATURE EXTRACTION:</strong> Extract 30 active features from URL string. No network calls. Uses pre-loaded lookup tables (CHAR_PROB_TABLE, TLD_LEGIT_PROB, SENSITIVE_WORDS). Parse URL components via regex. Compute entropy, char probabilities, continuation rate, and legitimacy-anchor features.
     </div>
   </div>
 </div>
@@ -436,7 +436,7 @@ XGBoost achieved highest accuracy in [5] Table 3 (99.993%). In our benchmark, Li
   <div class="step-header">
     <div class="step-num">3</div>
     <div class="step-content">
-      <strong>PREDICTION:</strong> Pass 28-feature vector to LightGBM. Returns <code>predict_proba[:,1]</code> as phishing probability (float 0.0–1.0). Binary label: probability ≥ 0.5 → phishing.
+      <strong>PREDICTION:</strong> Pass 30-feature vector to XGBoost. Returns <code>predict_proba[:,1]</code> as phishing probability (float 0.0–1.0). Initial binary threshold is 0.85, followed by stage-B structural-shortcut routing for ambiguous legitimate-complex URLs.
     </div>
   </div>
 </div>
@@ -455,7 +455,7 @@ XGBoost achieved highest accuracy in [5] Table 3 (99.993%). In our benchmark, Li
 </div>
 <table style="width:600px;">
   <tr><th>Probability</th><th>Risk Level</th><th>SVC-03 Action</th></tr>
-  <tr><td>0.85 – 1.00</td><td class="svc">DANGEROUS</td><td>Score = ml_score. Skip enrichment. Emit immediately.</td></tr>
+  <tr><td>0.85 – 1.00</td><td class="svc">DANGEROUS</td><td>If not flagged by structural-shortcut guardrail, label phishing and emit immediately.</td></tr>
   <tr><td>0.50 – 0.85</td><td class="svc">SUSPICIOUS</td><td>Route to enrichment (WHOIS/SSL/DNS). Score = enriched model or ml_score.</td></tr>
   <tr><td>0.30 – 0.50</td><td class="svc">UNCERTAIN</td><td>Route to enrichment (WHOIS/SSL/DNS). Score = enriched model or ml_score.</td></tr>
   <tr><td>0.00 – 0.30</td><td class="svc">SAFE</td><td>Score = ml_score. Skip enrichment. Emit immediately.</td></tr>
@@ -464,7 +464,7 @@ XGBoost achieved highest accuracy in [5] Table 3 (99.993%). In our benchmark, Li
 <h3>8.3 Exported Artifacts</h3>
 <table class="compact-table" style="width:500px;">
   <tr><th>File</th><th>Size</th><th>Contents</th></tr>
-  <tr><td><code>model.joblib</code></td><td>0.8 MB</td><td>Trained LightGBM classifier (compress=3)</td></tr>
+  <tr><td><code>model.joblib</code></td><td>~1.1 MB</td><td>Trained XGBoost classifier (compress=3)</td></tr>
   <tr><td><code>config.json</code></td><td>~50 KB</td><td>feature_names, char_prob_table, tld_legit_prob, sensitive_words</td></tr>
   <tr><td><code>metrics.json</code></td><td>&lt;1 KB</td><td>Test set performance metrics</td></tr>
 </table>
