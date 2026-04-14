@@ -139,7 +139,7 @@
     <td>S. Saha Roy, S. Nilizadeh. "PhishLang: A Real-Time, Fully Client-Side Phishing Detection Framework Using MobileBERT." arXiv:2408.05667v3.</td>
     <td>2025</td>
     <td>ACM CCS / ArXiv</td>
-    <td>MobileBERT: F1 0.96, 0.39s CPU, <strong>74 MB DRAM</strong>. DistilBERT: F1 0.94, 0.85s, 502 MB. DeBERTa: F1 0.84, 1,341 MB. TinyBERT: F1 0.84, 495 MB. 5-fold CV, 10 epochs. <strong>Latency/memory benchmarks. MobileBERT as fallback candidate.</strong> Open-source Chromium extension validates on-device deployment.</td>
+    <td><strong>⚠ Domain: phishing website HTML classification, not email text.</strong> MobileBERT: F1 0.96, 0.39s CPU, 74 MB DRAM. DistilBERT: F1 0.94, 0.85s, 502 MB. DeBERTa: F1 0.84, 1,341 MB. TinyBERT: F1 0.84, 495 MB. 5-fold CV, 10 epochs. Values approximate general model size/latency characteristics but were measured on website HTML inputs, not email body text. Open-source Chromium extension validates on-device deployment.</td>
   </tr>
   <tr>
     <td class="svc">[3]</td>
@@ -153,7 +153,7 @@
     <td>M. Tawfik, A.A. Abu-Ein, A.H. Abdelhaliem, Y.M. Al-Sharo, I.S. Fathi. "Explainable few-shot learning with modern BERT for detecting emerging phishing attacks using XF-PhishBERT." Scientific Reports 15, s41598-025-27500-0.</td>
     <td>2025</td>
     <td>Sci. Reports (Nature)</td>
-    <td>ModernBERT + prototypical networks + MAML: 10-shot <strong>99.99%</strong> acc, MCC <strong>0.998</strong>. Ablation: removing ModernBERT &rarr; &minus;4.54pp F1; BERT swap &rarr; &minus;2.69pp. LR=1e-5 (backbone), 3e-5 (heads). AdamW, cosine annealing, warmup=10%. SHAP + LIME + IG + counterfactuals. 95% CIs via 1000 bootstrap. <strong>Basis for ModernBERT stretch goal, SHAP integration, statistical significance methodology.</strong></td>
+    <td><strong>⚠ Domain: URL-based phishing detection with few-shot learning, not email text.</strong> ModernBERT + prototypical networks + MAML: 10-shot <strong>99.9%</strong> acc (abstract), MCC <strong>0.998</strong>. Ablation: removing ModernBERT &rarr; &minus;4.54pp F1; BERT swap &rarr; &minus;2.69pp. LR=1e-5 (backbone), 3e-5 (heads). AdamW, cosine annealing, warmup=10%. SHAP + LIME + IG + counterfactuals. 95% CIs via 1000 bootstrap. <strong>Basis for ModernBERT stretch goal, SHAP integration, statistical significance methodology.</strong> Performance not directly comparable to email text classification benchmarks.</td>
   </tr>
   <tr>
     <td class="svc">[5]</td>
@@ -188,7 +188,7 @@
     <td>T. Saka, R. Jain, K. Vaniea, N. K&ouml;kciyan. "Phishing Codebook: A Structured Framework for the Characterization of Phishing Emails." arXiv:2408.08967v1.</td>
     <td>2024</td>
     <td>ArXiv</td>
-    <td>Eight high-level codes (Salutation, Threat, Urgency, Action-Generic/Specific, etc.) for phishing characterization. Inter-rater &kappa;=0.93. Nazario corpus: 1,688 processed emails. <strong>Basis for intent taxonomy design and urgency scoring categories.</strong></td>
+    <td>Eight high-level codes (Salutation, Threat, Urgency, Action-Generic/Specific, etc.) for phishing characterization. Inter-rater reliability: avg &kappa;=0.75 across all codes during exploratory codebook development (&sect;3.2.2); avg &kappa;=0.93 during main coding phase on 10% sample (&sect;3.2.4). Individual high-level codes range 0.80–0.96 (e.g., From–Company Name: 0.96, Urgency Cues: 0.80). Nazario corpus: 1,688 processed emails. <strong>Basis for intent taxonomy design and urgency scoring categories.</strong></td>
   </tr>
   <tr>
     <td class="svc">[10]</td>
@@ -209,14 +209,14 @@
     <td>S.P. Neshaei, Y. Boreshban, G. Ghassem-Sani, S.A. Mirroshandel. "The Impact of Quantization on the Robustness of Transformer-based Text Classifiers." arXiv:2403.05365v1.</td>
     <td>2024</td>
     <td>ArXiv</td>
-    <td>ONNX Runtime dynamic INT8 quantization. DistilBERT: <strong>255 MB &rarr; 132 MB</strong> (~52%). Clean accuracy drop: <strong>&sim;0.98%</strong> avg. Adversarial robustness <strong>+18.68%</strong> improvement post-quantization. <strong>Primary basis for ONNX INT8 quantization decision.</strong></td>
+    <td><strong>⚠ Domain: sentiment analysis (SST-2, Emotion, MR), not phishing.</strong> ONNX Runtime dynamic INT8 quantization. DistilBERT: <strong>255 MB &rarr; 132 MB</strong> (~52%). Clean accuracy impact: &minus;0.60 pp (SST-2), 0.00 pp (Emotion), +1.10 pp (MR) — DistilBERT-specific avg &asymp;0.17 pp. (Paper-reported cross-model avg including BERT: 0.98%.) Adversarial robustness +18.68% avg — measured against <em>word-level synonym attacks</em> (TextFooler, PSO, PWWS), not character-level phishing obfuscation. <strong>Primary basis for ONNX INT8 size reduction decision. Accuracy/robustness transfer to phishing requires empirical measurement.</strong></td>
   </tr>
   <tr>
     <td class="svc">[13]</td>
     <td>L. Senevirathna, D. Sumanathilaka. "Efficient Financial Fraud Detection on Mobile Devices Using Lightweight Large Language Models." RANLP 2025.</td>
     <td>2025</td>
     <td>RANLP (Varna)</td>
-    <td>Llama-160M bnb4: 99.47%, 168 MB. INT8 "minimal loss." On Samsung S21+: <strong>&lt;500 ms inference, &lt;1 s model load</strong>. ONNX via HuggingFace Optimum. <strong>Additional evidence for on-device quantized NLP viability.</strong></td>
+    <td>Llama-160M <strong>bnb4 (4-bit NormalFloat)</strong>: 99.47%, 168 MB — champion model. Paper also tests INT8; both INT8 and bnb4 show "minimal loss in accuracy." On Samsung S21+: <strong>&lt;500 ms inference, &lt;1 s model load</strong>. ONNX via HuggingFace Optimum. <strong>Cross-domain support for quantization viability; champion result is from 4-bit, not INT8.</strong></td>
   </tr>
   <tr>
     <td class="svc">[14]</td>
@@ -230,7 +230,7 @@
     <td>O. Atanda, H. Aworinde, B. van Niekerk. "Lightweight transformer models for scalable phishing email detection: A comparative study of ALBERT and TinyBERT on a balanced email corpus." IJIRSS 9(2), 10–20.</td>
     <td>2026</td>
     <td>IJIRSS</td>
-    <td>ALBERT-base-v2: <strong>97.54%</strong> acc, AUC 0.9974. TinyBERT: 95.42%, AUC 0.992. 14,546 balanced emails, max_len=128, 80/20 split. ALBERT training ~5 min/epoch vs TinyBERT ~11 s/epoch. <strong>Model candidate benchmark. ALBERT as backup option.</strong></td>
+    <td>ALBERT-base-v2: <strong>97.54%</strong> acc, AUC 0.9974. TinyBERT: 95.42%, AUC 0.992. 14,546 balanced emails, max_len=128, 80/20 split. ALBERT training ~5 min/epoch vs TinyBERT ~11 s/epoch by epoch 5 (~45 s for epoch 1). <strong>Model candidate benchmark. ALBERT as backup option.</strong></td>
   </tr>
 </table>
 
@@ -328,7 +328,7 @@
     <tr><td class="svc"><strong>Total</strong></td><td><strong>150,000</strong></td><td>100%</td></tr>
   </table>
   <div class="note">
-    <strong>Rationale for 40/40/20:</strong> Phishing detection is the primary mission. Over-representing phishing ensures the model learns the phishing decision boundary deeply. Spam at 20% prevents spam&rarr;phishing misclassification — the failure mode [8] PhishFuzzer identifies (F1<sub>spam</sub>=0.383 in 3-class LLM evaluation). [7] assembled 135K for reliable training.
+    <strong>Rationale for 40/40/20:</strong> Phishing detection is the primary mission. Over-representing phishing ensures the model learns the phishing decision boundary deeply. Spam at 20% prevents spam&rarr;phishing misclassification — the failure mode [8] PhishFuzzer identifies (F1<sub>spam</sub>=0.383 in 3-class LLM evaluation). [7] assembled 135K for reliable 2-class training (note: MeAJOR uses a phishing/legitimate schema, not our 3-class schema; their corpus size supports training scale but does not directly validate 3-class adequacy).
   </div>
 </div>
 
@@ -342,9 +342,9 @@
 <table class="compact-table">
   <tr><th>Model</th><th>Params</th><th>Est. ONNX INT8</th><th>Est. CPU Latency</th><th>Paper Evidence</th></tr>
   <tr><td class="svc">DistilBERT-base-uncased</td><td>66M</td><td>~132 MB [12]</td><td>~85–230 ms</td><td>[1]: <strong>98.9%</strong> on email phishing. [3]: 98.1% + adversarial robustness. [5]: powers PhishingGNN (99.39%). [11]: Enhanced variant tested.</td></tr>
-  <tr><td>MobileBERT-uncased</td><td>25M</td><td>~25 MB</td><td>~62–390 ms</td><td>[2]: F1 0.96, 74 MB, 0.39s median. <strong>Smallest viable option.</strong></td></tr>
+  <tr><td>MobileBERT-uncased</td><td>25M</td><td>~25 MB</td><td>~62–390 ms</td><td>[2]: F1 0.96, 74 MB, 0.39s median <em>(website HTML domain, not email)</em>. <strong>Smallest viable option.</strong></td></tr>
   <tr><td>ALBERT-base-v2</td><td>12M</td><td>~15 MB</td><td>~80 ms</td><td>[15]: <strong>97.54%</strong> acc, AUC 0.9974. Best parameter efficiency.</td></tr>
-  <tr><td>ModernBERT-base</td><td>149M</td><td>~145 MB</td><td>~42 ms (FlashAttn)</td><td>[4]: <strong>99.99%</strong> with few-shot. 8K context. GeGLU, rotary embeddings. <strong>Requires GPU.</strong></td></tr>
+  <tr><td>ModernBERT-base</td><td>149M</td><td>~145 MB</td><td>~42 ms (FlashAttn)</td><td>[4]: <strong>99.9%</strong> with few-shot on <em>URL phishing</em>. 8K context. GeGLU, rotary embeddings. <strong>Requires GPU.</strong></td></tr>
   <tr><td>TinyBERT_6L_768D</td><td>67M</td><td>~65 MB</td><td>~78–95 ms</td><td>[2]: F1 0.84, 495 MB. [15]: 95.42% acc, AUC 0.992. <strong>Inferior to DistilBERT in all benchmarks.</strong></td></tr>
   <tr><td>RoBERTa-base</td><td>125M</td><td>~125 MB</td><td>~150 ms</td><td>[6]: 98.45% balanced accuracy. Larger than necessary for marginal gain.</td></tr>
 </table>
@@ -355,15 +355,15 @@
   <table class="compact-table">
     <tr><td>Accuracy evidence</td><td>[1]: 98.9% on balanced email corpus. [3]: 98.1% clean, 93.2% under 20% adversarial noise. [5]: 99.39% as feature extractor.</td></tr>
     <tr><td>Adversarial evidence</td><td>[3]: FGM+char-noise training boosts 20%-noise accuracy from 54.5% to 93.2%. Cross-domain from 67.6% to 95.7%. [11]: without adversarial training, 20% noise drops to 85% precision.</td></tr>
-    <tr><td>Quantization evidence</td><td>[12]: ONNX INT8 reduces 255 MB &rarr; 132 MB with ~0.98% clean accuracy drop. Adversarial robustness <em>improves</em> +18.68% post-quantization.</td></tr>
-    <tr><td>Deployment</td><td>[2]: 502 MB unquantized, 0.85s CPU. After ONNX INT8 [12]: ~132 MB, est. ~85–120 ms.</td></tr>
+    <tr><td>Quantization evidence</td><td>[12]: ONNX INT8 reduces 255 MB &rarr; 132 MB. DistilBERT-specific clean accuracy impact avg &asymp;0.17 pp across 3 sentiment benchmarks (paper-reported cross-model avg: 0.98%). Adversarial robustness improves +18.68% — but measured on <em>word-level</em> attacks on sentiment tasks; transfer to character-level phishing obfuscation unverified.</td></tr>
+    <tr><td>Deployment</td><td>[2]: 502 MB unquantized, 0.85s CPU <em>(website HTML domain — cross-domain hardware approximation)</em>. After ONNX INT8 [12]: ~132 MB, est. ~85–120 ms.</td></tr>
     <tr><td>Ecosystem</td><td>Most extensively benchmarked model for phishing email classification across [1][3][5][6][11]. Known failure modes documented.</td></tr>
   </table>
 </div>
 
 <div class="note">
   <strong>Fallback:</strong> <code>albert-base-v2</code> (12M params). [15]: 97.54% accuracy. ~15 MB ONNX INT8. ~80 ms CPU. If DistilBERT latency exceeds target.
-  &nbsp;|&nbsp; <strong>Stretch goal:</strong> <code>answerdotai/ModernBERT-base</code> (149M params). [4]: 99.99% few-shot. 8K context eliminates truncation. Requires GPU.
+  &nbsp;|&nbsp; <strong>Stretch goal:</strong> <code>answerdotai/ModernBERT-base</code> (149M params). [4]: 99.9% few-shot on URL phishing (not email; performance on email fine-tuning may differ). 8K context eliminates truncation. Requires GPU.
 </div>
 
 <h3>3.3 Multi-Task Architecture</h3>
@@ -403,7 +403,7 @@
 </div>
 
 <h3>3.5 Intent Taxonomy</h3>
-<p>Derived from [9]'s Phishing Codebook (inter-rater &kappa;=0.93) and [3]'s token attribution analysis showing which semantic categories drive classification decisions.</p>
+<p>Derived from [9]'s Phishing Codebook (inter-rater reliability: avg &kappa;=0.75 across all codes in exploratory phase; 0.93 in main coding phase on 10% sample; individual codes range 0.80–0.96) and [3]'s token attribution analysis showing which semantic categories drive classification decisions.</p>
 <table class="compact-table">
   <tr><th>#</th><th>Intent Label</th><th>Description</th><th>Codebook Ref</th></tr>
   <tr><td>0</td><td class="svc">credential_harvest</td><td>Request for login, password, PIN</td><td>[9]: Action-Specific</td></tr>
@@ -455,13 +455,13 @@
 <h3>4.2 Adversarial Training (FGM)</h3>
 <div class="note">
   <strong>Evidence:</strong> [3] Table 2 — proposed framework (FGM + char-noise) achieves <strong>93.2%</strong> accuracy at 20% char-level noise vs <strong>54.5%</strong> for baseline DistilBERT. A <strong>38.7 percentage-point improvement</strong>. Cross-domain on CEAS_08: 95.7% vs 67.6% baseline. [11] independently confirms: without adversarial training, DistilBERT drops to 85% precision at 20% noise.
-  <br><br>[12] adds that INT8 quantization itself provides +18.68% adversarial robustness improvement — complementary to FGM training.
+  <br><br>[12] reports that INT8 quantization provides +18.68% adversarial robustness improvement on <em>word-level synonym attacks in sentiment classification</em>. Whether this robustness transfers to character-level phishing obfuscation is an empirical question not addressed by [12].
 </div>
 
 <div class="pipeline-step">
   <div class="step-header">
     <div class="step-num">1</div>
-    <div class="step-content"><strong>Character-level noise augmentation</strong> — 30% of training samples, ~10% character corruption per selected sample. Operations: insertion, deletion, substitution (biased toward visually similar chars: o&rarr;0, l&rarr;1, a&rarr;@). Applied to raw text <em>before</em> tokenization. [3] &sect;3.2.2.</div>
+    <div class="step-content"><strong>Character-level noise augmentation</strong> — phishing samples at 30% apply probability and legitimate/spam at reduced 10% apply probability, with ~10% character corruption per selected sample. Operations: insertion, deletion, substitution (biased toward visually similar chars: o&rarr;0, l&rarr;1, a&rarr;@). Applied to raw text <em>before</em> tokenization to reduce shortcut learning of "noise =&gt; phishing". [3] &sect;3.2.2 + deployment robustness policy.</div>
   </div>
 </div>
 <div class="pipeline-step">
@@ -493,14 +493,14 @@
 <p>Applied ONLY to training set, ONLY after train/val/test split.</p>
 <table>
   <tr><th>Technique</th><th>Applied To</th><th>Ratio</th><th>Evidence</th></tr>
-  <tr><td class="svc">Adversarial character injection</td><td>30% of phishing train samples</td><td>1.0x (in-place on copies)</td><td>[3] &sect;3.2.2: char-level noise (insertion, deletion, substitution) at 10% corruption rate per sample.</td></tr>
+  <tr><td class="svc">Adversarial character injection</td><td>Phishing: 30%; legitimate/spam: 10% (apply probability)</td><td>1.0x (in-place on copies)</td><td>[3] &sect;3.2.2: char-level noise (insertion, deletion, substitution) at 10% corruption rate per selected sample. Reduced non-phishing rate is a robustness safeguard against spurious class-noise coupling.</td></tr>
   <tr><td class="svc">Synonym replacement</td><td>Phishing minority (if underrepresented)</td><td>1.3x</td><td>[6]: "synonym-replacement oversampling of the minority (phishing) class" to balance classes.</td></tr>
   <tr><td class="svc">Back-translation (EN&rarr;DE&rarr;EN)</td><td>Phishing minority</td><td>1.5x</td><td>Standard NLP augmentation. Preserves semantic content while varying surface form.</td></tr>
   <tr><td class="svc">LLM paraphrasing</td><td>Complex BEC phishing</td><td>1.2x</td><td>[8] PhishFuzzer: demonstrates LLM-seeded expansion with entity/length controls preserves intent.</td></tr>
 </table>
 
 <div class="note">
-  <strong>What NOT to augment:</strong> Do not apply random word deletion to email addresses, URLs, or domain names. Do not augment the legitimate class (inflates majority). Do not use synonym replacement on trigger words ("password", "verify", "urgent") — they ARE the signal. [3] Table 6: LIME identifies "your", "account", "identity", "unauthorized" as top phishing tokens.
+  <strong>What NOT to augment:</strong> Do not apply random word deletion to email addresses, URLs, or domain names. Do not use class-balancing semantic augmentations (synonym replacement/back-translation/paraphrase) on legitimate class. Do not use synonym replacement on trigger words ("password", "verify", "urgent") — they ARE the signal. [3] Table 6: LIME identifies "your", "account", "identity", "unauthorized" as top phishing tokens.
 </div>
 
 <h3>4.4 Cross-Validation Strategy</h3>
@@ -523,7 +523,7 @@
     <td>All 3 classes</td>
     <td>&ge; 0.88</td>
     <td>&ge; 0.82</td>
-    <td>[4]: MCC 0.998 (2-class). URL model spec uses MCC as primary metric. MCC accounts for all four confusion matrix quadrants.</td>
+    <td>[4]: MCC 0.998 (URL-domain few-shot, not email). URL model spec uses MCC as primary metric. MCC accounts for all four confusion matrix quadrants.</td>
   </tr>
   <tr>
     <td class="svc">Phishing Recall</td>
@@ -551,7 +551,7 @@
     <td>Single email</td>
     <td>&lt; 150 ms</td>
     <td>&lt; 200 ms</td>
-    <td>[2]: MobileBERT 0.39s CPU. [13]: &lt;500 ms on mobile after quantization. DistilBERT + ONNX INT8 est. ~85–120 ms.</td>
+    <td>[2]: MobileBERT 0.39s CPU <em>(website HTML domain)</em>. [13]: &lt;500 ms on mobile after quantization. DistilBERT + ONNX INT8 est. ~85–120 ms.</td>
   </tr>
   <tr>
     <td class="svc">ONNX Model Size</td>
@@ -629,7 +629,7 @@
   <tr><td>Adversarial obfuscation</td><td>Unicode tricks, homoglyphs</td><td><code>obfuscation_detected</code> flag</td><td>[3]: char-noise resilience; [11]: noise degradation quantified.</td></tr>
   <tr><td>Topic confusion</td><td>Legit email about security topics</td><td>FP analysis</td><td>[3] Table 6 Email 5: legit security alert classified as phishing.</td></tr>
   <tr><td>Subtle phishing (FN)</td><td>No explicit triggers, attachment-based</td><td>FN analysis</td><td>[3] Table 6 Email 6: "avoids explicit urgency, threats, or credential requests."</td></tr>
-  <tr><td>Non-English content</td><td>Non-English emails tokenized poorly</td><td>Per-language MCC</td><td>[2] &sect;5.4.1: 118 FN were non-English (Japanese 57, Spanish 36, German 18).</td></tr>
+  <tr><td>Non-English content</td><td>Non-English emails tokenized poorly</td><td>Per-language MCC</td><td>Non-English email tokenization is a documented DistilBERT limitation for multilingual inputs. [2] &sect;5.4.1 reports 118 FN on non-English content but in the <em>website HTML domain</em>, not email — quantification requires email-domain evaluation.</td></tr>
   <tr><td>Data quality</td><td>Mislabeled in source dataset</td><td>Per-dataset MCC</td><td>[7]: merging requires cleaning. 200-sample audit per class.</td></tr>
 </table>
 
@@ -648,7 +648,7 @@
 <!-- ============================================================ -->
 <h2 class="page-break">7. Explainability (XAI)</h2>
 
-<p>Following [3]'s systematic comparison of LIME, SHAP, and IG on adversarially trained DistilBERT, with natural-language explanations via Flan-T5.</p>
+<p>Following [3]'s systematic comparison of LIME, SHAP, and IG on adversarially trained DistilBERT, with natural-language explanations via Flan-T5. <strong>Note:</strong> [3]'s XAI evaluation and Table 6 FP/FN examples are from a <em>binary</em> (phishing/legitimate) classifier. CyberSiren uses a 3-class classifier; per-class LIME/SHAP attributions and confidence calibration behavior will differ. The attribution methodology transfers; the specific confidence values and error examples are binary-system benchmarks only.</p>
 
 <h3>7.1 Attribution Methods</h3>
 <table>
@@ -695,7 +695,7 @@
 <div class="pipeline-step">
   <div class="step-header">
     <div class="step-num">2</div>
-    <div class="step-content"><strong>Apply ONNX Runtime dynamic INT8 quantization</strong> — [12]: DistilBERT 255 MB &rarr; 132 MB. Clean accuracy drop ~0.98%. Adversarial robustness <em>improves</em> +18.68%. [13]: INT8 "minimal loss" confirmed on fraud detection.</div>
+    <div class="step-content"><strong>Apply ONNX Runtime dynamic INT8 quantization</strong> — [12]: DistilBERT 255 MB &rarr; 132 MB. DistilBERT-specific clean accuracy impact avg &asymp;0.17 pp on sentiment benchmarks (SST-2/Emotion/MR). [13]: INT8 and bnb4 show "minimal loss" on financial fraud detection. Size reduction is the primary confirmed benefit; accuracy impact on phishing requires post-training measurement.</div>
   </div>
 </div>
 <div class="pipeline-step">
@@ -793,7 +793,7 @@
   <tr>
     <td class="svc">Multi-task architecture</td>
     <td>Classification + intent + urgency on shared backbone. Additional params negligible vs 66M backbone.</td>
-    <td>[14]: "majority of multi-task models outperform single-task" in 28-study SLR. [9]: intent taxonomy validated at &kappa;=0.93.</td>
+    <td>[14]: "majority of multi-task models outperform single-task" in 28-study SLR. [9]: intent taxonomy validated (avg &kappa;=0.75 exploratory, 0.93 main coding; individual codes 0.80–0.96).</td>
   </tr>
   <tr>
     <td class="svc">Homoscedastic uncertainty weighting</td>
@@ -812,13 +812,13 @@
   </tr>
   <tr>
     <td class="svc">ONNX INT8 quantization</td>
-    <td>~48% size reduction. ~0.98% accuracy cost. Adversarial robustness <em>improves</em> +18.68%.</td>
-    <td>[12]: DistilBERT 255&rarr;132 MB. [13]: INT8 "minimal loss" on fraud detection, &lt;500ms mobile.</td>
+    <td>~48% size reduction. DistilBERT-specific clean accuracy impact avg &asymp;0.17 pp on sentiment benchmarks (paper cross-model avg: 0.98%). Adversarial robustness +18.68% on word-level attacks (transfer to char-level phishing unverified).</td>
+    <td>[12]: DistilBERT 255&rarr;132 MB (confirmed). [13]: INT8 and bnb4 "minimal loss" on fraud detection, &lt;500ms mobile. Primary INT8 evidence from [12]; [13] champion uses bnb4 (4-bit), not INT8.</td>
   </tr>
   <tr>
     <td class="svc">MCC as primary metric</td>
     <td>Accounts for all confusion matrix quadrants. F1 ignores TN. Accuracy treats all errors equally. Consistent with URL model spec.</td>
-    <td>[4]: MCC 0.998. URL-SPEC &sect;6.1 uses MCC. [1][15]: report accuracy + F1 + AUC but not MCC — we add it.</td>
+    <td>[4]: MCC 0.998 (URL-domain few-shot; not directly comparable to email fine-tuning). URL-SPEC &sect;6.1 uses MCC. [1][15]: report accuracy + F1 + AUC but not MCC — we add it.</td>
   </tr>
   <tr>
     <td class="svc">Head-Tail truncation (128+384)</td>
@@ -848,7 +848,7 @@
     <td>DistilBERT latency may exceed 200ms on some CPUs</td>
     <td>Deployment constraint</td>
     <td>Fallback to ALBERT (12M, ~80ms) [15]. Reduce max_len to 384.</td>
-    <td>[2]: DistilBERT 0.85s unoptimized. [12]: ONNX INT8 reduces latency.</td>
+    <td>[2]: DistilBERT 0.85s unoptimized <em>(website HTML domain)</em>. [12]: ONNX INT8 reduces size/latency.</td>
   </tr>
   <tr>
     <td>2</td>
@@ -862,7 +862,7 @@
     <td>English-only tokenizer on multilingual input</td>
     <td>Non-English emails tokenized poorly</td>
     <td>Language detection + preprocessing. Fallback to multilingual DistilBERT (134M).</td>
-    <td>[2] &sect;5.4.1: 118 FN were non-English. [5]: English-only limitation noted.</td>
+    <td>[2] &sect;5.4.1: 118 FN on non-English <em>web pages</em> (not emails). [5]: English-only limitation noted.</td>
   </tr>
   <tr>
     <td>4</td>
@@ -890,7 +890,7 @@
     <td>Subtle spear-phishing with "neutral tone" evades detection</td>
     <td>FN on sophisticated attacks</td>
     <td>Multi-modal analysis (URL + header + NLP combined in SVC-07 aggregator).</td>
-    <td>[3] Table 6 Email 6: FN at 0.71 confidence. [2] &sect;5.4.1: 25 subtle landing pages missed.</td>
+    <td>[3] Table 6 Email 6: FN at 0.71 confidence. (Note: [2] &sect;5.4.1 reports 25 subtle <em>landing pages</em> missed — web domain, not applicable to email.)</td>
   </tr>
 </table>
 
