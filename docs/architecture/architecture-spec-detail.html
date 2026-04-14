@@ -739,9 +739,9 @@
   <tr><td>SVC-01</td><td>Adapter fetch failure</td><td>Log error, retry on next poll cycle</td><td>Exponential backoff, max 3 retries per cycle</td><td>N/A (no score)</td></tr>
   <tr><td>SVC-01</td><td>Kafka publish failure</td><td>Retry with backoff, dead-letter after 5 attempts</td><td>1s, 2s, 4s, 8s, 16s</td><td>N/A</td></tr>
   <tr><td>SVC-02</td><td>MIME parse failure</td><td>Log error, publish with empty URLs/attachments, body_plain = raw text extraction attempt</td><td>No retry (deterministic failure)</td><td>N/A</td></tr>
-  <tr><td>SVC-03</td><td>WHOIS/SSL/DNS timeout (per URL)</td><td>Skip enrichment for that URL, use cached data or empty enrichment</td><td>3 retries, 2s timeout each</td><td>score = 50</td></tr>
-  <tr><td>SVC-03</td><td>XGBoost subprocess timeout (5s)</td><td>Return neutral score, log model timeout</td><td>No retry (latency-critical)</td><td>score = 50</td></tr>
-  <tr><td>SVC-03</td><td>XGBoost subprocess crash</td><td>Respawn process from pool, retry once</td><td>1 retry, then score = 50</td><td>score = 50</td></tr>
+  <tr><td>SVC-03</td><td>WHOIS/SSL/DNS timeout (per URL)</td><td><em>Target-state behavior.</em> Current code keeps enrichment as a TODO stub and does not execute this path yet.</td><td>Target-state: 3 retries, 2s timeout each</td><td>score = 50</td></tr>
+  <tr><td>SVC-03</td><td>URL-model subprocess timeout (5s)</td><td>Return neutral score, log model timeout</td><td>No retry (latency-critical)</td><td>score = 50</td></tr>
+  <tr><td>SVC-03</td><td>URL-model subprocess crash</td><td>Respawn process in pool asynchronously; current request returns neutral score</td><td>No synchronous retry of the same request</td><td>score = 50</td></tr>
   <tr><td>SVC-04</td><td>Rule evaluation error</td><td>Skip malformed rule, log, continue with remaining rules</td><td>No retry (skip rule)</td><td>Rule impact = 0</td></tr>
   <tr><td>SVC-05</td><td>VirusTotal API rate limit (429)</td><td>Use local hash lookup only, skip VT enrichment</td><td>Backoff until next rate window</td><td>Use local-only score</td></tr>
   <tr><td>SVC-06</td><td>NLP inference timeout (10s)</td><td>Return neutral score, flag partial_analysis</td><td>No retry (latency-critical)</td><td>score = 50</td></tr>

@@ -1,7 +1,7 @@
 # URL Analysis — Known Issues & Improvement Roadmap
 
 CyberSiren's URL analysis pipeline has three detection layers: **ML scoring**
-(LightGBM lexical model), **TI lookup** (Valkey domain cache fed by 4 threat
+(deployed XGBoost lexical model), **TI lookup** (Valkey domain cache fed by 4 threat
 feeds), and **enrichment** (currently a stub). This document covers known gaps in
 all three layers and a prioritised roadmap to address them.
 
@@ -25,7 +25,7 @@ all three layers and a prioritised roadmap to address them.
 ```
 POST /scan { url }
   │
-  ├─► ML Model (LightGBM, 28 lexical features)
+  ├─► ML Model (XGBoost, deployed feature schema from `ml/config.json`)
   │     └─► score: 0–100, probability: 0.0–1.0
   │
   ├─► TI Cache Lookup (Valkey HGETALL on exact normalised domain)
@@ -47,7 +47,7 @@ Verdict logic:
 
 ### Training Data
 
-The model is **LightGBM** (28 features, 300 estimators, max_depth=8) trained on
+The deployed model is **XGBoost** (feature schema loaded from `services/svc-03-url-analysis/ml/config.json`) trained on
 ~300K URLs from the PhiUSIIL dataset:
 
 - 164K phishing (54.8%) — PhishTank, OpenPhish, and aggregator feeds
