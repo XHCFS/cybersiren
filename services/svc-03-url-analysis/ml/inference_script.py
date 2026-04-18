@@ -293,7 +293,7 @@ def extract_features(url: str, config: dict) -> list:
     shortener_domains = {"bit.ly", "t.co", "tinyurl.com", "lnkd.in", "rb.gy", "tiny.cc", "is.gd", "ow.ly", "buff.ly", "cutt.ly"}
     f["is_shortener_domain"] = 1 if hostname in shortener_domains else 0
     is_local = hostname in {"localhost", "127.0.0.1", "::1"}
-    is_private_v4 = bool(re.match(r"^(10\\.|192\\.168\\.|172\\.(1[6-9]|2[0-9]|3[0-1])\\.)", hostname))
+    is_private_v4 = bool(re.match(r"^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[0-1])\.)", hostname))
     f["is_local_or_private_host"] = 1 if (is_local or is_private_v4) else 0
 
     # Return features in the exact order the model expects.

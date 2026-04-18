@@ -74,6 +74,10 @@ web/build/
 *.pid
 docker-data/
 
+# Python
+__pycache__/
+*.pyc
+
 # Temporary files
 tmp/
 temp/
