@@ -14,4 +14,7 @@ COPY python/svc-06-nlp/ ./
 ENV PORT=8001
 EXPOSE 8001
 
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
+    CMD python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:8001/healthz')" || exit 1
+
 ENTRYPOINT ["python", "app.py"]
