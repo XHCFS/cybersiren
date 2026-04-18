@@ -86,7 +86,11 @@
     page-break-before: always;
   }
 
-  .doc-wrapper:first-of-type {
+  /* The first doc after a section divider should NOT page-break — the divider
+     already carries the section break; breaking again would leave the header
+     alone on its own page.  Note: :first-of-type won't work here because
+     both .section-divider and .doc-wrapper are <div> elements. */
+  .section-divider + .doc-wrapper {
     page-break-before: avoid;
   }
 
@@ -152,7 +156,8 @@
 
   // Reconstruct a safe error label from known patterns; "network error" otherwise.
   function safeErrMsg(err) {
-    const m = err.message.match(/^(manifest\.json → )?HTTP (\d{3})$/);
+    const msg = typeof err?.message === 'string' ? err.message : String(err);
+    const m = msg.match(/^(manifest\.json → )?HTTP (\d{3})$/);
     return m ? `${m[1] || ''}HTTP ${m[2]}` : 'network error';
   }
 
@@ -215,28 +220,19 @@
       const parser = new DOMParser();
       const fetched = parser.parseFromString(html, 'text/html');
 
-      // Inject any <style> tags from the fetched doc's <head> into our <head>
-      // (deduplicates by content so identical boilerplate is only added once)
-      fetched.querySelectorAll('head style').forEach(style => {
-        const text = style.textContent.trim();
-        // Skip @page rules — we control the page layout from our own @page
-        const stripped = text.replace(/@page\s*\{[^}]*\}/g, '').trim();
-        if (!stripped) return;
-        // Check for duplicate
-        const existing = Array.from(document.head.querySelectorAll('style'));
-        const isDupe = existing.some(s => s.dataset.src === doc.file
-          ? false
-          : s.textContent.trim() === stripped);
-        if (!isDupe) {
-          const s = document.createElement('style');
-          s.dataset.src = doc.file;
-          s.textContent = stripped;
-          document.head.appendChild(s);
-        }
+      // Do not inject fetched document styles into the global <head>, because
+      // unscoped selectors (e.g. html, body, :root, *) can leak across the
+      // aggregated print page and break other documents.  Instead, rely on
+      // this page's shared stylesheet and strip any stylesheet nodes that may
+      // have been included in the fetched body content.
+      const bodyContent = document.createElement('div');
+      bodyContent.innerHTML = fetched.body.innerHTML;
+      bodyContent.querySelectorAll('style, link[rel="stylesheet"]').forEach(node => {
+        node.remove();
       });
 
       // Extract body content
-      wrapper.innerHTML = fetched.body.innerHTML;
+      wrapper.innerHTML = bodyContent.innerHTML;
 
     } catch (err) {
       const errP = document.createElement('p');
