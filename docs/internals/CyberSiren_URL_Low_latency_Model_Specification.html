@@ -376,7 +376,10 @@ The deployed artifact in <code>services/svc-03-url-analysis/ml/config.json</code
   <tr><td>StackingEnsemble</td><td>0.99817</td><td>0.99833</td><td>0.99631</td><td><strong>0.99936</strong></td><td>0.01090</td><td>0.00118</td><td><strong>0.00236</strong></td></tr>
 </table>
 
-<h3>7.2 Champion: XGBoost (deployed artifact)</h3>
+<h3>7.2 Champion Metrics (original training run)</h3>
+<div class="note">
+  The metrics below are from the original LightGBM training run that informed model selection. The deployed artifact is <strong>XGBoost</strong> (see <code>ml/config.json</code>); its leakage-free retrained metrics are in <code>ml/data/cybersiren_benchmark_results.csv</code>.
+</div>
 <div class="two-col">
   <div class="metric-block">
     <div class="metric-header">Classification Metrics</div>

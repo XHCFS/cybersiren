@@ -316,7 +316,7 @@ demo-build: check-docker check-compose-env
 	@echo "  Jaeger:      http://localhost:16686"
 	@echo ""
 
-## demo-all: Run ALL services with full observability stack.
+## demo-all: Run demo service bundle (svc-03 + svc-11) with full observability stack.
 ##           Uses cached images — fast on repeat runs. Force a rebuild with: make demo-all-build
 demo-all: check-docker check-compose-env
 	$(DOCKER_COMPOSE) --profile postgres --profile valkey \
