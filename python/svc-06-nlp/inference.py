@@ -224,7 +224,12 @@ class NLPInferenceEngine:
 
             opts = ort.SessionOptions()
             opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-            opts.intra_op_num_threads = os.cpu_count() or 1
+            # Allow override via env var; default: let ORT decide (0 = auto).
+            # Spec §8.2 recommends physical cores; logical cpu_count() can
+            # oversubscribe on hyperthreaded machines, so we default to auto.
+            opts.intra_op_num_threads = int(
+                os.environ.get("ORT_INTRA_OP_THREADS", "0")
+            )
             opts.inter_op_num_threads = 1
             opts.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
             opts.log_severity_level = 3  # suppress ORT verbose output
@@ -310,14 +315,32 @@ class NLPInferenceEngine:
 
         keep = self.max_length - 2  # content slots, excluding CLS + SEP
         if len(ids) > keep:
-            # Derive tail dynamically — mirrors notebook Cell 4 exactly:
-            #   tail = keep - head_tokens; ids = ids[:head_tokens] + ids[-tail:]
-            head = min(self.head_tokens, keep)
-            tail = keep - head
-            if tail > 0:
+            # Use configured head/tail tokens with validation.
+            # If they don't sum to keep, warn and adjust head to fill remainder.
+            configured_head = max(self.head_tokens, 0)
+            configured_tail = max(self.tail_tokens, 0)
+            if configured_head + configured_tail != keep:
+                logger.warning(
+                    "Configured head/tail token allocation (%d + %d) does not "
+                    "match available content slots (%d); adjusting head tokens "
+                    "to preserve configured tail tokens.",
+                    configured_head,
+                    configured_tail,
+                    keep,
+                )
+
+            tail = min(configured_tail, keep)
+            head = min(configured_head, keep - tail)
+            head += keep - (head + tail)  # absorb any remaining slots
+
+            if head > 0 and tail > 0:
                 ids = ids[:head] + ids[-tail:]
+            elif head > 0:
+                ids = ids[:head]
+            elif tail > 0:
+                ids = ids[-tail:]
             else:
-                ids = ids[:keep]
+                ids = []
 
         input_ids = [cls_id] + ids + [sep_id]
         return {
@@ -409,8 +432,12 @@ class NLPInferenceEngine:
             classification = "legitimate"
             confidence = float(probs[0])
 
-        # 6. content_risk_score = round(phishing_probability * 100) (spec §8.3)
-        content_risk_score = round(phish_prob * 100)
+        # 6. Round probabilities first, then derive content_risk_score from the
+        #    rounded phishing_probability so the response is self-consistent
+        #    (spec §8.3: content_risk_score == round(phishing_probability * 100)).
+        phish_prob_rounded = round(phish_prob, 4)
+        spam_prob_rounded = round(spam_prob, 4)
+        content_risk_score = round(phish_prob_rounded * 100)
 
         # 7. Intent + urgency (rule-based best effort)
         intent_labels = self._detect_intent(text, classification)
@@ -419,8 +446,8 @@ class NLPInferenceEngine:
         return {
             "classification": classification,
             "confidence": round(confidence, 4),
-            "phishing_probability": round(phish_prob, 4),
-            "spam_probability": round(spam_prob, 4),
+            "phishing_probability": phish_prob_rounded,
+            "spam_probability": spam_prob_rounded,
             "content_risk_score": content_risk_score,
             "intent_labels": intent_labels,
             "urgency_score": urgency_score,

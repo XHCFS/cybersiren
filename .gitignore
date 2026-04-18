@@ -82,3 +82,4 @@ docker-data/
 # Temporary files
 tmp/
 temp/
+.pytest_cache/

@@ -86,9 +86,14 @@ class PredictResponse(BaseModel):
 
 @app.get("/healthz")
 def health():
+    if engine is None or not engine.model_ready:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="NLP model is not loaded.",
+        )
     return {
         "status": "ok",
-        "model_ready": engine.model_ready if engine is not None else False,
+        "model_ready": True,
     }
 
 

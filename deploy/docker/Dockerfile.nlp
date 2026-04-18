@@ -15,6 +15,6 @@ ENV PORT=8001
 EXPOSE 8001
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
-    CMD python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:8001/healthz')" || exit 1
+    CMD python3 -c "import json, sys, urllib.request; response = urllib.request.urlopen('http://localhost:8001/healthz'); payload = json.load(response); sys.exit(0 if payload.get('model_ready') is True else 1)" || exit 1
 
 ENTRYPOINT ["python", "app.py"]
