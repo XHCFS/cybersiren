@@ -308,7 +308,7 @@
 <h2 class="page-break">5. Feature Importance — Measured from Champion Model</h2>
 
 <div class="note">
-  <strong>Method:</strong> deployed champion model <code>feature_importances_</code> attribute (XGBoost artifact in <code>config.json</code>). Values are split/importance scores across trees.
+  <strong>Method:</strong> deployed champion model <code>feature_importances_</code> attribute (model artifact in <code>ml/model.joblib</code>; configuration/metadata in <code>config.json</code>). Values are split/importance scores across trees.
 </div>
 
 <table>
@@ -452,14 +452,16 @@ The deployed artifact in <code>services/svc-03-url-analysis/ml/config.json</code
   </div>
 </div>
 
-<h3>8.2 Confidence-Gated Routing</h3>
+<h3>8.2 Classification Logic (<code>/scan</code> endpoint)</h3>
 <div class="note">
-  Runtime routing is guardrail-based. SVC-03 routes to enrichment only when <code>probability &gt;= 0.85</code> and the structural-shortcut guardrail conditions are met in <code>inference_script.py</code>.
+  The Python subprocess (<code>inference_script.py</code>) returns <code>score</code> (0–100) and <code>probability</code> (0.0–1.0). The Go <code>/scan</code> handler in <code>main.go</code> combines the ML score with a TI (threat-intelligence) lookup via <code>classifyLabel(mlScore, tiResult)</code>. Enrichment routing is target-state behavior (enricher is a TODO stub).
 </div>
-<table style="width:600px;">
-  <tr><th>Probability</th><th>Risk Level</th><th>SVC-03 Action</th></tr>
-  <tr><td>0.85 – 1.00</td><td class="svc">HIGH</td><td>Label phishing unless the structural-shortcut guardrail routes to enrichment.</td></tr>
-  <tr><td>0.00 – 0.85</td><td class="svc">LOW/MEDIUM</td><td>No stage-B routing from probability band alone; pass-through unless separate service logic marks suspicious.</td></tr>
+<table style="width:700px;">
+  <tr><th>Condition</th><th>Label</th><th>Source</th></tr>
+  <tr><td>TI matched &amp; <code>ti_risk_score &gt;= 80</code></td><td class="svc">phishing</td><td>Threat-intelligence feed match (checked first)</td></tr>
+  <tr><td><code>ml_score &gt;= 70</code></td><td class="svc">phishing</td><td>ML probability × 100, rounded</td></tr>
+  <tr><td><code>ml_score &gt;= 40</code></td><td class="svc">suspicious</td><td>ML probability × 100, rounded</td></tr>
+  <tr><td><code>ml_score &lt; 40</code></td><td class="svc">legitimate</td><td>Default when no other condition triggers</td></tr>
 </table>
 
 <h3>8.3 Exported Artifacts</h3>
@@ -477,7 +479,7 @@ The deployed artifact in <code>services/svc-03-url-analysis/ml/config.json</code
 <table>
   <tr><th>Decision</th><th>Rationale</th></tr>
   <tr><td class="svc">URL-only features</td><td>[2] deliberately excluded content features "to optimize speed and responsiveness." [5] §3.1.2: URL features have high potential but cannot be sole defense — hence two-tier architecture. Content features reserved for enrichment path.</td></tr>
-  <tr><td class="svc">Deployed artifact lock</td><td>Service runtime follows the artifact declared in <code>ml/config.json</code>. Current deployed champion is XGBoost with threshold 0.85 and stage-B structural-shortcut routing.</td></tr>
+  <tr><td class="svc">Deployed artifact lock</td><td>Service runtime follows the artifact declared in <code>ml/config.json</code>. Current deployed champion is XGBoost with threshold 0.85. Structural-shortcut stage-B routing is target-state behavior and is not part of the current <code>svc-03</code> runtime.</td></tr>
   <tr><td class="svc">MCC for ranking</td><td>[5] uses MCC as primary metric (Eq. 7). Accounts for all four confusion matrix quadrants. F1 ignores TN. Accuracy treats all errors equally. With 45/55 class split, MCC is most informative.</td></tr>
   <tr><td class="svc">Strict hostname IP detection</td><td>Original regex matched against full URL string. False positive on <code>http://192.168.1.1.example.com</code>. Fix: anchored regex on parsed hostname only. Also guards TLD/domain/subdomain fallback parsers from treating IP octets as TLD components.</td></tr>
   <tr><td class="svc">Raw delimiter query counting</td><td><code>parse_qs</code> groups duplicate keys. <code>?id=1&amp;id=2&amp;id=3</code> returns length 1. [1] feature #11 counts total components. Raw <code>'&amp;'</code> counting preserves this intent.</td></tr>
