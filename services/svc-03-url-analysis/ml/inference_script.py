@@ -28,11 +28,13 @@ the Kaggle training notebook. This guarantees exact feature parity
 with the model's training data — no Go↔Python drift.
 """
 
+import ipaddress
 import json
 import math
 import os
 import re
 import sys
+import tempfile
 import warnings
 from collections import Counter
 from urllib.parse import urlparse
@@ -40,11 +42,12 @@ from urllib.parse import urlparse
 import joblib
 import numpy as np
 
-# Keep tldextract cache local to the model directory to avoid filesystem
-# permission issues in restricted runtimes/tests.
+# Keep tldextract cache in a temp directory to avoid filesystem permission
+# issues when the script directory (or MODEL_DIR) is read-only.
 if "TLDEXTRACT_CACHE" not in os.environ:
-    _script_dir = os.path.dirname(os.path.abspath(__file__))
-    os.environ["TLDEXTRACT_CACHE"] = os.path.join(_script_dir, ".tldextract-cache")
+    _tld_cache_dir = os.path.join(tempfile.gettempdir(), "cybersiren-tldextract-cache")
+    os.makedirs(_tld_cache_dir, exist_ok=True)
+    os.environ["TLDEXTRACT_CACHE"] = _tld_cache_dir
 
 # Suppress sklearn version mismatch warnings (model trained on slightly
 # different sklearn version — predictions are unaffected).
@@ -54,6 +57,14 @@ warnings.filterwarnings("ignore", category=UserWarning, module="sklearn")
 # suffix_list_urls=() disables HTTP fetching.
 import tldextract as _tldextract
 _tldextract_cache = _tldextract.TLDExtract(suffix_list_urls=())
+
+# Shared constants — defined once to avoid drift between extract_features()
+# and route_to_enrichment().
+SHORTENER_DOMAINS = frozenset({
+    "bit.ly", "t.co", "tinyurl.com", "lnkd.in", "rb.gy",
+    "tiny.cc", "is.gd", "ow.ly", "buff.ly", "cutt.ly",
+})
+LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -290,11 +301,14 @@ def extract_features(url: str, config: dict) -> list:
     # top-1M (e.g. "gemini.google.com") but the registered domain IS ("google.com").
     reg_domain = (domain + "." + tld).lower() if domain and tld else ""
     f["registered_domain_top1m"] = 1 if (reg_domain and reg_domain in top1m_full_domains) else 0
-    shortener_domains = {"bit.ly", "t.co", "tinyurl.com", "lnkd.in", "rb.gy", "tiny.cc", "is.gd", "ow.ly", "buff.ly", "cutt.ly"}
-    f["is_shortener_domain"] = 1 if hostname in shortener_domains else 0
-    is_local = hostname in {"localhost", "127.0.0.1", "::1"}
-    is_private_v4 = bool(re.match(r"^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[0-1])\.)", hostname))
-    f["is_local_or_private_host"] = 1 if (is_local or is_private_v4) else 0
+    f["is_shortener_domain"] = 1 if hostname in SHORTENER_DOMAINS else 0
+    is_local = hostname in LOCAL_HOSTS
+    is_private_ip = False
+    try:
+        is_private_ip = ipaddress.ip_address(hostname).is_private
+    except ValueError:
+        pass  # hostname is not an IP address — skip
+    f["is_local_or_private_host"] = 1 if (is_local or is_private_ip) else 0
 
     # Return features in the exact order the model expects.
     feature_names = config["feature_names"]
@@ -326,9 +340,8 @@ def route_to_enrichment(prob: float, threshold: float, features: dict, raw_url: 
     except Exception:
         host = ""
 
-    known_shorteners = {"bit.ly", "t.co", "tinyurl.com", "lnkd.in", "rb.gy", "tiny.cc", "is.gd", "ow.ly", "buff.ly", "cutt.ly"}
-    is_known_shortener = features.get("is_shortener_domain", 0) == 1 or host in known_shorteners
-    is_local_or_private = features.get("is_local_or_private_host", 0) == 1 or host in {"localhost", "127.0.0.1", "::1"}
+    is_known_shortener = features.get("is_shortener_domain", 0) == 1 or host in SHORTENER_DOMAINS
+    is_local_or_private = features.get("is_local_or_private_host", 0) == 1 or host in LOCAL_HOSTS
     path = (_u.path or "").lower() if host else ""
     benign_path_tokens = {"dashboard", "home", "portal", "docs", "api", "users", "projects", "settings", "news"}
     path_tokens = {tok for tok in re.split(r"[^a-z0-9]+", path) if tok}
