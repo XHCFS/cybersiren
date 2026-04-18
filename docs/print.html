@@ -150,6 +150,12 @@
   const content = document.getElementById('content');
   const btn     = document.getElementById('print-btn');
 
+  // Reconstruct a safe error label from known patterns; "network error" otherwise.
+  function safeErrMsg(err) {
+    const m = err.message.match(/^(manifest\.json → )?HTTP (\d{3})$/);
+    return m ? `${m[1] || ''}HTTP ${m[2]}` : 'network error';
+  }
+
   // ── 1. Load manifest ────────────────────────────────────────────────────
   let manifest;
   try {
@@ -157,7 +163,7 @@
     if (!res.ok) throw new Error(`manifest.json → HTTP ${res.status}`);
     manifest = await res.json();
   } catch (err) {
-    status.textContent = `Failed to load manifest.json: ${err.message}`;
+    status.textContent = `Failed to load manifest.json: ${safeErrMsg(err)}`;
     status.className = 'error';
     return;
   }
@@ -237,7 +243,7 @@
       errP.style.cssText = 'color:#c00;font-weight:700;';
       const code = document.createElement('code');
       code.textContent = doc.file;
-      errP.append('Failed to load ', code, ': ' + err.message);
+      errP.append('Failed to load ', code, ': ' + safeErrMsg(err));
       wrapper.appendChild(errP);
     }
 
