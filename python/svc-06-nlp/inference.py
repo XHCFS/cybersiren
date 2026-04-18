@@ -312,8 +312,12 @@ class NLPInferenceEngine:
         if len(ids) > keep:
             # Derive tail dynamically — mirrors notebook Cell 4 exactly:
             #   tail = keep - head_tokens; ids = ids[:head_tokens] + ids[-tail:]
-            tail = keep - self.head_tokens
-            ids = ids[: self.head_tokens] + ids[-tail:]
+            head = min(self.head_tokens, keep)
+            tail = keep - head
+            if tail > 0:
+                ids = ids[:head] + ids[-tail:]
+            else:
+                ids = ids[:keep]
 
         input_ids = [cls_id] + ids + [sep_id]
         return {
