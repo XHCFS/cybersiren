@@ -233,9 +233,12 @@
       wrapper.innerHTML = fetched.body.innerHTML;
 
     } catch (err) {
-      wrapper.innerHTML = `<p style="color:#c00;font-weight:700;">
-        Failed to load <code>${doc.file}</code>: ${err.message}
-      </p>`;
+      const errP = document.createElement('p');
+      errP.style.cssText = 'color:#c00;font-weight:700;';
+      const code = document.createElement('code');
+      code.textContent = doc.file;
+      errP.append('Failed to load ', code, ': ' + err.message);
+      wrapper.appendChild(errP);
     }
 
     fragment.appendChild(wrapper);
@@ -247,8 +250,8 @@
   status.style.display = 'none';
   btn.style.display = 'block';
 
-  // If opened from the index button, auto-trigger print immediately
-  if (window.opener) {
+  // If opened from the index button with ?autoprint, trigger print immediately
+  if (new URLSearchParams(window.location.search).has('autoprint')) {
     window.print();
   }
 })();
