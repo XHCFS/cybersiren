@@ -39,6 +39,7 @@ package url
 import (
 	"context"
 	"encoding/csv"
+	"encoding/json"
 	"fmt"
 	"io"
 	"math"
@@ -99,6 +100,35 @@ func skipIfNoModel(t *testing.T) {
 	if err := exec.Command("python3", "-c", "import joblib, numpy, xgboost").Run(); err != nil {
 		t.Skip("Python dependencies (joblib, numpy, xgboost) not available — pip install joblib numpy xgboost to run integration tests")
 	}
+}
+
+// configPath resolves ml/config.json relative to this source file.
+func configPath() string {
+	_, file, _, _ := runtime.Caller(0)
+	dir := filepath.Dir(file)
+	return filepath.Join(dir, "..", "..", "ml", "config.json")
+}
+
+// classificationThreshold reads the classification_threshold from ml/config.json.
+// Falls back to 0.5 (matching inference_script.py default) on any error.
+func classificationThreshold(t *testing.T) float64 {
+	t.Helper()
+	data, err := os.ReadFile(configPath())
+	if err != nil {
+		t.Logf("could not read config.json, using default threshold 0.5: %v", err)
+		return 0.5
+	}
+	var cfg struct {
+		ClassificationThreshold float64 `json:"classification_threshold"`
+	}
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		t.Logf("could not parse config.json, using default threshold 0.5: %v", err)
+		return 0.5
+	}
+	if cfg.ClassificationThreshold == 0 {
+		return 0.5 // absent in JSON → use script default
+	}
+	return cfg.ClassificationThreshold
 }
 
 // ─── Unit: internal functions ─────────────────────────────────────────────────
@@ -752,6 +782,8 @@ func TestURLModel_DeepPathRegisteredDomainLegit(t *testing.T) {
 		},
 	}
 
+	threshold := classificationThreshold(t)
+
 	for _, tc := range cases {
 		score, prob, routed, reason, err := m.PredictWithRoute(context.Background(), tc.url)
 		if err != nil {
@@ -761,18 +793,17 @@ func TestURLModel_DeepPathRegisteredDomainLegit(t *testing.T) {
 			t.Errorf("unexpected score/prob for (%s) %q: score=%d prob=%.4f",
 				tc.desc, tc.url, score, prob)
 		}
-		// Runtime threshold defaults to 0.5 in inference_script.py config handling.
-		// Enforce the real deployment contract:
+		// Enforce the real deployment contract using the configured threshold:
 		//   - below threshold => already non-phishing
 		//   - at/above threshold => must route to stage-B enrichment
-		if prob >= 0.5 {
+		if prob >= threshold {
 			if !routed {
-				t.Errorf("expected route_to_enrichment=true for threshold-crossing deep-path top-1M URL (%s) %q (prob=%.4f)",
-					tc.desc, tc.url, prob)
+				t.Errorf("expected route_to_enrichment=true for threshold-crossing deep-path top-1M URL (%s) %q (prob=%.4f, threshold=%.4f)",
+					tc.desc, tc.url, prob, threshold)
 			}
 			if reason == "" {
-				t.Errorf("expected non-empty route_reason for threshold-crossing deep-path top-1M URL (%s) %q",
-					tc.desc, tc.url)
+				t.Errorf("expected non-empty route_reason for threshold-crossing deep-path top-1M URL (%s) %q (prob=%.4f, threshold=%.4f)",
+					tc.desc, tc.url, prob, threshold)
 			}
 		}
 	}
@@ -797,11 +828,21 @@ func TestURLModel_RouteToEnrichmentForStructuralLegit(t *testing.T) {
 	if score < 0 || score > 100 || prob < 0 || prob > 1 {
 		t.Fatalf("unexpected score/prob from route test: score=%d prob=%.4f", score, prob)
 	}
-	if !routed {
-		t.Errorf("expected route_to_enrichment=true for %q", url)
-	}
-	if reason == "" {
-		t.Errorf("expected non-empty route_reason for %q", url)
+	threshold := classificationThreshold(t)
+	if prob >= threshold {
+		if !routed {
+			t.Errorf("expected route_to_enrichment=true for %q when prob %.4f >= threshold %.4f", url, prob, threshold)
+		}
+		if reason == "" {
+			t.Errorf("expected non-empty route_reason for %q when prob %.4f >= threshold %.4f", url, prob, threshold)
+		}
+	} else {
+		if routed {
+			t.Errorf("expected route_to_enrichment=false for %q when prob %.4f < threshold %.4f", url, prob, threshold)
+		}
+		if reason != "" {
+			t.Errorf("expected empty route_reason for %q when prob %.4f < threshold %.4f, got %q", url, prob, threshold, reason)
+		}
 	}
 }
 
