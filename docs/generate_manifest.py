@@ -33,7 +33,7 @@ EXCLUDE_FOLDERS = {
 def extract_title(path: Path) -> str:
     """Pull <title> or first <h1> text from an HTML file."""
     try:
-        text = path.read_text(errors="replace")
+        text = path.read_text(encoding="utf-8", errors="replace")
         m = re.search(r"<title[^>]*>([^<]+)</title>", text, re.I)
         if m:
             return m.group(1).strip()
