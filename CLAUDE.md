@@ -94,7 +94,7 @@ All services import from these shared packages:
 **URL Model (XGBoost):** Go spawns Python subprocesses (process pool) for inference.
 - 30 active features, JSON on stdin/stdout, 5-second timeout
 - Process pool size configurable (default: 3)
-- `CYBERSIREN_ML__URL_MODEL_PATH` points to the inference script path (for example: `./ml/inference_script.py`)
+- `CYBERSIREN_ML__URL_MODEL_PATH` points to the inference script path (for local runs from repo root: `./services/svc-03-url-analysis/ml/inference_script.py`; in-container: `/app/ml/inference_script.py`)
 - Model binary: `services/svc-03-url-analysis/ml/model.joblib` (loaded by the Python script)
 - Fallback: default risk score of 50 on failure (never hard-fail)
 
