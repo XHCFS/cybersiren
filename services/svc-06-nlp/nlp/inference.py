@@ -407,7 +407,7 @@ class NLPInferenceEngine:
         ]
 
         if not matched:
-            matched = ["marketing_spam"] if classification == "spam" else ["credential_harvest"]
+            matched = ["credential_harvest"]
 
         return matched
 
@@ -450,31 +450,29 @@ class NLPInferenceEngine:
 
         # 4. Temperature scaling + softmax (notebook Cell 11)
         probs = self._softmax(logits / self.temperature)
-        phish_prob = float(probs[2])
-        spam_prob = float(probs[1])
+        leg_prob = float(probs[0])
+        # The model has 3 output classes (legitimate / spam / phishing) but the
+        # INT8-quantised checkpoint mis-routes most phishing samples into the
+        # "spam" bucket, making "spam" indistinguishable from "phishing" at
+        # inference time. Until a calibrated checkpoint exists, we collapse
+        # spam + phishing into a single "phishing" verdict by summing their
+        # probabilities. This is mathematically equivalent to argmax over
+        # (legitimate, ¬legitimate) and is a strictly post-hoc transform —
+        # the model weights are unchanged.
+        threat_prob = float(probs[1]) + float(probs[2])
 
-        # 5. Classification — phishing threshold applied first (spec §5.4).
-        #    Threshold optimised in notebook Cell 11 to achieve recall >= 0.96.
-        #    When below threshold, decide between spam (1) and legitimate (0)
-        #    by comparing their probabilities directly — mirrors the sweep logic:
-        #      np.where(probs[:, 2] > thr, 2,
-        #               np.where(probs[:, 1] > probs[:, 0], 1, 0))
-        #    Using strict > to match the notebook's sweep operator.
-        if phish_prob > self.phish_threshold:
+        # 5. Two-class decision: legitimate vs phishing.
+        if threat_prob > leg_prob:
             classification = "phishing"
-            confidence = phish_prob
-        elif spam_prob > float(probs[0]):
-            classification = "spam"
-            confidence = spam_prob
+            confidence = threat_prob
         else:
             classification = "legitimate"
-            confidence = float(probs[0])
+            confidence = leg_prob
 
         # 6. Round probabilities first, then derive content_risk_score from the
         #    rounded phishing_probability so the response is self-consistent
         #    (spec §8.3: content_risk_score == round(phishing_probability * 100)).
-        phish_prob_rounded = round(phish_prob, 4)
-        spam_prob_rounded = round(spam_prob, 4)
+        phish_prob_rounded = round(threat_prob, 4)
         content_risk_score = round(phish_prob_rounded * 100)
 
         # 7. Intent + urgency (rule-based best effort)
@@ -485,7 +483,6 @@ class NLPInferenceEngine:
             "classification": classification,
             "confidence": round(confidence, 4),
             "phishing_probability": phish_prob_rounded,
-            "spam_probability": spam_prob_rounded,
             "content_risk_score": content_risk_score,
             "intent_labels": intent_labels,
             "urgency_score": urgency_score,

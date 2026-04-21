@@ -32,11 +32,15 @@ type TokenScore struct {
 }
 
 // PredictResponse mirrors the Python PredictResponse model (spec §8.3).
+//
+// NOTE: the underlying model has a 3-class head, but spam+phishing logits
+// are collapsed post-hoc into a single "phishing" verdict because the INT8
+// checkpoint is poorly calibrated between those two classes. Only
+// "phishing" and "legitimate" are returned.
 type PredictResponse struct {
-	Classification      string       `json:"classification"`       // "phishing" | "spam" | "legitimate"
+	Classification      string       `json:"classification"`       // "phishing" | "legitimate"
 	Confidence          float64      `json:"confidence"`           // 0.0 – 1.0
 	PhishingProbability float64      `json:"phishing_probability"` // 0.0 – 1.0
-	SpamProbability     float64      `json:"spam_probability"`     // 0.0 – 1.0
 	ContentRiskScore    int          `json:"content_risk_score"`   // 0 – 100
 	IntentLabels        []string     `json:"intent_labels"`
 	UrgencyScore        float64      `json:"urgency_score"`        // 0.0 – 1.0
@@ -129,7 +133,17 @@ func (c *Client) Predict(ctx context.Context, req PredictRequest) (*PredictRespo
 		return nil, 0, fmt.Errorf("nlp service unreachable: %w", err)
 	}
 
-	c.requestsTotal.WithLabelValues(resp.Classification).Inc()
+	// Whitelist classification label to bound Prometheus cardinality.
+	// Python should only return one of these two values; anything
+	// else gets bucketed as "unknown" instead of creating new series.
+	classification := resp.Classification
+	switch classification {
+	case "phishing", "legitimate":
+		// pass-through
+	default:
+		classification = "unknown"
+	}
+	c.requestsTotal.WithLabelValues(classification).Inc()
 	span.SetAttributes(
 		attribute.String("nlp.classification", resp.Classification),
 		attribute.Float64("nlp.confidence", resp.Confidence),
