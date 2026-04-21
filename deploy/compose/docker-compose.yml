@@ -154,7 +154,7 @@ services:
   # Runs automatically when any service profile is activated.
   demo-seed:
     image: postgres:15-alpine
-    profiles: ["demo", "svc-03", "svc-11"]
+    profiles: ["demo", "svc-03", "svc-06", "svc-11"]
     depends_on:
       postgres:
         condition: service_healthy

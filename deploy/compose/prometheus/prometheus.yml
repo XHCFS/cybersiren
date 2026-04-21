@@ -15,6 +15,9 @@ scrape_configs:
   - job_name: "cybersiren-services"
     scrape_timeout: 5s
     static_configs:
+      - targets: ["svc-06-nlp:9090"]
+        labels:
+          service: "svc-06-nlp"
       - targets: ["svc-03-url-analysis:9090"]
         labels:
           service: "svc-03-url-analysis"
