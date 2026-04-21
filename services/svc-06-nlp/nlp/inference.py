@@ -246,21 +246,27 @@ class NLPInferenceEngine:
             # Save the optimized graph so subsequent starts skip re-optimization
             # (~60-130s on first run → ~5-15s on subsequent runs).
             cache_path = model_path.parent / "model_int8_opt.onnx"
-            opts.optimized_model_filepath = str(cache_path)
 
             if cache_path.exists():
+                # Load from the pre-optimized cache directly. Don't set
+                # optimized_model_filepath when loading an already-optimized
+                # graph, otherwise ORT may re-write it and trigger optimization.
                 self.loading_stage = "loading_cached_onnx"
                 logger.info("Loading pre-optimized ONNX graph from cache: %s", cache_path)
+                load_path = cache_path
             else:
+                # First run: load original model, write optimized cache for next time.
+                opts.optimized_model_filepath = str(cache_path)
                 self.loading_stage = "loading_onnx"
                 logger.info(
                     "First run: loading + optimizing ONNX graph (this takes 60-130s; "
                     "result is cached at %s for faster subsequent starts)", cache_path
                 )
+                load_path = model_path
             self.loading_progress_pct = 45
 
             self.session = ort.InferenceSession(
-                str(model_path),
+                str(load_path),
                 sess_options=opts,
                 providers=["CPUExecutionProvider"],
             )
@@ -276,19 +282,23 @@ class NLPInferenceEngine:
                 {"input_ids": dummy_ids, "attention_mask": dummy_mask},
             )
 
-            self.model_ready = True
+            # Set model_ready LAST so /predict can never see model_ready=True
+            # with a None session (race protection).
             self.loading_stage = "ready"
             self.loading_progress_pct = 100
+            self.model_ready = True
             logger.info(
                 "ONNX model loaded: %s (%.1f MB)",
-                model_path,
-                file_size / 1e6,
+                load_path,
+                load_path.stat().st_size / 1e6,
             )
         except Exception as exc:
             self.loading_stage = "error"
             logger.error("ONNX model load failed: %s", exc)
-            self.session = None
+            # Clear ready flag BEFORE clearing session so /predict's check
+            # (model_ready) gates access to session correctly.
             self.model_ready = False
+            self.session = None
 
     # ── Preprocessing (spec §2.4) ─────────────────────────────────────────
 
@@ -430,7 +440,7 @@ class NLPInferenceEngine:
 
         Raises RuntimeError if the model has not been loaded successfully.
         """
-        if not self.model_ready:
+        if not self.model_ready or self.session is None:
             raise RuntimeError(
                 "Model not ready — onnx/model_int8.onnx is a placeholder. "
                 "Replace it with cybersiren_nlp_out/onnx/model_int8.onnx and restart."

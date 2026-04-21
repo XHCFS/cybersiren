@@ -299,7 +299,7 @@ NLP_MODEL := services/svc-06-nlp/nlp/onnx/model_int8.onnx
 
 ## check-nlp-model: Ensure the NLP ONNX model is present; pulls via Git LFS if missing.
 check-nlp-model:
-	@size=$$(stat -c%s "$(NLP_MODEL)" 2>/dev/null || echo 0); \
+	@size=$$(wc -c < "$(NLP_MODEL)" 2>/dev/null || echo 0); \
 	if [ "$$size" -lt 1000000 ]; then \
 	    echo "  [svc-06] ONNX model missing — pulling via Git LFS (this downloads ~64 MB)..."; \
 	    git lfs pull --include="$(NLP_MODEL)"; \
