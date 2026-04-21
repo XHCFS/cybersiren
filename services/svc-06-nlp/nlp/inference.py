@@ -398,8 +398,6 @@ class NLPInferenceEngine:
 
         # 1. Preprocess (spec §2.4 + §3.6)
         text, obfuscation_detected = self._preprocess(subject, body_plain, body_html)
-
-        # 2. Head-tail tokenise (notebook Cell 4)
         encoded = self._head_tail_encode(text)
         input_ids = np.array([encoded["input_ids"]], dtype=np.int64)
         attention_mask = np.array([encoded["attention_mask"]], dtype=np.int64)
