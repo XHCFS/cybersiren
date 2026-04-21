@@ -1,20 +1,45 @@
 # ── svc-06-nlp ───────────────────────────────────────────────────────────────
-# NLP-based email text analysis service (Python).
-# Source code lives in python/svc-06-nlp/.
+# NLP email analysis service.
+# Stage 1 builds the Go HTTP wrapper binary.
+# Stage 2 bundles it with the Python NLP inference service (DistilBERT ONNX)
+# so both run in a single container — the same pattern as svc-03-url-analysis.
+# DEMO ONLY: open http://localhost:8086 after `make demo svc=svc-06-nlp`.
 
+# Stage 1: Go builder
+FROM golang:1.25-alpine AS builder
+WORKDIR /app
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" \
+    -o /bin/service ./services/svc-06-nlp/cmd/nlp/
+
+# Stage 2: Python runtime + Go binary
 FROM python:3.12-slim
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates tzdata \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-COPY python/svc-06-nlp/requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
+COPY services/svc-06-nlp/nlp/requirements.txt ./nlp/
+RUN pip install --no-cache-dir -r nlp/requirements.txt
 
-COPY python/svc-06-nlp/ ./
+COPY --from=builder /bin/service /bin/service
+COPY services/svc-06-nlp/nlp/ ./nlp/
+COPY services/svc-06-nlp/static/ ./static/
+COPY services/svc-06-nlp/entrypoint.sh ./entrypoint.sh
+
+RUN chmod +x /app/entrypoint.sh
 
 ENV PORT=8001
-EXPOSE 8001
+ENV CYBERSIREN_ML__NLP_SERVICE_URL=http://localhost:8001
+ENV CYBERSIREN_SERVER__PORT=8086
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
-    CMD python3 -c "import json, sys, urllib.request; response = urllib.request.urlopen('http://localhost:8001/healthz'); payload = json.load(response); sys.exit(0 if payload.get('model_ready') is True else 1)" || exit 1
+EXPOSE 8086
+EXPOSE 9090
 
-ENTRYPOINT ["python", "app.py"]
+HEALTHCHECK --interval=30s --timeout=5s --start-period=120s --retries=5 \
+    CMD python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:8086/healthz')" || exit 1
+
+ENTRYPOINT ["/app/entrypoint.sh"]
