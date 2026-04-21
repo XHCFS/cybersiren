@@ -39,7 +39,7 @@ ENV CYBERSIREN_SERVER__PORT=8086
 EXPOSE 8086
 EXPOSE 9090
 
-HEALTHCHECK --interval=15s --timeout=5s --start-period=300s --retries=10 \
-    CMD python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:8086/healthz')" || exit 1
+HEALTHCHECK --interval=5s --timeout=3s --start-period=15s --retries=5 \
+    CMD python3 -c "import socket; s=socket.socket(); s.settimeout(2); s.connect(('localhost', 8086)); s.close()" || exit 1
 
 ENTRYPOINT ["/app/entrypoint.sh"]
