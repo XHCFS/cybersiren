@@ -47,6 +47,10 @@ cybersiren/
 |   |-- svc-04-header-analysis/
 |   |-- svc-05-attachment-analysis/
 |   |-- svc-06-nlp/
+|   |   |-- cmd/nlp/                 Go service entry point
+|   |   |-- internal/nlp/            Go HTTP client wrapping the Python inference service
+|   |   |-- nlp/                     Python FastAPI service (DistilBERT + ONNX Runtime)
+|   |   `-- static/                  demo web UI
 |   |-- svc-07-aggregator/
 |   |-- svc-08-decision/
 |   |-- svc-09-notification/
@@ -68,7 +72,6 @@ cybersiren/
 |   `-- valkey/                      Valkey client + TI domain cache
 |
 |-- python/
-|   |-- svc-06-nlp/                  FastAPI service (DistilBERT + ONNX Runtime)
 |   `-- url-ml/                      URL model training code and experiments
 |
 |-- db/
@@ -102,8 +105,9 @@ Runs any service with Postgres, Valkey, Prometheus, Grafana, and Jaeger.
 ```bash
 cp deploy/compose/.env.example deploy/compose/.env  # one-time Docker Compose setup
 make demo svc=svc-03-url-analysis   # URL scanner with full observability
+make demo svc=svc-06-nlp            # NLP email classifier with full observability
 make demo svc=svc-11-ti-sync        # threat-intel sync with full observability
-make demo-all                       # demo service bundle (svc-03 + svc-11)
+make demo-all                       # demo service bundle (svc-03 + svc-06 + svc-11)
 ```
 
 Images are cached after the first run — startup is instant. Force a rebuild after code changes:
@@ -113,12 +117,19 @@ make demo-build svc=svc-11-ti-sync  # rebuild + start single service
 make demo-all-build                  # rebuild + start demo service bundle
 ```
 
-**svc-03 only:** Open http://localhost:8083 for the URL scanner web UI.
+**svc-03 and svc-06 have demo web UIs:**
+
+| Service | URL | What it does |
+|---------|-----|-------------|
+| svc-03-url-analysis | http://localhost:8083 | URL scanner — paste any URL to classify it |
+| svc-06-nlp | http://localhost:8086 | NLP email classifier — paste an email to classify it |
+
 Other services have no web UI — use Grafana, Prometheus, and Jaeger below.
 
 | Port | Service |
 |------|---------|
 | 8083 | URL scanner (web UI + JSON API) |
+| 8086 | NLP email classifier (web UI + JSON API) |
 | 9092 | Prometheus |
 | 3001 | Grafana (admin / admin) |
 | 16686 | Jaeger traces |
@@ -153,6 +164,7 @@ Observability infrastructure is split into composable profiles:
 | `monitoring` | Prometheus + Grafana (with auto-provisioned dashboards) |
 | `observability` | Jaeger (OTLP collector + UI) |
 | `svc-03` | svc-03-url-analysis container |
+| `svc-06` | svc-06-nlp container |
 | `svc-11` | svc-11-ti-sync container |
 
 Combine profiles as needed, or use `make demo` which activates all of them:
@@ -174,8 +186,8 @@ make demo svc=svc-11-ti-sync
 ```bash
 make demo svc=<name>         # start service + full observability stack (cached)
 make demo-build svc=<name>   # same but force-rebuilds image first
-make demo-all                # start svc-03 + svc-11 + full observability stack (cached)
-make demo-all-build          # same but force-rebuilds svc-03 + svc-11 images first
+make demo-all                # start svc-03 + svc-06 + svc-11 + full observability stack (cached)
+make demo-all-build          # same but force-rebuilds svc-03 + svc-06 + svc-11 images first
 make jaeger              # start Jaeger standalone
 make open-grafana        # open Grafana in browser
 make open-prometheus     # open Prometheus in browser
