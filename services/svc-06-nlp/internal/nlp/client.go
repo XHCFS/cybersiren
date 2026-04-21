@@ -39,7 +39,7 @@ type PredictResponse struct {
 	SpamProbability     float64      `json:"spam_probability"`     // 0.0 – 1.0
 	ContentRiskScore    int          `json:"content_risk_score"`   // 0 – 100
 	IntentLabels        []string     `json:"intent_labels"`
-	UrgencyScore        float64      `json:"urgency_score"`        // 0.0 – 1.0
+	UrgencyScore        float64      `json:"urgency_score"` // 0.0 – 1.0
 	ObfuscationDetected bool         `json:"obfuscation_detected"`
 	TopTokens           []TokenScore `json:"top_tokens"` // always [] in production
 }
@@ -52,9 +52,9 @@ type healthResponse struct {
 
 // StatusResponse is the Python /status response shape (always 200).
 type StatusResponse struct {
-	ModelReady        bool   `json:"model_ready"`
-	LoadingStage      string `json:"loading_stage"`
-	LoadingProgressPct int   `json:"loading_progress_pct"`
+	ModelReady         bool   `json:"model_ready"`
+	LoadingStage       string `json:"loading_stage"`
+	LoadingProgressPct int    `json:"loading_progress_pct"`
 }
 
 // Client wraps the shared HTTP client to call the Python NLP inference service.
