@@ -129,7 +129,17 @@ func (c *Client) Predict(ctx context.Context, req PredictRequest) (*PredictRespo
 		return nil, 0, fmt.Errorf("nlp service unreachable: %w", err)
 	}
 
-	c.requestsTotal.WithLabelValues(resp.Classification).Inc()
+	// Whitelist classification label to bound Prometheus cardinality.
+	// Python should only return one of these three values; anything
+	// else gets bucketed as "unknown" instead of creating new series.
+	classification := resp.Classification
+	switch classification {
+	case "phishing", "spam", "legitimate":
+		// pass-through
+	default:
+		classification = "unknown"
+	}
+	c.requestsTotal.WithLabelValues(classification).Inc()
 	span.SetAttributes(
 		attribute.String("nlp.classification", resp.Classification),
 		attribute.Float64("nlp.confidence", resp.Confidence),
