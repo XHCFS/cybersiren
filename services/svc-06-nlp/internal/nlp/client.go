@@ -50,6 +50,13 @@ type healthResponse struct {
 	ModelReady bool   `json:"model_ready"`
 }
 
+// StatusResponse is the Python /status response shape (always 200).
+type StatusResponse struct {
+	ModelReady        bool   `json:"model_ready"`
+	LoadingStage      string `json:"loading_stage"`
+	LoadingProgressPct int   `json:"loading_progress_pct"`
+}
+
 // Client wraps the shared HTTP client to call the Python NLP inference service.
 type Client struct {
 	http            sharedhttp.Client
@@ -147,4 +154,20 @@ func (c *Client) Health(ctx context.Context) (bool, error) {
 		return false, fmt.Errorf("nlp healthz: %w", err)
 	}
 	return resp.ModelReady, nil
+}
+
+// Status calls GET /status on the Python NLP service.
+// Always succeeds (Python returns 200 regardless of model readiness).
+func (c *Client) Status(ctx context.Context) (*StatusResponse, error) {
+	ctx, span := nlpTracer.Start(ctx, "Client.Status")
+	defer span.End()
+
+	var resp StatusResponse
+	_, err := c.http.GetJSON(ctx, "/status", &resp)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return nil, fmt.Errorf("nlp status: %w", err)
+	}
+	return &resp, nil
 }
