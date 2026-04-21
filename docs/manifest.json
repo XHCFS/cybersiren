@@ -29,6 +29,10 @@
           "title": "CyberSiren — ML Model Specification (SVC-06 NLP Email Classification)"
         },
         {
+          "file": "internals/CyberSiren_NLP_Email_Classification_Service_Specification.html",
+          "title": "CyberSiren — NLP Email Classification Service Specification (SVC-06)"
+        },
+        {
           "file": "internals/CyberSiren_TI_Sync_Module_Specification.html",
           "title": "CyberSiren — Threat Intelligence Sync Module Specification (SVC-11)"
         },
