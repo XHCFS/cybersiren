@@ -280,7 +280,7 @@ class TestDetectIntent:
 
     def test_marketing_spam_keywords(self):
         result = self.engine._detect_intent(
-            "limited-time discount offer, unsubscribe here", "spam"
+            "limited-time discount offer, unsubscribe here", "phishing"
         )
         assert "marketing_spam" in result
 
@@ -294,9 +294,12 @@ class TestDetectIntent:
         result = self.engine._detect_intent("completely benign words", "phishing")
         assert result == ["credential_harvest"]
 
-    def test_no_match_spam_defaults_to_marketing_spam(self):
-        result = self.engine._detect_intent("completely benign words", "spam")
-        assert result == ["marketing_spam"]
+    def test_no_match_unknown_classification_defaults_to_credential_harvest(self):
+        # spam classification was removed (collapsed into phishing); the
+        # generic "no keyword matched" fallback now always returns
+        # credential_harvest for any non-legitimate verdict.
+        result = self.engine._detect_intent("completely benign words", "phishing")
+        assert result == ["credential_harvest"]
 
     def test_multiple_intents_returned(self):
         text = "verify your account password, urgent action required, download now"
@@ -399,12 +402,14 @@ class TestPredict:
         assert result["phishing_probability"] > 0.8
         assert result["confidence"] == result["phishing_probability"]
 
-    def test_spam_classification(self):
-        # logits favour class 1 (spam); phishing prob below 0.8
+    def test_spam_logit_collapses_into_phishing(self):
+        # The model's class 1 (spam) logit is collapsed post-hoc into the
+        # phishing verdict. A strong spam signal must therefore classify
+        # as "phishing", and "spam" must never appear in the response.
         engine = _engine_with_logits([0.0, 5.0, 0.0])
         result = engine.predict("Special offer", "Limited time discount unsubscribe")
-        assert result["classification"] == "spam"
-        assert result["spam_probability"] > result["phishing_probability"]
+        assert result["classification"] == "phishing"
+        assert "spam_probability" not in result
 
     def test_legitimate_classification(self):
         # logits favour class 0 (legitimate)
@@ -449,7 +454,7 @@ class TestPredict:
         result = engine.predict("subject", "body")
         expected_keys = {
             "classification", "confidence", "phishing_probability",
-            "spam_probability", "content_risk_score", "intent_labels",
+            "content_risk_score", "intent_labels",
             "urgency_score", "obfuscation_detected", "top_tokens",
         }
         assert set(result.keys()) == expected_keys
@@ -468,7 +473,7 @@ class TestPredict:
     def test_html_body_processed_when_plain_empty(self):
         engine = _engine_with_logits([5.0, 0.0, 0.0])
         result = engine.predict("subj", "", "<p>HTML content</p>")
-        assert result["classification"] in ("legitimate", "spam", "phishing")
+        assert result["classification"] in ("legitimate", "phishing")
 
     def test_temperature_scaling_applied(self):
         """T=2 should push probabilities toward uniform vs T=1."""
