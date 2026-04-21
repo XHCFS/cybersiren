@@ -13,6 +13,7 @@ Called by SVC-07 aggregator with a 10-second timeout (shared/config/config.go).
 
 import logging
 import os
+import threading
 from contextlib import asynccontextmanager
 
 import uvicorn
@@ -28,21 +29,41 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 engine: NLPInferenceEngine | None = None
+# Tracks the engine while it is still loading (same object once assigned).
+_loading_engine: NLPInferenceEngine | None = None
+
+
+def _load_engine_background() -> None:
+    """Run in a daemon thread so FastAPI starts serving immediately."""
+    global engine, _loading_engine
+    try:
+        e = NLPInferenceEngine()
+        _loading_engine = e
+        engine = e
+        if engine.model_ready:
+            logger.info("NLP service ready — model loaded")
+        else:
+            logger.warning(
+                "NLP service started WITHOUT a model. "
+                "POST /predict will return 503 until onnx/model_int8.onnx is replaced "
+                "with the real model from cybersiren_nlp_out/onnx/model_int8.onnx."
+            )
+    except Exception as exc:
+        logger.error("Background engine load failed: %s", exc)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global engine
-    logger.info("Loading NLP inference engine …")
-    engine = NLPInferenceEngine()
-    if engine.model_ready:
-        logger.info("NLP service ready — model loaded")
-    else:
-        logger.warning(
-            "NLP service started WITHOUT a model. "
-            "POST /predict will return 503 until onnx/model_int8.onnx is replaced "
-            "with the real model from cybersiren_nlp_out/onnx/model_int8.onnx."
-        )
+    global _loading_engine
+    # Create a placeholder so /status can report progress from the start.
+    _loading_engine = NLPInferenceEngine.__new__(NLPInferenceEngine)
+    _loading_engine.model_ready = False
+    _loading_engine.loading_stage = "starting"
+    _loading_engine.loading_progress_pct = 0
+
+    t = threading.Thread(target=_load_engine_background, daemon=True)
+    t.start()
+    logger.info("NLP engine loading in background thread — service ready on :%s", os.environ.get("CYBERSIREN_SERVER__PORT", "8086"))
     yield
 
 
@@ -94,6 +115,19 @@ def health():
     return {
         "status": "ok",
         "model_ready": True,
+    }
+
+
+@app.get("/status")
+def status_endpoint():
+    """Always returns 200. Exposes loading progress for the demo UI."""
+    ref = _loading_engine
+    if ref is None:
+        return {"model_ready": False, "loading_stage": "starting", "loading_progress_pct": 0}
+    return {
+        "model_ready": ref.model_ready,
+        "loading_stage": ref.loading_stage,
+        "loading_progress_pct": ref.loading_progress_pct,
     }
 
 
