@@ -295,8 +295,21 @@ demo-port-svc-03 = 8083
 demo-port-svc-06 = 8086
 svc-demo-port = $(or $(demo-port-$(call svc-short-profile,$(1))),8083)
 
+NLP_MODEL := services/svc-06-nlp/nlp/onnx/model_int8.onnx
+
+## check-nlp-model: Ensure the NLP ONNX model is present; pulls via Git LFS if missing.
+check-nlp-model:
+	@size=$$(stat -c%s "$(NLP_MODEL)" 2>/dev/null || echo 0); \
+	if [ "$$size" -lt 1000000 ]; then \
+	    echo "  [svc-06] ONNX model missing — pulling via Git LFS (this downloads ~64 MB)..."; \
+	    git lfs pull --include="$(NLP_MODEL)"; \
+	else \
+	    echo "  [svc-06] ONNX model present ($$(du -sh $(NLP_MODEL) | cut -f1))"; \
+	fi
+
 demo: check-docker check-compose-env
 	@[ "$(svc)" ] || (echo "Usage: make demo svc=<service-name>"; exit 1)
+	@if [ "$(call svc-short-profile,$(svc))" = "svc-06" ]; then $(MAKE) check-nlp-model; fi
 	$(DOCKER_COMPOSE) --profile postgres --profile valkey \
 	    --profile monitoring --profile observability \
 	    --profile $(call svc-short-profile,$(svc)) up -d --wait
@@ -312,6 +325,7 @@ demo: check-docker check-compose-env
 ##             Use after code changes. Usage: make demo-build svc=svc-11-ti-sync
 demo-build: check-docker check-compose-env
 	@[ "$(svc)" ] || (echo "Usage: make demo-build svc=<service-name>"; exit 1)
+	@if [ "$(call svc-short-profile,$(svc))" = "svc-06" ]; then $(MAKE) check-nlp-model; fi
 	$(DOCKER_COMPOSE) --profile postgres --profile valkey \
 	    --profile monitoring --profile observability \
 	    --profile $(call svc-short-profile,$(svc)) up -d --wait --build
@@ -325,7 +339,7 @@ demo-build: check-docker check-compose-env
 
 ## demo-all: Run demo service bundle (svc-03 + svc-06 + svc-11) with full observability stack.
 ##           Uses cached images — fast on repeat runs. Force a rebuild with: make demo-all-build
-demo-all: check-docker check-compose-env
+demo-all: check-docker check-compose-env check-nlp-model
 	$(DOCKER_COMPOSE) --profile postgres --profile valkey \
 	    --profile monitoring --profile observability \
 	    --profile svc-03 --profile svc-06 --profile svc-11 up -d --wait
@@ -340,7 +354,7 @@ demo-all: check-docker check-compose-env
 
 ## demo-all-build: Like demo-all but force-rebuilds all service images first.
 ##                 Use after code changes.
-demo-all-build: check-docker check-compose-env
+demo-all-build: check-docker check-compose-env check-nlp-model
 	$(DOCKER_COMPOSE) --profile postgres --profile valkey \
 	    --profile monitoring --profile observability \
 	    --profile svc-03 --profile svc-06 --profile svc-11 up -d --wait --build
@@ -434,6 +448,6 @@ check-compose-env:
         demo demo-build demo-all demo-all-build demo-stop-all jaeger \
         open open-grafana open-prometheus open-jaeger open-kafka-ui open-pgadmin _open-url \
         docs-manifest \
-        help check-docker check-compose-env
+        help check-docker check-compose-env check-nlp-model
 
 .DEFAULT_GOAL := help
