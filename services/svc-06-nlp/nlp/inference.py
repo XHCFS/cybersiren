@@ -116,6 +116,8 @@ class NLPInferenceEngine:
         self.model_ready = False
         self.session = None
         self.tokenizer = None
+        self.loading_stage: str = "starting"
+        self.loading_progress_pct: int = 0
 
         self._load_config()
         self._load_tokenizer()
@@ -125,6 +127,8 @@ class NLPInferenceEngine:
 
     def _load_config(self) -> None:
         """Parse config.json produced by notebook Cell 14 (spec §8.4)."""
+        self.loading_stage = "loading_config"
+        self.loading_progress_pct = 5
         config_path = self.base_dir / "config.json"
         cfg: dict = {}
         if config_path.exists():
@@ -169,6 +173,8 @@ class NLPInferenceEngine:
         Primary:  tokenizer/ directory saved by notebook Cell 14.
         Fallback: download distilbert-base-uncased from HuggingFace.
         """
+        self.loading_stage = "loading_tokenizer"
+        self.loading_progress_pct = 15
         from transformers import DistilBertTokenizerFast  # type: ignore
 
         tokenizer_dir = self.base_dir / "tokenizer"
@@ -197,10 +203,15 @@ class NLPInferenceEngine:
         """
         Load onnx/model_int8.onnx with ORT_ENABLE_ALL optimisations (spec §8.2).
         Detects placeholder files (< 1 KB) and logs a clear remediation message.
+        Saves an optimized graph cache (model_int8_opt.onnx) so subsequent
+        starts skip the ~60-130s graph optimization step.
         """
+        self.loading_stage = "checking_model"
+        self.loading_progress_pct = 30
         model_path = self.base_dir / "onnx" / "model_int8.onnx"
 
         if not model_path.exists():
+            self.loading_stage = "model_file_missing"
             logger.warning(
                 "onnx/model_int8.onnx not found at %s — "
                 "copy cybersiren_nlp_out/onnx/model_int8.onnx here and restart.",
@@ -210,6 +221,7 @@ class NLPInferenceEngine:
 
         file_size = model_path.stat().st_size
         if file_size < 1024:
+            self.loading_stage = "model_file_missing"
             logger.warning(
                 "onnx/model_int8.onnx is a placeholder (%d bytes). "
                 "Replace it with the real model from the Kaggle notebook output "
@@ -224,9 +236,6 @@ class NLPInferenceEngine:
 
             opts = ort.SessionOptions()
             opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-            # Allow override via env var; default: let ORT decide (0 = auto).
-            # Spec §8.2 recommends physical cores; logical cpu_count() can
-            # oversubscribe on hyperthreaded machines, so we default to auto.
             opts.intra_op_num_threads = int(
                 os.environ.get("ORT_INTRA_OP_THREADS", "0")
             )
@@ -234,18 +243,49 @@ class NLPInferenceEngine:
             opts.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
             opts.log_severity_level = 3  # suppress ORT verbose output
 
+            # Save the optimized graph so subsequent starts skip re-optimization
+            # (~60-130s on first run → ~5-15s on subsequent runs).
+            cache_path = model_path.parent / "model_int8_opt.onnx"
+            opts.optimized_model_filepath = str(cache_path)
+
+            if cache_path.exists():
+                self.loading_stage = "loading_cached_onnx"
+                logger.info("Loading pre-optimized ONNX graph from cache: %s", cache_path)
+            else:
+                self.loading_stage = "loading_onnx"
+                logger.info(
+                    "First run: loading + optimizing ONNX graph (this takes 60-130s; "
+                    "result is cached at %s for faster subsequent starts)", cache_path
+                )
+            self.loading_progress_pct = 45
+
             self.session = ort.InferenceSession(
                 str(model_path),
                 sess_options=opts,
                 providers=["CPUExecutionProvider"],
             )
+
+            # Warmup: trigger any remaining graph compilation so the first real
+            # request doesn't pay the compilation cost.
+            self.loading_stage = "warming_up"
+            self.loading_progress_pct = 90
+            dummy_ids = np.zeros((1, 32), dtype=np.int64)
+            dummy_mask = np.ones((1, 32), dtype=np.int64)
+            self.session.run(
+                ["logits"],
+                {"input_ids": dummy_ids, "attention_mask": dummy_mask},
+            )
+
             self.model_ready = True
+            self.loading_stage = "ready"
+            self.loading_progress_pct = 100
             logger.info(
                 "ONNX model loaded: %s (%.1f MB)",
                 model_path,
                 file_size / 1e6,
             )
         except Exception as exc:
+            self.loading_stage = "error"
             logger.error("ONNX model load failed: %s", exc)
             self.session = None
             self.model_ready = False

@@ -47,12 +47,11 @@ __pycache__/
 Thumbs.db
 desktop.ini
 
-# ML models (too large for git)
+# ML models (too large for git — *.onnx tracked via Git LFS instead)
 *.pkl
 *.h5
 *.pt
 *.pth
-*.onnx
 ml/nlp_model/model/
 ml/url_model/model.pkl
 ml/datasets/*.csv
