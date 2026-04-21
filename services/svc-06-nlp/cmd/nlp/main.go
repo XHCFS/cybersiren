@@ -73,6 +73,7 @@ func main() {
 
 	srv.POST("/predict", predictHandler(nlpClient, log))
 	srv.GET("/healthz", healthHandler(nlpClient, log))
+	srv.GET("/status", statusHandler(nlpClient, log))
 
 	go func() {
 		if srvErr := srv.Start(fmt.Sprintf(":%d", cfg.Server.Port)); srvErr != nil {
@@ -145,5 +146,24 @@ func healthHandler(client *nlppkg.Client, log zerolog.Logger) sharedhttp.Handler
 			return
 		}
 		_ = ctx.OK(map[string]any{"status": "ok", "model_ready": true})
+	}
+}
+
+// statusHandler proxies GET /status to the Python NLP inference service.
+// Always returns 200 — used by the demo UI to show model loading progress.
+// DEMO ONLY: not a production endpoint.
+func statusHandler(client *nlppkg.Client, log zerolog.Logger) sharedhttp.HandlerFunc {
+	return func(ctx sharedhttp.Context) {
+		resp, err := client.Status(ctx.Request().Context())
+		if err != nil {
+			log.Warn().Err(err).Msg("nlp status check failed")
+			_ = ctx.OK(map[string]any{
+				"model_ready":         false,
+				"loading_stage":       "starting",
+				"loading_progress_pct": 0,
+			})
+			return
+		}
+		_ = ctx.OK(resp)
 	}
 }

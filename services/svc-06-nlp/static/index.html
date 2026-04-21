@@ -102,7 +102,35 @@
   .legit-card:hover{border-color:var(--green);background:rgba(0,255,65,.05)}
   .spam-card:hover{border-color:var(--yellow);background:rgba(255,170,0,.05)}
 
-  /* ── Spinner ── */
+  /* ── Model loading banner ── */
+  .model-loading{
+    width:100%;max-width:700px;margin-bottom:1.5rem;
+    padding:1rem 1.2rem;border-radius:var(--radius);
+    background:rgba(0,191,255,.06);border:2px solid var(--accent);
+    display:none;
+  }
+  .model-loading.active{display:block}
+  .model-loading-title{
+    font-size:.88rem;color:var(--accent);font-weight:700;margin-bottom:.5rem;
+    display:flex;align-items:center;gap:.6rem;
+  }
+  .model-loading-stage{
+    font-size:.78rem;color:var(--text-dim);margin-bottom:.6rem;
+    font-family:inherit;
+  }
+  .model-progress-track{
+    width:100%;height:8px;background:var(--bg);
+    border-radius:4px;overflow:hidden;
+  }
+  .model-progress-fill{
+    height:100%;background:var(--accent);border-radius:4px;
+    transition:width .4s ease;
+  }
+  .model-loading-pct{
+    font-size:.75rem;color:var(--text-dim);margin-top:.4rem;text-align:right;
+  }
+  .pulse{animation:pulse 1.2s ease-in-out infinite}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.45}}
   .spinner{
     display:none;justify-content:center;align-items:center;
     padding:2rem 0;
@@ -188,6 +216,18 @@
 
 <div class="demo-notice">
   ⚠️ DEMO ONLY — This page is a development testing tool and is not part of the production system.
+</div>
+
+<!-- Model loading progress banner (shown while ONNX model is loading) -->
+<div id="model-loading-banner" class="model-loading">
+  <div class="model-loading-title">
+    <span class="pulse">⚙️</span> NLP Model Loading…
+  </div>
+  <div id="model-loading-stage" class="model-loading-stage">Initializing…</div>
+  <div class="model-progress-track">
+    <div id="model-progress-fill" class="model-progress-fill" style="width:0%"></div>
+  </div>
+  <div id="model-loading-pct" class="model-loading-pct">0%</div>
 </div>
 
 <!-- Input form -->
@@ -736,6 +776,59 @@ Sent on behalf of Amazon Inc., Seattle WA (promotional partner)`
     spinner.classList.toggle('active', on);
     btn.disabled = on;
   }
+  /* ── Model loading progress polling ── */
+  var modelReady = false;
+  var loadingBanner = document.getElementById('model-loading-banner');
+  var loadingStageEl = document.getElementById('model-loading-stage');
+  var progressFill  = document.getElementById('model-progress-fill');
+  var progressPct   = document.getElementById('model-loading-pct');
+
+  var STAGE_LABELS = {
+    'starting':            'Starting up…',
+    'loading_config':      'Reading configuration…',
+    'loading_tokenizer':   'Loading tokenizer…',
+    'checking_model':      'Checking model file…',
+    'loading_onnx':        'Loading ONNX model (first run — graph optimization in progress, ~60-130s)…',
+    'loading_cached_onnx': 'Loading cached ONNX graph…',
+    'warming_up':          'Running warmup inference…',
+    'ready':               '✅ Model ready',
+    'model_file_missing':  '⚠️ Model file not found — place model_int8.onnx in services/svc-06-nlp/nlp/onnx/',
+    'error':               '❌ Model failed to load — check service logs',
+  };
+
+  function pollStatus() {
+    fetch('/status')
+      .then(function(r){ return r.json(); })
+      .then(function(body) {
+        var d = (body && body.data) ? body.data : body;
+        var stage = d.loading_stage || 'starting';
+        var pct   = typeof d.loading_progress_pct === 'number' ? d.loading_progress_pct : 0;
+        var ready = !!d.model_ready;
+
+        loadingStageEl.textContent = STAGE_LABELS[stage] || stage;
+        progressFill.style.width   = pct + '%';
+        progressPct.textContent    = pct + '%';
+
+        if (ready) {
+          loadingBanner.classList.remove('active');
+          btn.disabled = false;
+          modelReady = true;
+        } else {
+          loadingBanner.classList.add('active');
+          btn.disabled = true;
+          setTimeout(pollStatus, 2000);
+        }
+      })
+      .catch(function() {
+        // Python not reachable yet — keep polling
+        setTimeout(pollStatus, 2000);
+      });
+  }
+
+  // Disable scan button immediately; enable only once model is ready
+  btn.disabled = true;
+  pollStatus();
+
 })();
 </script>
 </body>
