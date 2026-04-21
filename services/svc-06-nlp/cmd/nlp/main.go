@@ -61,7 +61,7 @@ func main() {
 	}
 	defer func() { _ = metricsShutdown(context.Background()) }()
 
-	nlpClient := nlppkg.NewClient(cfg.ML.NLPServiceURL, log)
+	nlpClient := nlppkg.NewClient(cfg.ML.NLPServiceURL, reg, log)
 
 	srv := sharedhttp.NewDefaultServer()
 
