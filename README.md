@@ -207,7 +207,7 @@ Full documentation is published at **https://xhcfs.github.io/cybersiren/**
 | Reference | Location |
 |-----------|----------|
 | Architecture decisions | [docs/decisions/DECISIONS.MD](docs/decisions/DECISIONS.MD) |
-| Demo walkthrough | [DEMO.md](DEMO.md) |
+| Demo guides index | [DEMO.md](DEMO.md) — URL scanner · NLP classifier |
 | URL analysis improvements | [docs/URL_ANALYSIS_IMPROVEMENTS.md](docs/URL_ANALYSIS_IMPROVEMENTS.md) |
 | API reference | https://xhcfs.github.io/cybersiren/api |
 | Runbooks | https://xhcfs.github.io/cybersiren/runbooks |
