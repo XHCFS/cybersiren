@@ -1,0 +1,742 @@
+<!-- 
+  DEMO ONLY — NLP Email Classifier Demo Page
+  This file is a standalone development/demo tool used to test the NLP service interactively.
+  It is NOT part of the production system and is not served by any production route.
+  For production usage, the NLP service is called internally by svc-07-aggregator via POST /predict.
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CyberSiren — NLP Email Classifier</title>
+<style>
+  *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+  :root{
+    --bg:#0f0f23;--surface:#1a1a2e;--border:#2a2a4a;
+    --text:#e0e0ff;--text-dim:#8888aa;
+    --green:#00ff41;--yellow:#ffaa00;--red:#ff4444;--accent:#00bfff;
+    --radius:8px;
+  }
+  body{
+    font-family:'Courier New',Courier,monospace;
+    background:var(--bg);color:var(--text);
+    min-height:100vh;display:flex;flex-direction:column;align-items:center;
+    padding:2rem 1rem;
+  }
+
+  /* ── Header ── */
+  .header{text-align:center;margin-bottom:1.5rem}
+  .header h1{font-size:clamp(1.5rem,4vw,2.2rem);letter-spacing:.05em}
+  .header .brand{color:var(--accent)}
+  .header .tagline{color:var(--text-dim);font-size:.85rem;margin-top:.4rem}
+
+  /* ── Demo notice ── */
+  .demo-notice{
+    width:100%;max-width:700px;margin-bottom:1.5rem;
+    padding:.8rem 1.2rem;border-radius:var(--radius);
+    background:rgba(255,170,0,.08);border:2px solid var(--yellow);
+    color:var(--yellow);font-size:.82rem;text-align:center;
+    letter-spacing:.02em;
+  }
+
+  /* ── Card ── */
+  .card{
+    background:var(--surface);border:1px solid var(--border);
+    border-radius:var(--radius);padding:1.5rem;width:100%;max-width:700px;
+    margin-bottom:1.5rem;
+  }
+  .card h2{font-size:1rem;color:var(--accent);margin-bottom:1.1rem}
+
+  /* ── Form fields ── */
+  .field-group{display:flex;flex-direction:column;gap:.4rem;margin-bottom:1rem}
+  .field-group:last-of-type{margin-bottom:0}
+  .field-group label{font-size:.8rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:.08em}
+  .field-group input,
+  .field-group textarea{
+    padding:.65rem .9rem;font-size:.9rem;font-family:inherit;color:var(--text);
+    background:var(--bg);border:1px solid var(--border);
+    border-radius:var(--radius);outline:none;transition:border-color .2s;
+    resize:vertical;
+  }
+  .field-group input:focus,
+  .field-group textarea:focus{border-color:var(--accent)}
+  .field-group input::placeholder,
+  .field-group textarea::placeholder{color:var(--text-dim)}
+
+  /* ── HTML body toggle ── */
+  .toggle-link{
+    font-size:.78rem;color:var(--text-dim);cursor:pointer;
+    text-decoration:underline;background:none;border:none;
+    font-family:inherit;padding:0;margin-bottom:.6rem;display:inline-block;
+  }
+  .toggle-link:hover{color:var(--accent)}
+  .html-body-wrap{display:none}
+  .html-body-wrap.open{display:flex;flex-direction:column;gap:.4rem}
+
+  /* ── Submit button ── */
+  .btn{
+    padding:.7rem 1.6rem;font-family:inherit;font-size:.95rem;font-weight:700;
+    border:none;border-radius:var(--radius);cursor:pointer;
+    background:var(--accent);color:var(--bg);transition:opacity .2s;
+    white-space:nowrap;margin-top:1rem;
+  }
+  .btn:disabled{opacity:.45;cursor:not-allowed}
+
+  /* ── Examples ── */
+  .examples-grid{display:grid;gap:.7rem}
+  .examples-section{margin-bottom:1rem}
+  .examples-section:last-child{margin-bottom:0}
+  .examples-section h3{font-size:.8rem;text-transform:uppercase;letter-spacing:.1em;color:var(--text-dim);margin-bottom:.6rem}
+  .example-cards{display:flex;flex-direction:column;gap:.5rem}
+  .example-card{
+    background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);
+    padding:.65rem .9rem;cursor:pointer;text-align:left;font-family:inherit;
+    color:var(--text);font-size:.82rem;transition:border-color .2s,background .2s;
+    width:100%;
+  }
+  .example-card:hover{border-color:var(--accent);background:rgba(0,191,255,.05)}
+  .example-card .ex-subject{font-weight:700;margin-bottom:.2rem;font-size:.85rem}
+  .example-card .ex-preview{color:var(--text-dim);font-size:.78rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .phishing-card:hover{border-color:var(--red);background:rgba(255,68,68,.05)}
+  .legit-card:hover{border-color:var(--green);background:rgba(0,255,65,.05)}
+  .spam-card:hover{border-color:var(--yellow);background:rgba(255,170,0,.05)}
+
+  /* ── Spinner ── */
+  .spinner{
+    display:none;justify-content:center;align-items:center;
+    padding:2rem 0;
+  }
+  .spinner.active{display:flex}
+  .spinner::after{
+    content:'';width:32px;height:32px;
+    border:3px solid var(--border);border-top-color:var(--accent);
+    border-radius:50%;animation:spin .7s linear infinite;
+  }
+  @keyframes spin{to{transform:rotate(360deg)}}
+
+  /* ── Error ── */
+  .error-box{
+    display:none;padding:1rem;border-radius:var(--radius);
+    background:rgba(255,68,68,.1);border:1px solid var(--red);
+    color:var(--red);word-break:break-word;width:100%;max-width:700px;
+    margin-bottom:1rem;
+  }
+  .error-box.active{display:block}
+
+  /* ── Results ── */
+  .results{display:none}
+  .results.active{display:block}
+  .results h2{font-size:1.05rem;margin-bottom:1rem;color:var(--accent)}
+
+  .result-field{
+    display:flex;justify-content:space-between;align-items:center;
+    padding:.55rem 0;border-bottom:1px solid var(--border);
+    font-size:.88rem;gap:.5rem;
+  }
+  .result-field:last-child{border-bottom:none}
+  .result-label{color:var(--text-dim);flex-shrink:0}
+  .result-value{text-align:right;word-break:break-all}
+
+  .section-title{
+    font-size:.75rem;text-transform:uppercase;letter-spacing:.1em;
+    color:var(--text-dim);padding:.9rem 0 .3rem;
+  }
+
+  /* ── Score bar ── */
+  .bar-wrap{margin-top:.4rem;margin-bottom:.6rem}
+  .bar-track{
+    width:100%;height:10px;background:var(--bg);
+    border-radius:5px;overflow:hidden;
+  }
+  .bar-fill{height:100%;border-radius:5px;transition:width .5s ease}
+
+  /* ── Badge ── */
+  .badge{
+    display:inline-block;padding:.2rem .7rem;border-radius:4px;
+    font-weight:700;font-size:.85rem;text-transform:uppercase;letter-spacing:.05em;
+  }
+  .badge-green{background:rgba(0,255,65,.15);color:var(--green);border:1px solid var(--green)}
+  .badge-yellow{background:rgba(255,170,0,.15);color:var(--yellow);border:1px solid var(--yellow)}
+  .badge-red{background:rgba(255,68,68,.15);color:var(--red);border:1px solid var(--red)}
+
+  /* ── Intent pills ── */
+  .pills{display:flex;flex-wrap:wrap;gap:.4rem;justify-content:flex-end}
+  .pill{
+    padding:.15rem .55rem;border-radius:12px;font-size:.75rem;
+    background:rgba(0,191,255,.12);color:var(--accent);border:1px solid var(--accent);
+  }
+  .pills-empty{color:var(--text-dim);font-size:.82rem}
+
+  /* ── Top tokens table ── */
+  .tokens-table{width:100%;border-collapse:collapse;font-size:.82rem;margin-top:.5rem}
+  .tokens-table th{color:var(--text-dim);text-align:left;padding:.3rem .5rem;border-bottom:1px solid var(--border);font-weight:400;text-transform:uppercase;font-size:.72rem;letter-spacing:.08em}
+  .tokens-table td{padding:.3rem .5rem;border-bottom:1px solid rgba(42,42,74,.5)}
+  .tokens-table tr:last-child td{border-bottom:none}
+  .token-score-bar{display:inline-block;height:6px;background:var(--accent);border-radius:3px;vertical-align:middle;margin-left:.4rem;opacity:.7}
+
+  /* ── Footer ── */
+  .footer{margin-top:auto;padding-top:2rem;color:var(--text-dim);font-size:.72rem;text-align:center}
+</style>
+</head>
+<body>
+
+<header class="header">
+  <h1>🛡️ <span class="brand">CyberSiren</span> — NLP Email Classifier</h1>
+  <p class="tagline">Real-time phishing detection powered by DistilBERT NLP</p>
+</header>
+
+<div class="demo-notice">
+  ⚠️ DEMO ONLY — This page is a development testing tool and is not part of the production system.
+</div>
+
+<!-- Input form -->
+<div class="card">
+  <h2>Analyze Email</h2>
+  <form id="scan-form" autocomplete="off">
+    <div class="field-group">
+      <label for="email-subject">Subject</label>
+      <input id="email-subject" type="text" placeholder="Email subject line…" required>
+    </div>
+
+    <div class="field-group">
+      <label for="email-body">Body (plain text)</label>
+      <textarea id="email-body" rows="8" placeholder="Paste the plain-text email body here…" required></textarea>
+    </div>
+
+    <button type="button" class="toggle-link" id="html-toggle">▶ Show HTML body (optional)</button>
+    <div id="html-body-wrap" class="html-body-wrap">
+      <label for="email-html" style="font-size:.8rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:.08em">Body (HTML)</label>
+      <textarea id="email-html" rows="5" placeholder="Paste the raw HTML body here (optional)…"></textarea>
+    </div>
+
+    <button id="scan-btn" class="btn" type="submit">🔍 Scan Email</button>
+  </form>
+</div>
+
+<!-- Pre-made examples -->
+<div class="card">
+  <h2>📋 Example Emails</h2>
+
+  <div class="examples-section">
+    <h3>📧 Phishing Examples</h3>
+    <div class="example-cards" id="phishing-examples"></div>
+  </div>
+
+  <div class="examples-section">
+    <h3>✅ Legitimate Examples</h3>
+    <div class="example-cards" id="legit-examples"></div>
+  </div>
+
+  <div class="examples-section">
+    <h3>⚠️ Spam Examples</h3>
+    <div class="example-cards" id="spam-examples"></div>
+  </div>
+</div>
+
+<div id="spinner" class="spinner"></div>
+<div id="error-box" class="error-box"></div>
+
+<!-- Results panel -->
+<div id="results" class="card results">
+  <h2>Analysis Results</h2>
+
+  <!-- Classification -->
+  <div class="section-title">Classification</div>
+  <div class="result-field">
+    <span class="result-label">Result</span>
+    <span class="result-value" id="r-classification">—</span>
+  </div>
+  <div class="result-field">
+    <span class="result-label">Confidence</span>
+    <span class="result-value" id="r-confidence">—</span>
+  </div>
+  <div class="bar-wrap"><div class="bar-track"><div id="r-confidence-bar" class="bar-fill"></div></div></div>
+
+  <!-- Probabilities -->
+  <div class="section-title">Probabilities</div>
+  <div class="result-field">
+    <span class="result-label">Phishing probability</span>
+    <span class="result-value" id="r-phishing-prob">—</span>
+  </div>
+  <div class="result-field">
+    <span class="result-label">Spam probability</span>
+    <span class="result-value" id="r-spam-prob">—</span>
+  </div>
+
+  <!-- Risk signals -->
+  <div class="section-title">Risk Signals</div>
+  <div class="result-field">
+    <span class="result-label">Content risk score</span>
+    <span class="result-value" id="r-risk-score">—</span>
+  </div>
+  <div class="bar-wrap"><div class="bar-track"><div id="r-risk-bar" class="bar-fill"></div></div></div>
+
+  <div class="result-field">
+    <span class="result-label">Urgency score</span>
+    <span class="result-value" id="r-urgency">—</span>
+  </div>
+  <div class="bar-wrap"><div class="bar-track"><div id="r-urgency-bar" class="bar-fill"></div></div></div>
+
+  <div class="result-field">
+    <span class="result-label">Obfuscation detected</span>
+    <span class="result-value" id="r-obfuscation">—</span>
+  </div>
+
+  <!-- Intent labels -->
+  <div class="section-title">Intent Labels</div>
+  <div class="result-field" style="align-items:flex-start;padding-top:.7rem">
+    <span class="result-label" style="padding-top:.1rem">Detected intents</span>
+    <div id="r-intents" class="pills"></div>
+  </div>
+
+  <!-- Top tokens (hidden when empty) -->
+  <div id="tokens-section" style="display:none">
+    <div class="section-title">Top Tokens</div>
+    <table class="tokens-table">
+      <thead><tr><th>Token</th><th>Score</th><th></th></tr></thead>
+      <tbody id="r-tokens-body"></tbody>
+    </table>
+  </div>
+</div>
+
+<footer class="footer">CyberSiren &copy; 2025 — NLP Email Analysis Demo</footer>
+
+<script>
+(function () {
+  /* ── Example data ── */
+  const PHISHING = [
+    {
+      subject: 'URGENT: Your PayPal account has been limited',
+      body: `Dear Valued Customer,
+
+We have detected unusual activity on your PayPal account and have temporarily limited your access as a precautionary measure. To restore full account functionality, you must verify your identity within the next 24 hours.
+
+Failure to act before the deadline will result in permanent suspension of your account and any associated funds may be held for up to 180 days pending review.
+
+Click the link below immediately to verify your account:
+http://paypal-secure-verify.support/restore?id=8472619
+
+This is an automated security notification. Do not reply to this email.
+
+PayPal Security Team`
+    },
+    {
+      subject: 'Important security alert: Unusual sign-in activity',
+      body: `Microsoft Account Security Alert
+
+We detected a sign-in to your Microsoft account from an unrecognized device located in Eastern Europe. If this wasn't you, your account may be compromised.
+
+Device: Unknown Android device
+Location: Bucharest, Romania
+Time: Today at 03:47 AM (UTC)
+
+You must confirm your identity immediately to prevent unauthorized access. If you do not verify within 12 hours, we will be forced to suspend your account for your protection.
+
+Click here to secure your account now:
+http://microsoft-account-security.info/verify?token=xK9mP2
+
+If you made this sign-in, you can safely ignore this message. Otherwise, act NOW.
+
+The Microsoft Account Team`
+    },
+    {
+      subject: 'Your package could not be delivered — action required',
+      body: `FedEx Delivery Notification
+
+We attempted to deliver your package today but were unable to complete delivery due to an incorrect address on file.
+
+Tracking number: FX-2948571023
+Estimated value: $247.00
+Delivery attempt: 1 of 2
+
+To reschedule delivery, you must confirm your shipping address and pay the redelivery fee of $2.99 within 48 hours. After this window, the package will be returned to the sender.
+
+Update your delivery details here:
+http://fedex-redelivery-portal.net/confirm?ref=FX2948571023
+
+Failure to act may result in your parcel being permanently returned. Please complete this process immediately to avoid additional fees.
+
+FedEx Customer Support`
+    }
+  ];
+
+  const LEGIT = [
+    {
+      subject: 'Your GitHub pull request has been merged',
+      body: `Hi there,
+
+Great news! Your pull request #412 "feat: add rate limiting middleware to API gateway" has been successfully merged into the main branch of cybersiren/backend by @saif-lead.
+
+Pull request: #412
+Repository: cybersiren/backend
+Branch: feat/rate-limiting → main
+Merged by: saif-lead
+Commits: 3 commits, +187 / -24 lines
+
+You can view the full diff and merge details on GitHub:
+https://github.com/cybersiren/backend/pull/412
+
+Thanks for your contribution! The CI pipeline is now running on main. You'll receive another notification if anything fails.
+
+— GitHub Notifications`
+    },
+    {
+      subject: 'Weekly newsletter — Tech Digest #42',
+      body: `Tech Digest — Issue #42
+Week of June 16, 2025
+
+Hello and welcome back to another edition of Tech Digest, your weekly roundup of the most important stories in software engineering, security, and open source.
+
+This week's highlights:
+
+1. Go 1.25 released with improved generic type inference and faster GC pauses — the release notes cover 47 fixes and 3 new standard library packages.
+
+2. The Linux kernel community merges experimental support for RISC-V Vector extension 1.0 — hardware-accelerated SIMD is now available on RISC-V targets.
+
+3. OpenSSF publishes new guidelines for supply chain security — a must-read for any team shipping OSS packages or using third-party dependencies.
+
+4. Cloudflare reports a 340% increase in API-layer DDoS attacks over Q1 2025, with education and fintech sectors most targeted.
+
+That's it for this week. If you have a story tip or want to submit an article, hit reply — we read every message.
+
+Stay curious,
+— The Tech Digest Team
+
+Unsubscribe: https://techdigest.example.com/unsubscribe`
+    },
+    {
+      subject: 'Meeting reminder: Team sync tomorrow at 10am',
+      body: `Hi team,
+
+Just a friendly reminder that we have our weekly team sync tomorrow, Tuesday June 17th, at 10:00 AM (UTC+3). The meeting should run about 45 minutes.
+
+Agenda:
+  1. Sprint retrospective — what went well, what to improve
+  2. Sprint planning for the next two weeks (svc-07 aggregator + dashboard polish)
+  3. Quick demo from Omar on the updated NLP confidence scores
+  4. Open floor / blockers
+
+Video call link: https://meet.example.com/cybersiren-team-sync
+Dial-in: +1-800-555-0192, PIN: 47291
+
+If you can't make it, please drop your updates in the #team-sync Slack channel before 9:30 AM so we can cover them asynchronously.
+
+See you tomorrow!
+Saif`
+    }
+  ];
+
+  const SPAM = [
+    {
+      subject: '🔥 FLASH SALE: 70% off EVERYTHING — ends at midnight!',
+      body: `Dear Valued Customer,
+
+DON'T MISS OUT! Our BIGGEST sale of the year is here and it ends TONIGHT at midnight!
+
+🛒 70% OFF storewide — no code needed
+🚀 Free shipping on ALL orders over $9.99
+🎁 FREE mystery gift with every purchase over $49
+
+SHOP NOW before it's too late:
+https://deals.megashop-bargains.biz/flash-sale-2025
+
+Our hottest deals RIGHT NOW:
+• Smart Watch Pro X9 — was $299, NOW ONLY $89!
+• Wireless Earbuds Ultra — was $149, NOW ONLY $44!
+• 4K Mini Projector — was $599, NOW ONLY $179!
+
+⏰ HURRY! Stock is running out FAST and these prices WON'T LAST!
+Over 10,000 happy customers already shopping — join them NOW!
+
+Reply STOP to unsubscribe. MegaShop Inc., 1234 Nowhere Blvd, Commerce City, CA 90001.`
+    },
+    {
+      subject: 'How I made $12,847 last month working 2 hours a day (copy my system)',
+      body: `Hey there,
+
+My name is Brad Thompson and 18 months ago I was flat broke, $40K in debt, and working a soul-crushing 9-to-5 I hated.
+
+Then I discovered the EXACT system that now generates $12,000–$15,000 per month for me — on autopilot — while I spend time with my family.
+
+And I want to share it with you FOR FREE.
+
+The system is simple:
+→ No experience required
+→ No startup costs (under $50 to launch)
+→ Works from any country
+→ Takes 2 hours a day MAX
+
+Thousands of people just like you are already using this. Here are a few recent results from our community:
+• Sarah M. — $8,200 in her first month!
+• James K. — $22,000 in 3 months, quit his day job!
+• Lisa P. — $5,600/month while raising 3 kids!
+
+Watch my FREE training video (only up for 48 hours):
+https://wealthsystem.auto-profits.xyz/free-training
+
+This is NOT a pyramid scheme or MLM. This is a proven, legitimate online business model.
+
+To your success,
+Brad Thompson
+Founder, AutoProfit Systems
+
+P.S. — I'm limiting this to the next 500 people. Once the spots are gone, this page comes down. Click NOW.
+
+Unsubscribe: https://wealthsystem.auto-profits.xyz/unsub`
+    },
+    {
+      subject: 'Re: Your Amazon order #112-4859302 — CLAIM YOUR REWARD',
+      body: `Congratulations!
+
+You have been selected as one of our LUCKY WINNERS in the Amazon Customer Appreciation Sweepstakes!
+
+As a valued Amazon shopper, you are entitled to claim:
+
+★ 1x Apple iPhone 16 Pro Max (valued at $1,199)
+★ 1x $500 Amazon Gift Card
+★ 1x Premium Membership (12 months FREE)
+
+To claim your rewards, simply complete a short 30-second survey about your recent shopping experience:
+
+CLAIM MY PRIZE → https://amazon-rewards-survey.promo-winners.net/claim?id=8492
+
+IMPORTANT: You must claim within the next 24 hours or your prize will be forfeited and reassigned to another winner.
+
+Survey takes under 60 seconds. No purchase necessary. Prizes shipped worldwide.
+
+You received this because you are a registered Amazon customer. To opt out of future promotional offers, click here: https://amazon-rewards-survey.promo-winners.net/optout
+
+Amazon Customer Rewards Team
+Sent on behalf of Amazon Inc., Seattle WA (promotional partner)`
+    }
+  ];
+
+  /* ── Populate example cards ── */
+  function makeCard(ex, type) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    const cardClass = type === 'phishing' ? 'phishing-card' : type === 'spam' ? 'spam-card' : 'legit-card';
+    btn.className = 'example-card ' + cardClass;
+    btn.innerHTML =
+      '<div class="ex-subject">' + esc(ex.subject) + '</div>' +
+      '<div class="ex-preview">' + esc(ex.body.replace(/\n/g,' ').trim().slice(0, 120)) + '…</div>';
+    btn.addEventListener('click', function () {
+      document.getElementById('email-subject').value = ex.subject;
+      document.getElementById('email-body').value = ex.body;
+      document.getElementById('email-html').value = '';
+      document.getElementById('email-subject').focus();
+    });
+    return btn;
+  }
+
+  const phishingContainer = document.getElementById('phishing-examples');
+  const legitContainer    = document.getElementById('legit-examples');
+  const spamContainer     = document.getElementById('spam-examples');
+  PHISHING.forEach(function (ex) { phishingContainer.appendChild(makeCard(ex, 'phishing')); });
+  LEGIT.forEach(function (ex)    { legitContainer.appendChild(makeCard(ex, 'legit')); });
+  SPAM.forEach(function (ex)     { spamContainer.appendChild(makeCard(ex, 'spam')); });
+
+  /* ── HTML body toggle ── */
+  const htmlToggle  = document.getElementById('html-toggle');
+  const htmlWrap    = document.getElementById('html-body-wrap');
+  let htmlOpen = false;
+  htmlToggle.addEventListener('click', function () {
+    htmlOpen = !htmlOpen;
+    htmlWrap.classList.toggle('open', htmlOpen);
+    htmlToggle.textContent = (htmlOpen ? '▼' : '▶') + ' ' + (htmlOpen ? 'Hide' : 'Show') + ' HTML body (optional)';
+  });
+
+  /* ── DOM refs ── */
+  const form     = document.getElementById('scan-form');
+  const btn      = document.getElementById('scan-btn');
+  const spinner  = document.getElementById('spinner');
+  const errorBox = document.getElementById('error-box');
+  const results  = document.getElementById('results');
+
+  form.addEventListener('submit', async function (e) {
+    e.preventDefault();
+    const subject  = document.getElementById('email-subject').value.trim();
+    const bodyPlain = document.getElementById('email-body').value.trim();
+    const bodyHtml  = document.getElementById('email-html').value.trim();
+    if (!subject || !bodyPlain) { showError('Subject and body are required.'); return; }
+    await scan(subject, bodyPlain, bodyHtml);
+  });
+
+  async function scan(subject, bodyPlain, bodyHtml) {
+    hideAll();
+    setLoading(true);
+    try {
+      const res = await fetch('/predict', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ subject: subject, body_plain: bodyPlain, body_html: bodyHtml || '' }),
+      });
+
+      let body;
+      try { body = await res.json(); } catch (_) {
+        showError('Invalid response from server (non-JSON).');
+        return;
+      }
+
+      // Go wrapper envelope: {"success": bool, "data": {...}} or {"success": false, "error": {"message": "..."}}
+      const errMsg = body && body.error ? (body.error.message || '') : '';
+
+      if (res.status === 503) {
+        if (errMsg.toLowerCase().includes('model') || errMsg.toLowerCase().includes('not loaded') || errMsg.toLowerCase().includes('not ready')) {
+          showError('⚠️ NLP model not loaded yet. Start the service with the model weights in place. (See services/svc-06-nlp/nlp/)');
+        } else {
+          showError('Service unavailable (503): ' + (errMsg || 'NLP service returned 503.'));
+        }
+        return;
+      }
+
+      if (!res.ok) {
+        showError(errMsg || 'Request failed (status ' + res.status + ')');
+        return;
+      }
+
+      // Unwrap the Go envelope — data lives at body.data
+      showResults((body && body.data) ? body.data : body);
+    } catch (err) {
+      showError('Network error — is the NLP service running on port 8001? (' + err.message + ')');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function showResults(d) {
+    /* Classification badge */
+    const cls = (d.classification || 'unknown').toLowerCase();
+    const classEl = document.getElementById('r-classification');
+    classEl.innerHTML = '';
+    const badge = document.createElement('span');
+    badge.className = 'badge ' + classificationBadge(cls);
+    badge.textContent = d.classification || 'unknown';
+    classEl.appendChild(badge);
+
+    /* Confidence */
+    const conf = typeof d.confidence === 'number' ? d.confidence : 0;
+    document.getElementById('r-confidence').textContent = pct(conf);
+    const confBar = document.getElementById('r-confidence-bar');
+    confBar.style.width = pct(conf);
+    confBar.style.background = classificationColor(cls);
+
+    /* Probabilities */
+    document.getElementById('r-phishing-prob').textContent = typeof d.phishing_probability === 'number' ? pct(d.phishing_probability) : '—';
+    document.getElementById('r-spam-prob').textContent    = typeof d.spam_probability    === 'number' ? pct(d.spam_probability)    : '—';
+
+    /* Content risk score */
+    const risk = typeof d.content_risk_score === 'number' ? d.content_risk_score : 0;
+    document.getElementById('r-risk-score').textContent = risk + ' / 100';
+    const riskBar = document.getElementById('r-risk-bar');
+    riskBar.style.width   = Math.min(risk, 100) + '%';
+    riskBar.style.background = riskColor(risk);
+
+    /* Urgency score */
+    const urg = typeof d.urgency_score === 'number' ? d.urgency_score : 0;
+    document.getElementById('r-urgency').textContent = d.urgency_score !== undefined ? urg.toFixed(3) : '—';
+    const urgBar = document.getElementById('r-urgency-bar');
+    urgBar.style.width      = pct(urg);
+    urgBar.style.background = riskColor(urg * 100);
+
+    /* Obfuscation */
+    const obf = document.getElementById('r-obfuscation');
+    if (d.obfuscation_detected) {
+      obf.textContent = 'Yes';
+      obf.style.color = 'var(--red)';
+    } else {
+      obf.textContent = 'No';
+      obf.style.color = 'var(--green)';
+    }
+
+    /* Intent labels */
+    const intentsEl = document.getElementById('r-intents');
+    intentsEl.innerHTML = '';
+    const labels = Array.isArray(d.intent_labels) ? d.intent_labels : [];
+    if (labels.length === 0) {
+      const span = document.createElement('span');
+      span.className = 'pills-empty';
+      span.textContent = 'none';
+      intentsEl.appendChild(span);
+    } else {
+      labels.forEach(function (lbl) {
+        const pill = document.createElement('span');
+        pill.className = 'pill';
+        pill.textContent = lbl.replace(/_/g, ' ');
+        intentsEl.appendChild(pill);
+      });
+    }
+
+    /* Top tokens */
+    const tokens = Array.isArray(d.top_tokens) ? d.top_tokens : [];
+    const tokSection = document.getElementById('tokens-section');
+    const tokBody    = document.getElementById('r-tokens-body');
+    tokBody.innerHTML = '';
+    if (tokens.length > 0) {
+      const maxScore = Math.max(...tokens.map(function (t) { return t.score || 0; }));
+      tokens.forEach(function (t) {
+        const tr = document.createElement('tr');
+        const barWidth = maxScore > 0 ? Math.round((t.score / maxScore) * 80) : 0;
+        tr.innerHTML =
+          '<td>' + esc(t.token) + '</td>' +
+          '<td>' + (typeof t.score === 'number' ? t.score.toFixed(4) : '—') + '</td>' +
+          '<td><span class="token-score-bar" style="width:' + barWidth + 'px"></span></td>';
+        tokBody.appendChild(tr);
+      });
+      tokSection.style.display = '';
+    } else {
+      tokSection.style.display = 'none';
+    }
+
+    results.classList.add('active');
+    results.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  /* ── Helpers ── */
+  function pct(v) { return (Math.round(v * 1000) / 10).toFixed(1) + '%'; }
+
+  function classificationBadge(cls) {
+    if (cls === 'legitimate') return 'badge-green';
+    if (cls === 'spam')       return 'badge-yellow';
+    return 'badge-red';
+  }
+
+  function classificationColor(cls) {
+    if (cls === 'legitimate') return 'var(--green)';
+    if (cls === 'spam')       return 'var(--yellow)';
+    return 'var(--red)';
+  }
+
+  function riskColor(score) {
+    if (score < 40) return 'var(--green)';
+    if (score < 70) return 'var(--yellow)';
+    return 'var(--red)';
+  }
+
+  function esc(s) {
+    return String(s)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  function showError(msg) {
+    errorBox.textContent = msg;
+    errorBox.classList.add('active');
+  }
+
+  function hideAll() {
+    errorBox.classList.remove('active');
+    results.classList.remove('active');
+  }
+
+  function setLoading(on) {
+    spinner.classList.toggle('active', on);
+    btn.disabled = on;
+  }
+})();
+</script>
+</body>
+</html>

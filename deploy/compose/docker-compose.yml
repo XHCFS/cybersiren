@@ -20,6 +20,7 @@
 #   observability — Jaeger tracing UI
 #   monitoring    — Prometheus + Grafana (metrics dashboards)
 #   svc-03        — svc-03-url-analysis container
+#   svc-06        — svc-06-nlp container (NLP email classifier demo)
 #   svc-11        — svc-11-ti-sync container
 #   demo          — svc-03 + monitoring + observability (backward compat)
 # =============================================================================
@@ -212,6 +213,39 @@ services:
       CYBERSIREN_VALKEY__ADDR: valkey:6379
       CYBERSIREN_AUTH__JWT_SECRET: demo-secret-not-for-production-use!!
       CYBERSIREN_ML__URL_MODEL_PATH: /app/ml/inference_script.py
+      CYBERSIREN_METRICS_PORT: "9090"
+      CYBERSIREN_JAEGER_ENDPOINT: http://jaeger:4318
+    networks:
+      - cybersiren
+    restart: unless-stopped
+
+  # ── svc-06-nlp ─────────────────────────────────────────────────────────────
+  # NLP email classifier. Runs the DistilBERT inference service (Python FastAPI)
+  # alongside the Go HTTP wrapper that serves the demo UI and proxies /predict.
+  # DEMO ONLY: not part of the production pipeline. Open http://localhost:8086.
+  svc-06-nlp:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.nlp
+    profiles: ["svc-06"]
+    ports:
+      - "8086:8086"
+      - "9096:9090"
+    environment:
+      CYBERSIREN_ENV: development
+      CYBERSIREN_LOG__LEVEL: debug
+      CYBERSIREN_LOG__PRETTY: "true"
+      CYBERSIREN_SERVER__PORT: "8086"
+      # DB values satisfy shared/config.Validate() — svc-06 does not connect to Postgres.
+      CYBERSIREN_DB__HOST: postgres
+      CYBERSIREN_DB__PORT: "5432"
+      CYBERSIREN_DB__NAME: cybersiren
+      CYBERSIREN_DB__USER: ${POSTGRES_USER:-postgres}
+      CYBERSIREN_DB__PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      CYBERSIREN_DB__SSL_MODE: disable
+      CYBERSIREN_AUTH__JWT_SECRET: demo-secret-not-for-production-use!!
+      # Python NLP inference service runs in the same container on port 8001.
+      CYBERSIREN_ML__NLP_SERVICE_URL: http://localhost:8001
       CYBERSIREN_METRICS_PORT: "9090"
       CYBERSIREN_JAEGER_ENDPOINT: http://jaeger:4318
     networks:

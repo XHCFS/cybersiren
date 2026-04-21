@@ -287,7 +287,14 @@ svc-short-profile = $(shell echo $(1) | sed 's/^\(svc-[0-9]*\).*/\1/')
 ## demo: Run a service with full observability stack (Prometheus, Grafana, Jaeger).
 ##       Uses cached images — fast on repeat runs. Force a rebuild with: make demo-build svc=<name>
 ##       Usage: make demo svc=svc-03-url-analysis
+##              make demo svc=svc-06-nlp
 ##              make demo svc=svc-11-ti-sync
+
+# Demo Dashboard port map: svc-short-profile → HTTP port
+demo-port-svc-03 = 8083
+demo-port-svc-06 = 8086
+svc-demo-port = $(or $(demo-port-$(call svc-short-profile,$(1))),8083)
+
 demo: check-docker check-compose-env
 	@[ "$(svc)" ] || (echo "Usage: make demo svc=<service-name>"; exit 1)
 	$(DOCKER_COMPOSE) --profile postgres --profile valkey \
@@ -295,7 +302,7 @@ demo: check-docker check-compose-env
 	    --profile $(call svc-short-profile,$(svc)) up -d --wait
 	@echo ""
 	@echo "  Service:     $(svc)"
-	@echo "  Demo Dashboard:   http://localhost:8083"
+	@echo "  Demo Dashboard:   http://localhost:$(call svc-demo-port,$(svc))"
 	@echo "  Grafana:     http://localhost:3001"
 	@echo "  Prometheus:  http://localhost:9092"
 	@echo "  Jaeger:      http://localhost:16686"
@@ -310,21 +317,22 @@ demo-build: check-docker check-compose-env
 	    --profile $(call svc-short-profile,$(svc)) up -d --wait --build
 	@echo ""
 	@echo "  Service:     $(svc)"
-	@echo "  Demo Dashboard:   http://localhost:8083"
+	@echo "  Demo Dashboard:   http://localhost:$(call svc-demo-port,$(svc))"
 	@echo "  Grafana:     http://localhost:3001"
 	@echo "  Prometheus:  http://localhost:9092"
 	@echo "  Jaeger:      http://localhost:16686"
 	@echo ""
 
-## demo-all: Run demo service bundle (svc-03 + svc-11) with full observability stack.
+## demo-all: Run demo service bundle (svc-03 + svc-06 + svc-11) with full observability stack.
 ##           Uses cached images — fast on repeat runs. Force a rebuild with: make demo-all-build
 demo-all: check-docker check-compose-env
 	$(DOCKER_COMPOSE) --profile postgres --profile valkey \
 	    --profile monitoring --profile observability \
-	    --profile svc-03 --profile svc-11 up -d --wait
+	    --profile svc-03 --profile svc-06 --profile svc-11 up -d --wait
 	@echo ""
-	@echo "  Services:    svc-03-url-analysis, svc-11-ti-sync"
-	@echo "  Demo Dashboard:   http://localhost:8083"
+	@echo "  Services:    svc-03-url-analysis, svc-06-nlp, svc-11-ti-sync"
+	@echo "  URL Demo:         http://localhost:8083"
+	@echo "  NLP Demo:         http://localhost:8086"
 	@echo "  Grafana:     http://localhost:3001"
 	@echo "  Prometheus:  http://localhost:9092"
 	@echo "  Jaeger:      http://localhost:16686"
@@ -335,10 +343,11 @@ demo-all: check-docker check-compose-env
 demo-all-build: check-docker check-compose-env
 	$(DOCKER_COMPOSE) --profile postgres --profile valkey \
 	    --profile monitoring --profile observability \
-	    --profile svc-03 --profile svc-11 up -d --wait --build
+	    --profile svc-03 --profile svc-06 --profile svc-11 up -d --wait --build
 	@echo ""
-	@echo "  Services:    svc-03-url-analysis, svc-11-ti-sync"
-	@echo "  Demo Dashboard:   http://localhost:8083"
+	@echo "  Services:    svc-03-url-analysis, svc-06-nlp, svc-11-ti-sync"
+	@echo "  URL Demo:         http://localhost:8083"
+	@echo "  NLP Demo:         http://localhost:8086"
 	@echo "  Grafana:     http://localhost:3001"
 	@echo "  Prometheus:  http://localhost:9092"
 	@echo "  Jaeger:      http://localhost:16686"
@@ -348,7 +357,7 @@ demo-all-build: check-docker check-compose-env
 demo-stop-all: check-docker
 	$(DOCKER_COMPOSE) --profile postgres --profile valkey \
 	    --profile monitoring --profile observability \
-	    --profile svc-03 --profile svc-11 down
+	    --profile svc-03 --profile svc-06 --profile svc-11 down
 	@echo "All demo containers stopped."
 
 ## jaeger: Start Jaeger standalone (use when already running infra separately)
