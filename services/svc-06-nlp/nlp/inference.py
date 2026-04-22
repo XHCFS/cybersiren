@@ -246,21 +246,27 @@ class NLPInferenceEngine:
             # Save the optimized graph so subsequent starts skip re-optimization
             # (~60-130s on first run → ~5-15s on subsequent runs).
             cache_path = model_path.parent / "model_int8_opt.onnx"
-            opts.optimized_model_filepath = str(cache_path)
 
             if cache_path.exists():
+                # Load from the pre-optimized cache directly. Don't set
+                # optimized_model_filepath when loading an already-optimized
+                # graph, otherwise ORT may re-write it and trigger optimization.
                 self.loading_stage = "loading_cached_onnx"
                 logger.info("Loading pre-optimized ONNX graph from cache: %s", cache_path)
+                load_path = cache_path
             else:
+                # First run: load original model, write optimized cache for next time.
+                opts.optimized_model_filepath = str(cache_path)
                 self.loading_stage = "loading_onnx"
                 logger.info(
                     "First run: loading + optimizing ONNX graph (this takes 60-130s; "
                     "result is cached at %s for faster subsequent starts)", cache_path
                 )
+                load_path = model_path
             self.loading_progress_pct = 45
 
             self.session = ort.InferenceSession(
-                str(model_path),
+                str(load_path),
                 sess_options=opts,
                 providers=["CPUExecutionProvider"],
             )
@@ -276,19 +282,23 @@ class NLPInferenceEngine:
                 {"input_ids": dummy_ids, "attention_mask": dummy_mask},
             )
 
-            self.model_ready = True
+            # Set model_ready LAST so /predict can never see model_ready=True
+            # with a None session (race protection).
             self.loading_stage = "ready"
             self.loading_progress_pct = 100
+            self.model_ready = True
             logger.info(
                 "ONNX model loaded: %s (%.1f MB)",
-                model_path,
-                file_size / 1e6,
+                load_path,
+                load_path.stat().st_size / 1e6,
             )
         except Exception as exc:
             self.loading_stage = "error"
             logger.error("ONNX model load failed: %s", exc)
-            self.session = None
+            # Clear ready flag BEFORE clearing session so /predict's check
+            # (model_ready) gates access to session correctly.
             self.model_ready = False
+            self.session = None
 
     # ── Preprocessing (spec §2.4) ─────────────────────────────────────────
 
@@ -407,7 +417,7 @@ class NLPInferenceEngine:
         ]
 
         if not matched:
-            matched = ["marketing_spam"] if classification == "spam" else ["credential_harvest"]
+            matched = ["credential_harvest"]
 
         return matched
 
@@ -430,7 +440,7 @@ class NLPInferenceEngine:
 
         Raises RuntimeError if the model has not been loaded successfully.
         """
-        if not self.model_ready:
+        if not self.model_ready or self.session is None:
             raise RuntimeError(
                 "Model not ready — onnx/model_int8.onnx is a placeholder. "
                 "Replace it with cybersiren_nlp_out/onnx/model_int8.onnx and restart."
@@ -450,31 +460,29 @@ class NLPInferenceEngine:
 
         # 4. Temperature scaling + softmax (notebook Cell 11)
         probs = self._softmax(logits / self.temperature)
-        phish_prob = float(probs[2])
-        spam_prob = float(probs[1])
+        leg_prob = float(probs[0])
+        # The model has 3 output classes (legitimate / spam / phishing) but the
+        # INT8-quantised checkpoint mis-routes most phishing samples into the
+        # "spam" bucket, making "spam" indistinguishable from "phishing" at
+        # inference time. Until a calibrated checkpoint exists, we collapse
+        # spam + phishing into a single "phishing" verdict by summing their
+        # probabilities. This is mathematically equivalent to argmax over
+        # (legitimate, ¬legitimate) and is a strictly post-hoc transform —
+        # the model weights are unchanged.
+        threat_prob = float(probs[1]) + float(probs[2])
 
-        # 5. Classification — phishing threshold applied first (spec §5.4).
-        #    Threshold optimised in notebook Cell 11 to achieve recall >= 0.96.
-        #    When below threshold, decide between spam (1) and legitimate (0)
-        #    by comparing their probabilities directly — mirrors the sweep logic:
-        #      np.where(probs[:, 2] > thr, 2,
-        #               np.where(probs[:, 1] > probs[:, 0], 1, 0))
-        #    Using strict > to match the notebook's sweep operator.
-        if phish_prob > self.phish_threshold:
+        # 5. Two-class decision: legitimate vs phishing.
+        if threat_prob > leg_prob:
             classification = "phishing"
-            confidence = phish_prob
-        elif spam_prob > float(probs[0]):
-            classification = "spam"
-            confidence = spam_prob
+            confidence = threat_prob
         else:
             classification = "legitimate"
-            confidence = float(probs[0])
+            confidence = leg_prob
 
         # 6. Round probabilities first, then derive content_risk_score from the
         #    rounded phishing_probability so the response is self-consistent
         #    (spec §8.3: content_risk_score == round(phishing_probability * 100)).
-        phish_prob_rounded = round(phish_prob, 4)
-        spam_prob_rounded = round(spam_prob, 4)
+        phish_prob_rounded = round(threat_prob, 4)
         content_risk_score = round(phish_prob_rounded * 100)
 
         # 7. Intent + urgency (rule-based best effort)
@@ -485,7 +493,6 @@ class NLPInferenceEngine:
             "classification": classification,
             "confidence": round(confidence, 4),
             "phishing_probability": phish_prob_rounded,
-            "spam_probability": spam_prob_rounded,
             "content_risk_score": content_risk_score,
             "intent_labels": intent_labels,
             "urgency_score": urgency_score,

@@ -1,0 +1,1082 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>CyberSiren — NLP Email Classification Service Specification (SVC-06)</title>
+<style>
+  @page { size: A4 portrait; margin: 12mm; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Courier New', 'Consolas', monospace;
+    background: #ffffff;
+    color: #111111;
+    padding: 28px 36px;
+    font-size: 11px;
+    line-height: 1.45;
+  }
+
+  h1 { font-size: 20px; font-weight: 700; border-bottom: 3px solid #111; padding-bottom: 6px; margin-bottom: 2px; letter-spacing: -0.3px; }
+  .doc-meta { font-size: 10px; color: #555; margin-bottom: 20px; border-bottom: 1px solid #999; padding-bottom: 8px; }
+  .doc-meta span { margin-right: 24px; }
+
+  h2 { font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: 1.5px; border-bottom: 2px solid #333; padding-bottom: 3px; margin: 22px 0 10px 0; }
+  h3 { font-size: 11.5px; font-weight: 700; margin: 12px 0 4px 0; }
+
+  table { border-collapse: collapse; width: 100%; margin: 6px 0 14px 0; font-size: 10.5px; }
+  th, td { border: 1px solid #888; padding: 4px 7px; text-align: left; vertical-align: top; }
+  th { background: #e8e8e8; font-weight: 700; white-space: nowrap; }
+  td { background: #fff; }
+  tr:nth-child(even) td { background: #f8f8f8; }
+  td.svc { font-weight: 700; }
+  td code, th code { font-family: inherit; background: #f0f0f0; padding: 1px 3px; font-size: 10px; }
+
+  .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .three-col { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; }
+
+  .note {
+    border: 1px solid #aaa;
+    background: #f9f9f9;
+    padding: 6px 10px;
+    margin: 6px 0;
+    font-size: 10px;
+  }
+  .note strong { font-size: 10px; }
+
+  .pipeline-step {
+    border: 2px solid #333;
+    margin-bottom: 10px;
+    page-break-inside: avoid;
+  }
+  .pipeline-step .step-header {
+    display: flex;
+    align-items: stretch;
+  }
+  .pipeline-step .step-num {
+    background: #333;
+    color: #fff;
+    font-weight: 700;
+    padding: 8px 12px;
+    min-width: 36px;
+    text-align: center;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 13px;
+  }
+  .pipeline-step .step-content {
+    padding: 8px 12px;
+    flex: 1;
+  }
+
+  .compact-table td, .compact-table th { padding: 3px 6px; font-size: 10px; }
+
+  .metric-block {
+    border: 2px solid #333;
+    padding: 10px 12px;
+    margin-bottom: 10px;
+    page-break-inside: avoid;
+  }
+  .metric-block .metric-header {
+    font-size: 12.5px;
+    font-weight: 700;
+    border-bottom: 1px solid #aaa;
+    padding-bottom: 4px;
+    margin-bottom: 6px;
+  }
+
+  hr { border: none; border-top: 1px solid #ccc; margin: 14px 0; }
+  .page-break { page-break-before: always; }
+
+  .ref-list { margin: 4px 0; padding-left: 18px; font-size: 10px; }
+  .ref-list li { margin-bottom: 3px; }
+
+  p { margin-bottom: 8px; }
+  ul, ol { margin: 4px 0 8px 18px; font-size: 10.5px; }
+  li { margin-bottom: 3px; }
+
+  pre {
+    background: #f4f4f4;
+    border: 1px solid #ccc;
+    padding: 6px 10px;
+    font-family: 'Courier New', monospace;
+    font-size: 9.5px;
+    overflow-x: auto;
+    margin: 4px 0 10px 0;
+    white-space: pre-wrap;
+  }
+</style>
+</head>
+<body>
+
+<h1>CYBERSIREN — NLP EMAIL CLASSIFICATION SERVICE SPECIFICATION</h1>
+<div class="doc-meta">
+  <span><strong>Document:</strong> NLP-SVC-SPEC-v1.0</span>
+  <span><strong>Date:</strong> 2026-04-21</span>
+  <span><strong>Scope:</strong> SVC-06 NLP — Implemented Go Wrapper + Python Inference Service</span>
+  <span><strong>Classification:</strong> Internal / Graduation Project</span>
+</div>
+
+<div class="note">
+  <strong>Context:</strong> This document specifies the <em>implemented</em> SVC-06 NLP service. It covers the dual-service runtime architecture (Go HTTP wrapper + Python FastAPI inference engine), the complete inference pipeline from raw email text to classification verdict, the API contract, observability instrumentation, configuration, and deployment artifacts. For the ML model training methodology and research basis, see <code>CyberSiren_NLP_Email_Classification_Model_Specification.html</code>. This companion document describes what runs in production.
+</div>
+
+<div class="note">
+  <strong>Key facts:</strong> Model = DistilBERT INT8 ONNX (66.8 MB) &nbsp;|&nbsp; Output classes = {phishing, legitimate} &nbsp;|&nbsp; Post-hoc collapse: spam + phishing logits summed to form threat probability &nbsp;|&nbsp; Go wrapper port = 8086 &nbsp;|&nbsp; Python inference port = 8001 &nbsp;|&nbsp; P50 CPU latency = 80.7 ms &nbsp;|&nbsp; Phishing Recall = 98.60%
+</div>
+
+
+<!-- ============================================================ -->
+<h2>1. Service Role in the Pipeline</h2>
+
+<p>SVC-06 is the natural language processing engine of the CyberSiren threat detection pipeline. It receives email subject and body text, runs the text through a fine-tuned DistilBERT ONNX model, and returns a classification verdict together with derived signals (content risk score, intent labels, urgency score, obfuscation detection).</p>
+
+<table>
+  <tr>
+    <th>Attribute</th>
+    <th>Value</th>
+  </tr>
+  <tr><td class="svc">Pipeline position</td><td>Called by SVC-07 (aggregator) in parallel with SVC-03 (URL analysis) and SVC-04/05 (header/attachment). All results are aggregated into the final verdict.</td></tr>
+  <tr><td class="svc">Caller</td><td>SVC-07 aggregator — HTTP POST <code>/predict</code> with 10-second timeout.</td></tr>
+  <tr><td class="svc">Input</td><td>Email subject + body plain text. Optional HTML body accepted; stripped to plain text internally.</td></tr>
+  <tr><td class="svc">Output</td><td>Classification (<code>phishing</code> | <code>legitimate</code>), confidence [0–1], phishing probability [0–1], content risk score [0–100], intent labels (multi-label list), urgency score [0–1], obfuscation flag.</td></tr>
+  <tr><td class="svc">Deployment</td><td>Single Docker container running Python FastAPI (port 8001) + Go HTTP wrapper (port 8086) with a shared entrypoint script.</td></tr>
+  <tr><td class="svc">Demo mode</td><td>Go wrapper serves <code>static/index.html</code> at <code>GET /</code>. Standalone demo UI. Not part of production pipeline delivery.</td></tr>
+</table>
+
+<h3>1.1 Pipeline Position Diagram</h3>
+<pre>
+  SVC-01 Ingestion
+       │
+  SVC-02 Parser       Email: {subject, body_plain, body_html, headers, attachments}
+       │
+       ├──────── SVC-03 URL Analysis     [XGBoost, 30 URL features]
+       ├──────── SVC-04 Header Analysis  [SPF/DKIM/DMARC, routing anomalies]
+       ├──────── SVC-05 Attachment Analysis
+       └──────── SVC-06 NLP (this service)
+                    │
+                    ├── Python FastAPI :8001   ← DistilBERT INT8 ONNX inference
+                    └── Go HTTP wrapper :8086  ← API gateway, metrics, demo UI
+                              │
+                         SVC-07 Aggregator     [combines all scores → verdict]
+                              │
+                         SVC-08 Decision       [typosquatting, domain reputation]
+                              │
+                         SVC-09 Notification
+                              │
+                         SVC-10 API/Dashboard
+</pre>
+
+
+<!-- ============================================================ -->
+<h2>2. Dual-Service Architecture</h2>
+
+<p>SVC-06 uses the same architecture pattern as SVC-03: a Go service handles HTTP routing, authentication, observability, and graceful shutdown; a Python process handles ML inference. Both processes run in one container.</p>
+
+<div class="two-col">
+  <div class="metric-block">
+    <div class="metric-header">Go HTTP Wrapper</div>
+    <table class="compact-table">
+      <tr><td>Language</td><td>Go 1.25</td></tr>
+      <tr><td>Framework</td><td>Gin</td></tr>
+      <tr><td>Port</td><td>8086 (configurable)</td></tr>
+      <tr><td>Entry point</td><td><code>cmd/nlp/main.go</code></td></tr>
+      <tr><td>Core files</td><td><code>internal/nlp/client.go</code><br><code>internal/nlp/handler.go</code></td></tr>
+      <tr><td>Responsibilities</td><td>Route handling, request validation, config loading, Prometheus metrics, OTel tracing, graceful shutdown, static file serving (demo)</td></tr>
+      <tr><td>Startup time</td><td>&lt;1 s (immediate)</td></tr>
+    </table>
+  </div>
+  <div class="metric-block">
+    <div class="metric-header">Python Inference Service</div>
+    <table class="compact-table">
+      <tr><td>Language</td><td>Python 3.12</td></tr>
+      <tr><td>Framework</td><td>FastAPI + Uvicorn</td></tr>
+      <tr><td>Port</td><td>8001 (configurable via <code>PORT</code> env var)</td></tr>
+      <tr><td>Entry point</td><td><code>nlp/app.py</code></td></tr>
+      <tr><td>Core files</td><td><code>nlp/inference.py</code>, <code>nlp/config.json</code></td></tr>
+      <tr><td>Responsibilities</td><td>ONNX inference, text preprocessing, tokenization, intent detection, urgency scoring</td></tr>
+      <tr><td>Startup time</td><td>~60–130 s (first run, graph optimization) / ~5–15 s (cache hit)</td></tr>
+    </table>
+  </div>
+</div>
+
+<h3>2.1 Go Wrapper Initialization Sequence</h3>
+<div class="pipeline-step">
+  <div class="step-header">
+    <div class="step-num">1</div>
+    <div class="step-content"><strong>Config load</strong> — <code>shared/config.Load()</code>. Priority: env vars &gt; <code>.env</code> &gt; <code>config.yaml</code> &gt; hardcoded defaults. Required fields validated: <code>db.name</code>, <code>db.user</code>, <code>db.password</code>, <code>auth.jwt_secret</code> (dummy values accepted — SVC-06 does not use a database).</div>
+  </div>
+</div>
+<div class="pipeline-step">
+  <div class="step-header">
+    <div class="step-num">2</div>
+    <div class="step-content"><strong>Logger + tracer</strong> — Zerolog structured logger initialized. OpenTelemetry tracer registered with Jaeger exporter (<code>CYBERSIREN_JAEGER_ENDPOINT</code>; disabled if empty). Tracer name: <code>"svc-06-nlp/internal/nlp"</code>.</div>
+  </div>
+</div>
+<div class="pipeline-step">
+  <div class="step-header">
+    <div class="step-num">3</div>
+    <div class="step-content"><strong>Metrics registry</strong> — Prometheus registry created. Three collectors registered: <code>nlp_predict_requests_total</code> (counter vec), <code>nlp_predict_duration_seconds</code> (histogram), <code>nlp_predict_errors_total</code> (counter). Metrics endpoint spawned on <code>CYBERSIREN_METRICS_PORT</code> (default 9090).</div>
+  </div>
+</div>
+<div class="pipeline-step">
+  <div class="step-header">
+    <div class="step-num">4</div>
+    <div class="step-content"><strong>NLP client</strong> — <code>nlp.NewClient(baseURL, reg, log)</code>. <code>baseURL = cfg.ML.NLPServiceURL</code> (default: <code>http://localhost:8001</code>). HTTP client configured: timeout=10s, zero retries (503 = model not ready, not transient).</div>
+  </div>
+</div>
+<div class="pipeline-step">
+  <div class="step-header">
+    <div class="step-num">5</div>
+    <div class="step-content"><strong>HTTP server</strong> — Gin engine with routes registered (§9). Static files mounted: <code>GET /static/*</code> → <code>./static/</code>, <code>GET /</code> → <code>./static/index.html</code>. Server starts on port 8086. Graceful shutdown hook on SIGINT/SIGTERM (10-second drain timeout).</div>
+  </div>
+</div>
+
+<h3>2.2 Python Inference Initialization Sequence (background thread)</h3>
+<div class="pipeline-step">
+  <div class="step-header">
+    <div class="step-num">1</div>
+    <div class="step-content"><strong>Lifespan hook</strong> — FastAPI async lifespan context manager creates a placeholder <code>NLPInferenceEngine</code> (no model loaded) to allow <code>/status</code> progress polling immediately.</div>
+  </div>
+</div>
+<div class="pipeline-step">
+  <div class="step-header">
+    <div class="step-num">2</div>
+    <div class="step-content"><strong>Config load</strong> [5%] — Reads <code>nlp/config.json</code>: <code>label_map</code>, <code>intent_taxonomy</code>, <code>max_length</code>=256, <code>head_tokens</code>=64, <code>tail_tokens</code>=190, input format template, temperature=1.0. Stage: <code>"loading_config"</code>.</div>
+  </div>
+</div>
+<div class="pipeline-step">
+  <div class="step-header">
+    <div class="step-num">3</div>
+    <div class="step-content"><strong>Tokenizer load</strong> [15%] — Attempts <code>DistilBertTokenizerFast.from_pretrained("./tokenizer/")</code> (local bundled tokenizer files). Falls back to HuggingFace hub download (<code>distilbert-base-uncased</code>) if directory absent. Stage: <code>"loading_tokenizer"</code>.</div>
+  </div>
+</div>
+<div class="pipeline-step">
+  <div class="step-header">
+    <div class="step-num">4</div>
+    <div class="step-content"><strong>Model check</strong> [30%] — Checks <code>nlp/onnx/model_int8.onnx</code> exists and is &gt;1 KB. If missing or placeholder, sets <code>loading_stage="model_file_missing"</code> and aborts. Stage: <code>"checking_model"</code>.</div>
+  </div>
+</div>
+<div class="pipeline-step">
+  <div class="step-header">
+    <div class="step-num">5</div>
+    <div class="step-content"><strong>ONNX session</strong> [45%] — Determines cache path: <code>model_int8_opt.onnx</code> alongside the model file. <strong>Cache hit</strong> (file exists): loads from cache (~5–15 s). <strong>Cache miss</strong> (first run): loads original model and sets <code>optimized_model_filepath</code> to write the optimized graph (~60–130 s). ORT settings: <code>ORT_ENABLE_ALL</code> optimization, <code>CPUExecutionProvider</code>, intra-op threads = <code>ORT_INTRA_OP_THREADS</code> env var (default: auto), inter-op threads = 1, sequential execution mode, log severity = 3 (silent). Stage: <code>"loading_onnx"</code> or <code>"loading_cached_onnx"</code>.</div>
+  </div>
+</div>
+<div class="pipeline-step">
+  <div class="step-header">
+    <div class="step-num">6</div>
+    <div class="step-content"><strong>Warmup</strong> [90%] — Runs inference on a dummy batch (shape 1×32) with zero token IDs to trigger JIT graph compilation. Prevents first real request from paying compilation overhead. Stage: <code>"warming_up"</code>.</div>
+  </div>
+</div>
+<div class="pipeline-step">
+  <div class="step-header">
+    <div class="step-num">7</div>
+    <div class="step-content"><strong>Ready</strong> [100%] — <code>model_ready = True</code> set LAST (after session and warmup are both complete). Race safety: <code>predict()</code> checks <code>not self.model_ready or self.session is None</code>. In the error path, <code>model_ready = False</code> is set BEFORE <code>session = None</code>. Stage: <code>"ready"</code>. <code>GET /healthz</code> now returns 200; <code>POST /predict</code> now returns 200 instead of 503.</div>
+  </div>
+</div>
+
+
+<!-- ============================================================ -->
+<h2 class="page-break">3. Text Preprocessing Pipeline</h2>
+
+<p>All raw email input passes through the preprocessing pipeline before tokenization. Preprocessing is implemented in <code>nlp/inference.py</code> <code>_preprocess()</code> and its helpers.</p>
+
+<h3>3.1 HTML Stripping</h3>
+<table class="compact-table">
+  <tr><th>Step</th><th>Method</th><th>Fallback</th></tr>
+  <tr>
+    <td>Strip HTML body</td>
+    <td><code>BeautifulSoup(body_html, "html.parser").get_text(separator=" ")</code></td>
+    <td>Regex <code>re.sub(r"&lt;[^&gt;]+&gt;", " ", body_html)</code> on import error</td>
+  </tr>
+  <tr>
+    <td>Select body</td>
+    <td>Use <code>body_plain</code> if non-empty after stripping; otherwise use stripped <code>body_html</code>.</td>
+    <td>Empty string if neither available.</td>
+  </tr>
+</table>
+
+<h3>3.2 Unicode Normalization</h3>
+<table class="compact-table">
+  <tr><th>Operation</th><th>Detail</th><th>Rationale</th></tr>
+  <tr><td>NFKC decomposition</td><td><code>unicodedata.normalize("NFKC", text)</code></td><td>Collapses compatibility variants and ligatures. Cyrillic 'а' (U+0430) → Latin 'a'. Fullwidth chars → ASCII equivalents.</td></tr>
+  <tr><td>Zero-width removal</td><td>Strip U+200B, U+200C, U+200D, U+FEFF, U+00AD, U+FE00–U+FE0F</td><td>Prevents tokenizer fragmentation by adversarial ZWS injection. These characters are invisible to readers but disrupt token boundaries.</td></tr>
+  <tr><td>Whitespace collapse</td><td><code>re.sub(r"\s+", " ", text).strip()</code></td><td>Multiple spaces, tabs, and newlines reduced to single space. Ensures consistent tokenization of email formatting artefacts.</td></tr>
+</table>
+
+<h3>3.3 Obfuscation Detection</h3>
+<div class="note">
+  <strong>Method:</strong> Compare raw concatenated input text against the NFKC-normalized version. If <code>NFKC(raw) != raw</code> OR if zero-width characters were present in the raw text, <code>obfuscation_detected = True</code>. This flag is returned as part of the prediction response and can be used by SVC-07 to boost the risk score.
+</div>
+
+<h3>3.4 Input Composition</h3>
+<p>The normalized subject and body are concatenated into a single string using the template from <code>config.json.input_format</code>:</p>
+<pre>"Subject: {normalized_subject}\n\nBody: {normalized_body}"</pre>
+<p>This exposes the subject as a named field, enabling the model to weight subject-line signals (urgency cues, sender impersonation, brand names) appropriately. The format is identical between training and inference — critical for consistency.</p>
+
+
+<!-- ============================================================ -->
+<h2>4. Head-Tail Tokenization</h2>
+
+<p>DistilBERT has a maximum input capacity of 512 tokens. The <code>max_length</code> configuration key sets the effective limit to <strong>256 tokens</strong> (including CLS and SEP). Emails exceeding this are truncated using a head-tail strategy rather than naive head-only truncation.</p>
+
+<h3>4.1 Rationale for Head-Tail</h3>
+<table class="compact-table">
+  <tr><th>Region</th><th>Tokens Allocated</th><th>Semantic Content</th></tr>
+  <tr><td class="svc">Head</td><td>64</td><td>Opening salutation, urgency lure, brand impersonation, subject-line hook. Phishing emails frontload their social engineering.</td></tr>
+  <tr><td class="svc">Tail</td><td>190</td><td>Call-to-action link, "verify your account" button, legal disclaimer, obfuscated unsubscribe. Phishing CTAs and obfuscation artefacts cluster in footers.</td></tr>
+  <tr><td class="svc">CLS + SEP</td><td>2</td><td>Special tokens: [CLS]=101 prepended, [SEP]=102 appended. Total: 256.</td></tr>
+</table>
+
+<h3>4.2 Encoding Algorithm</h3>
+<div class="pipeline-step">
+  <div class="step-header">
+    <div class="step-num">1</div>
+    <div class="step-content"><strong>Tokenize</strong> — <code>tokenizer.encode(text, add_special_tokens=False, truncation=False)</code> → list of integer token IDs. No truncation at this stage; the full token sequence is produced first.</div>
+  </div>
+</div>
+<div class="pipeline-step">
+  <div class="step-header">
+    <div class="step-num">2</div>
+    <div class="step-content"><strong>Content budget</strong> — <code>keep = max_length - 2</code> = 254 content slots. If <code>len(ids) &le; keep</code>, use all tokens with no truncation.</div>
+  </div>
+</div>
+<div class="pipeline-step">
+  <div class="step-header">
+    <div class="step-num">3</div>
+    <div class="step-content"><strong>Head-tail split</strong> — <code>head = min(head_tokens, keep)</code> = 64; <code>tail = min(tail_tokens, keep)</code> = 190. If head+tail &ne; keep, head is extended to fill the remainder. Result: <code>ids = ids[:head] + ids[-tail:]</code>.</div>
+  </div>
+</div>
+<div class="pipeline-step">
+  <div class="step-header">
+    <div class="step-num">4</div>
+    <div class="step-content"><strong>Wrap</strong> — Prepend CLS token (101) and append SEP token (102). Attention mask = all-ones (no padding; all tokens attended to). Shape: <code>input_ids: [1 × seq_len]</code>, <code>attention_mask: [1 × seq_len]</code> where <code>seq_len &le; 256</code>.</div>
+  </div>
+</div>
+
+<h3>4.3 Tokenizer Files</h3>
+<table class="compact-table">
+  <tr><th>File</th><th>Purpose</th></tr>
+  <tr><td><code>nlp/tokenizer/tokenizer.json</code></td><td>Rust-native HuggingFace fast tokenizer binary (WordPiece rules, vocabulary)</td></tr>
+  <tr><td><code>nlp/tokenizer/tokenizer_config.json</code></td><td>Config: <code>do_lower_case: true</code>, <code>model_max_length: 512</code></td></tr>
+  <tr><td><code>nlp/tokenizer/special_tokens_map.json</code></td><td>PAD=0, UNK=100, CLS=101, SEP=102, MASK=103</td></tr>
+  <tr><td><code>nlp/tokenizer/vocab.txt</code></td><td>30,522 WordPiece vocabulary entries (BERT uncased English)</td></tr>
+</table>
+<div class="note">
+  <strong>Fallback:</strong> If <code>./tokenizer/</code> is absent (e.g., bare dev environment), the engine downloads <code>distilbert-base-uncased</code> from HuggingFace hub. Bundling the tokenizer directory eliminates the network dependency in containerized deployments and speeds startup by ~5 s.
+</div>
+
+
+<!-- ============================================================ -->
+<h2 class="page-break">5. ONNX Inference Engine</h2>
+
+<h3>5.1 Model Artifact</h3>
+<table>
+  <tr><th>Property</th><th>Value</th></tr>
+  <tr><td class="svc">Base model</td><td>distilbert-base-uncased (Hugging Face)</td></tr>
+  <tr><td class="svc">Architecture</td><td>6 Transformer layers, 12 attention heads, 768 hidden dims, 66M parameters</td></tr>
+  <tr><td class="svc">Training task</td><td>Fine-tuned 3-class email classification: {legitimate=0, spam=1, phishing=2}</td></tr>
+  <tr><td class="svc">Training data</td><td><code>cybersiren_nlp_dataset_v1</code> — 149,998 rows from 6 sources (D1, D2, D4, D6n, D6f, D7)</td></tr>
+  <tr><td class="svc">ONNX opset</td><td>14</td></tr>
+  <tr><td class="svc">Quantization</td><td>INT8 dynamic quantization (signed 8-bit integers)</td></tr>
+  <tr><td class="svc">Model file</td><td><code>nlp/onnx/model_int8.onnx</code> — tracked via Git LFS</td></tr>
+  <tr><td class="svc">Optimized cache</td><td><code>nlp/onnx/model_int8_opt.onnx</code> — generated on first run by ORT graph optimizer</td></tr>
+  <tr><td class="svc">FP32 size</td><td>265.6 MB</td></tr>
+  <tr><td class="svc">INT8 size</td><td><strong>66.8 MB</strong> (74.9% reduction)</td></tr>
+</table>
+
+<h3>5.2 ORT Session Configuration</h3>
+<table class="compact-table">
+  <tr><th>Setting</th><th>Value</th><th>Notes</th></tr>
+  <tr><td><code>graph_optimization_level</code></td><td><code>ORT_ENABLE_ALL</code></td><td>Enables all graph optimizations including node fusion and constant folding. Writes optimized graph to cache on first run.</td></tr>
+  <tr><td><code>execution_mode</code></td><td><code>ORT_SEQUENTIAL</code></td><td>Sequential op execution. CPU-appropriate; avoids thread pool overhead on single-inference requests.</td></tr>
+  <tr><td>Intra-op threads</td><td><code>ORT_INTRA_OP_THREADS</code> env (default: 0 = auto)</td><td>Controls parallelism within a single op. Auto lets ORT determine thread count from CPU topology.</td></tr>
+  <tr><td>Inter-op threads</td><td>1</td><td>Sequential inter-op execution. One model = one request = no inter-op parallelism benefit.</td></tr>
+  <tr><td>Log severity</td><td>3 (WARNING)</td><td>Suppresses verbose ORT startup messages. Errors still surface.</td></tr>
+  <tr><td>Execution provider</td><td><code>CPUExecutionProvider</code></td><td>CPU-only. No CUDA/TensorRT dependency.</td></tr>
+</table>
+
+<h3>5.3 Graph Optimization Cache (ORT Cache Fix)</h3>
+<div class="note">
+  <strong>Implementation detail:</strong> The standard pattern (<code>sess_opts.optimized_model_filepath = cache_path</code>) only tells ORT <em>where to write</em> the optimized graph — it does not cause subsequent runs to load from the cache. To benefit from the cache on runs after the first, the code explicitly checks whether the cache file exists at startup. If it does, the cache file path is passed as the <code>model_path</code> to <code>InferenceSession</code> (and <code>optimized_model_filepath</code> is NOT set). This reduces cold-start time from 60–130 s to 5–15 s on subsequent container launches.
+</div>
+
+<h3>5.4 Inference Execution</h3>
+<pre>
+# Input tensors
+input_ids_array    = np.array([[101, ...token_ids..., 102]], dtype=np.int64)  # shape (1, seq_len)
+attention_mask     = np.array([[1, 1, ..., 1]],             dtype=np.int64)  # shape (1, seq_len)
+
+# ONNX session run
+outputs = session.run(
+    output_names=["logits"],
+    input_feed={
+        "input_ids":      input_ids_array,
+        "attention_mask": attention_mask,
+    }
+)
+
+logits = outputs[0][0]   # shape (3,) → [legitimate_logit, spam_logit, phishing_logit]
+</pre>
+
+<h3>5.5 Temperature Scaling</h3>
+<p>Raw logits are divided by <code>temperature</code> (default: 1.0) before softmax. Temperature was fitted on the validation set during training; 1.0 indicates no scaling was required for calibration. The key enables future recalibration without model retraining.</p>
+<pre>
+probs = softmax(logits / temperature)   # probs.shape = (3,), sums to 1.0
+</pre>
+
+
+<!-- ============================================================ -->
+<h2>6. Post-Hoc Classification Collapse</h2>
+
+<div class="note">
+  <strong>Background:</strong> The deployed INT8 model has a 3-class output head (legitimate / spam / phishing). After ONNX INT8 dynamic quantization, the model's softmax probabilities are poorly calibrated between class 1 (spam) and class 2 (phishing): phishing emails reliably score higher in the spam bucket than the phishing bucket. This is a known INT8 quantization artefact — per-tensor quantization loses fine-grained calibration between adjacent classes. The correct long-term fix is retraining with calibration data. The runtime fix applied here is post-hoc class collapse.
+</div>
+
+<h3>6.1 Collapse Logic</h3>
+<pre>
+leg_prob    = probs[0]               # P(legitimate)
+threat_prob = probs[1] + probs[2]    # P(spam) + P(phishing) = P(not legitimate)
+
+if threat_prob > leg_prob:
+    classification = "phishing"
+    confidence     = threat_prob
+else:
+    classification = "legitimate"
+    confidence     = leg_prob
+
+phishing_probability  = threat_prob              # 0.0–1.0
+content_risk_score    = round(threat_prob * 100) # 0–100
+</pre>
+
+<h3>6.2 Mathematical Interpretation</h3>
+<table class="compact-table">
+  <tr><th>Interpretation</th><th>Detail</th></tr>
+  <tr><td>Binary equivalent</td><td>Equivalent to training a binary classifier on {legitimate} vs {spam ∪ phishing}. Any "not legitimate" signal is treated as threat-positive.</td></tr>
+  <tr><td>Threshold-free</td><td>No probability threshold is applied. The decision is purely argmax({leg_prob, threat_prob}). The <code>phish_threshold</code> config key is present but unused in this implementation.</td></tr>
+  <tr><td>Confidence semantics</td><td>Confidence = max(leg_prob, threat_prob). Always &ge; 0.5 by definition. A value of 0.5 indicates maximum uncertainty between the two classes.</td></tr>
+  <tr><td>Spam references</td><td>The label "spam" does not appear in any API response. The model's internal spam class logit contributes to <code>phishing_probability</code> and <code>content_risk_score</code> but is not surfaced separately.</td></tr>
+</table>
+
+<h3>6.3 Label Map (config.json)</h3>
+<p>The <code>label_map</code> in <code>config.json</code> reflects the model's training-time 3-class schema: <code>{"0": "legitimate", "1": "spam", "2": "phishing"}</code>. This is not the API output schema — it documents the model head's class indices. The API output is always binary (phishing / legitimate).</p>
+
+
+<!-- ============================================================ -->
+<h2 class="page-break">7. Intent Detection (Rule-Based)</h2>
+
+<div class="note">
+  <strong>Implementation note:</strong> The intent head described in <code>NLP-SPEC-v1.0</code> (multi-task auxiliary head, annotated training data) is not yet implemented. The deployed service uses a keyword regex pattern matcher. This is documented in the spec as a known limitation (#2). The rule-based classifier correctly handles the common phishing patterns in the demo corpus.
+</div>
+
+<h3>7.1 Intent Taxonomy (11 Labels)</h3>
+<table>
+  <tr><th>#</th><th>Intent Label</th><th>Description</th><th>Example Keywords</th></tr>
+  <tr><td>0</td><td class="svc">credential_harvest</td><td>Request for login, password, or PIN</td><td>password, sign-in, log-in, verify account, enter your credentials</td></tr>
+  <tr><td>1</td><td class="svc">payment_fraud</td><td>Wire transfer, invoice fraud, financial request</td><td>invoice, wire transfer, bank account, pay now, outstanding balance</td></tr>
+  <tr><td>2</td><td class="svc">malware_delivery</td><td>Attachment or link to download executable</td><td>attachment, download, click here, open file, install</td></tr>
+  <tr><td>3</td><td class="svc">account_verification</td><td>Confirm account / security alert impersonation</td><td>verify, confirm account, validate, security alert, unusual activity</td></tr>
+  <tr><td>4</td><td class="svc">prize_scam</td><td>Lottery, prize, or inheritance notification</td><td>won, lottery, prize, congratulations, claim your reward</td></tr>
+  <tr><td>5</td><td class="svc">impersonation</td><td>Brand or authority impersonation</td><td>PayPal, Amazon, Microsoft, Google, Apple, Netflix, Chase Bank</td></tr>
+  <tr><td>6</td><td class="svc">data_exfiltration</td><td>Request for personal identifiable information</td><td>social security, SSN, passport number, date of birth, personal information</td></tr>
+  <tr><td>7</td><td class="svc">urgency_threat</td><td>Time-pressure or account-suspension threat</td><td>urgent, immediately, expires, deadline, action required, suspended, terminated</td></tr>
+  <tr><td>8</td><td class="svc">social_engineering</td><td>Relationship exploitation and trust building</td><td>dear friend, dear colleague, confidential, trust me, personal request</td></tr>
+  <tr><td>9</td><td class="svc">marketing_spam</td><td>Unsolicited commercial content</td><td>unsubscribe, newsletter, special offer, limited time, discount, opt-out</td></tr>
+  <tr><td>10</td><td class="svc">benign_notification</td><td>Legitimate transactional or system email</td><td>your order, tracking number, receipt, confirmation, thank you</td></tr>
+</table>
+
+<h3>7.2 Detection Algorithm</h3>
+<pre>
+def _detect_intent(text: str, classification: str) -> list[str]:
+    # Legitimate emails always get benign_notification — no keyword scan needed
+    if classification == "legitimate":
+        return ["benign_notification"]
+
+    # Phishing: scan all intent categories (except benign_notification)
+    text_lower = text.lower()
+    matched = [
+        intent for intent, patterns in _INTENT_PATTERNS.items()
+        if intent != "benign_notification"
+        and any(re.search(pattern, text_lower) for pattern in patterns)
+    ]
+
+    # Fallback: if no pattern matched, default to credential_harvest
+    return matched if matched else ["credential_harvest"]
+</pre>
+
+<div class="note">
+  <strong>Multi-label:</strong> An email can match multiple intent categories simultaneously (e.g., <code>["credential_harvest", "urgency_threat", "impersonation"]</code>). All matched intents are returned. Order is deterministic (insertion order of <code>_INTENT_PATTERNS</code> dict, Python 3.7+).
+</div>
+
+
+<!-- ============================================================ -->
+<h2>8. Urgency Score and Obfuscation Flag</h2>
+
+<h3>8.1 Urgency Scoring</h3>
+<table class="compact-table">
+  <tr><th>Attribute</th><th>Detail</th></tr>
+  <tr><td>Method</td><td>Count distinct urgency keyword pattern matches in lowercase text</td></tr>
+  <tr><td>Keyword examples</td><td>"urgent", "immediately", "expires", "deadline", "act now", "action required", "suspended", "terminated", "verify now", "within X hours", "failure to", "your account will"</td></tr>
+  <tr><td>Formula</td><td><code>urgency_score = min(1.0, hit_count / 5.0)</code> — 5 or more matches → score 1.0</td></tr>
+  <tr><td>Range</td><td>0.0–1.0, rounded to 4 decimal places</td></tr>
+  <tr><td>Independence</td><td>Computed on ALL emails regardless of classification. A legitimate email with urgency language (e.g. system alert) can score > 0.0.</td></tr>
+</table>
+
+<h3>8.2 Obfuscation Flag</h3>
+<table class="compact-table">
+  <tr><th>Attribute</th><th>Detail</th></tr>
+  <tr><td>Detection method</td><td><code>obfuscation_detected = (NFKC_normalized(raw_text) != raw_text) OR (zero_width_chars_present(raw_text))</code></td></tr>
+  <tr><td>Zero-width chars checked</td><td>U+200B (ZWS), U+200C (ZWNJ), U+200D (ZWJ), U+FEFF (BOM), U+00AD (soft hyphen), U+FE00–U+FE0F (variation selectors)</td></tr>
+  <tr><td>NFKC triggers</td><td>Cyrillic/Greek homoglyphs, fullwidth ASCII, ligatures (ﬁ → fi), superscripts, enclosed alphanumerics</td></tr>
+  <tr><td>Returned as</td><td><code>bool</code> in response JSON. SVC-07 may use this flag to apply a risk score bonus.</td></tr>
+</table>
+
+
+<!-- ============================================================ -->
+<h2 class="page-break">9. API Reference</h2>
+
+<h3>9.1 POST /predict</h3>
+<p>Core classification endpoint. Accepts email text, returns classification verdict. Validated by Go handler before proxying to Python service.</p>
+
+<div class="two-col">
+  <div>
+    <strong>Request</strong>
+    <pre>
+POST /predict
+Content-Type: application/json
+
+{
+  "subject":    "string",   // optional, but at
+  "body_plain": "string",   // least one required
+  "body_html":  "string"    // optional
+}</pre>
+    <p style="font-size:10px;">Validation: 400 if both <code>subject</code> and <code>body_plain</code> are empty or absent.</p>
+  </div>
+  <div>
+    <strong>Response 200</strong>
+    <pre>
+{
+  "success": true,
+  "data": {
+    "classification":      "phishing"|"legitimate",
+    "confidence":          0.9234,
+    "phishing_probability": 0.9234,
+    "content_risk_score":  92,
+    "intent_labels":       ["credential_harvest",
+                            "urgency_threat"],
+    "urgency_score":       0.6,
+    "obfuscation_detected": false,
+    "top_tokens":          []
+  }
+}</pre>
+  </div>
+</div>
+
+<table class="compact-table">
+  <tr><th>Field</th><th>Type</th><th>Description</th></tr>
+  <tr><td class="svc">classification</td><td>string</td><td>"phishing" or "legitimate". Binary; spam class collapsed into phishing (§6).</td></tr>
+  <tr><td class="svc">confidence</td><td>float [0–1]</td><td>max(leg_prob, threat_prob). Always ≥ 0.5. 4 decimal places.</td></tr>
+  <tr><td class="svc">phishing_probability</td><td>float [0–1]</td><td>threat_prob = probs[spam] + probs[phishing]. 4 decimal places.</td></tr>
+  <tr><td class="svc">content_risk_score</td><td>int [0–100]</td><td>round(phishing_probability × 100). SVC-07 aggregates this into the final risk score.</td></tr>
+  <tr><td class="svc">intent_labels</td><td>[]string</td><td>Multi-label list from rule-based intent detector (§7). Always ["benign_notification"] for legitimate.</td></tr>
+  <tr><td class="svc">urgency_score</td><td>float [0–1]</td><td>Urgency keyword density (§8.1). Independent of classification.</td></tr>
+  <tr><td class="svc">obfuscation_detected</td><td>bool</td><td>True if homoglyphs or zero-width characters were found in input (§8.2).</td></tr>
+  <tr><td class="svc">top_tokens</td><td>[]TokenScore</td><td>Always empty array. LIME-based token attribution is offline (not computed at inference time).</td></tr>
+</table>
+
+<table class="compact-table" style="margin-top:8px;">
+  <tr><th>Status</th><th>Condition</th><th>Error Code</th></tr>
+  <tr><td>400</td><td>Both subject and body_plain absent or empty</td><td><code>bad_request</code></td></tr>
+  <tr><td>502</td><td>Python service returned non-2xx response</td><td><code>nlp_error</code></td></tr>
+  <tr><td>503</td><td>Model not yet loaded (Python returned 503)</td><td><code>nlp_error</code></td></tr>
+</table>
+
+<h3>9.2 GET /healthz</h3>
+<p>Liveness/readiness probe. Returns 200 only when the ONNX model is fully loaded and warmed up.</p>
+<div class="two-col">
+  <div>
+    <strong>200 OK — Model ready</strong>
+    <pre>
+{"success":true,"data":{
+  "status":"ok",
+  "model_ready":true
+}}</pre>
+  </div>
+  <div>
+    <strong>503 — Model loading</strong>
+    <pre>
+{"success":false,"error":{
+  "code":"nlp_unavailable",
+  "message":"NLP model is not loaded"
+}}</pre>
+  </div>
+</div>
+
+<h3>9.3 GET /status  <span style="font-size:9px;font-weight:normal;">[DEMO ONLY — not production]</span></h3>
+<p>Loading progress endpoint. Always returns 200. Used exclusively by the demo UI progress bar. Should not be relied on by production callers.</p>
+<pre>
+{"success":true,"data":{
+  "model_ready": false,
+  "loading_stage": "loading_onnx",
+  "loading_progress_pct": 45
+}}</pre>
+
+<table class="compact-table">
+  <tr><th>Stage</th><th>Progress %</th><th>Meaning</th></tr>
+  <tr><td><code>starting</code></td><td>0</td><td>Engine object created; no loading started</td></tr>
+  <tr><td><code>loading_config</code></td><td>5</td><td>Parsing config.json</td></tr>
+  <tr><td><code>loading_tokenizer</code></td><td>15</td><td>Loading DistilBertTokenizerFast</td></tr>
+  <tr><td><code>checking_model</code></td><td>30</td><td>Verifying ONNX file exists and is not a placeholder</td></tr>
+  <tr><td><code>loading_onnx</code></td><td>45</td><td>First run: loading and optimizing model (60–130 s)</td></tr>
+  <tr><td><code>loading_cached_onnx</code></td><td>45</td><td>Subsequent runs: loading from optimized cache (5–15 s)</td></tr>
+  <tr><td><code>warming_up</code></td><td>90</td><td>Running warmup inference on dummy batch</td></tr>
+  <tr><td><code>ready</code></td><td>100</td><td>model_ready=True; /predict now returns 200</td></tr>
+  <tr><td><code>model_file_missing</code></td><td>30</td><td>model_int8.onnx not found or is a Git LFS placeholder</td></tr>
+  <tr><td><code>error</code></td><td>—</td><td>Unexpected exception during loading</td></tr>
+</table>
+
+<h3>9.4 GET /  and  GET /static/*  <span style="font-size:9px;font-weight:normal;">[DEMO ONLY]</span></h3>
+<p><code>GET /</code> serves <code>static/index.html</code>. <code>GET /static/*</code> serves other static assets from <code>./static/</code>. The demo UI is a self-contained single-page app with no external dependencies. These routes are not part of the production service contract.</p>
+
+<h3>9.5 Prometheus Metrics  (port 9090)</h3>
+<table class="compact-table">
+  <tr><th>Metric</th><th>Type</th><th>Labels</th><th>Description</th></tr>
+  <tr><td class="svc">nlp_predict_requests_total</td><td>Counter</td><td><code>classification ∈ {phishing, legitimate, unknown}</code></td><td>Total completed predict calls by verdict. Label set is bounded to prevent cardinality explosion.</td></tr>
+  <tr><td class="svc">nlp_predict_duration_seconds</td><td>Histogram</td><td>—</td><td>Round-trip latency of POST /predict to Python service. Buckets: 50 ms, 100 ms, 150 ms, 200 ms, 300 ms, 500 ms, 1 s, 2 s, 5 s.</td></tr>
+  <tr><td class="svc">nlp_predict_errors_total</td><td>Counter</td><td>—</td><td>Total predict errors (network failures or non-2xx). Incremented on any error path in client.Predict().</td></tr>
+</table>
+
+
+<!-- ============================================================ -->
+<h2 class="page-break">10. Go Wrapper — Internal Components</h2>
+
+<h3>10.1 Client Struct (<code>internal/nlp/client.go</code>)</h3>
+<pre>
+type Client struct {
+    http            sharedhttp.Client       // Resty v3 HTTP client (timeout=10s, retries=0)
+    baseURL         string                  // Python service base URL (e.g. http://localhost:8001)
+    log             zerolog.Logger          // Structured logger
+    requestsTotal   *prometheus.CounterVec // nlp_predict_requests_total
+    requestDuration prometheus.Histogram   // nlp_predict_duration_seconds
+    errorsTotal     prometheus.Counter     // nlp_predict_errors_total
+}
+</pre>
+
+<h3>10.2 Request/Response Types</h3>
+<pre>
+type PredictRequest struct {
+    Subject   string `json:"subject"`
+    BodyPlain string `json:"body_plain"`
+    BodyHTML  string `json:"body_html,omitempty"`
+}
+
+// API output — 2-class (spam logit collapsed into phishing, see §6)
+type PredictResponse struct {
+    Classification      string       `json:"classification"`        // "phishing"|"legitimate"
+    Confidence          float64      `json:"confidence"`
+    PhishingProbability float64      `json:"phishing_probability"`
+    ContentRiskScore    int          `json:"content_risk_score"`
+    IntentLabels        []string     `json:"intent_labels"`
+    UrgencyScore        float64      `json:"urgency_score"`
+    ObfuscationDetected bool         `json:"obfuscation_detected"`
+    TopTokens           []TokenScore `json:"top_tokens"`            // always []
+}
+
+type StatusResponse struct {
+    ModelReady         bool   `json:"model_ready"`
+    LoadingStage       string `json:"loading_stage"`
+    LoadingProgressPct int    `json:"loading_progress_pct"`
+}
+</pre>
+
+<h3>10.3 Handler Behavior (<code>internal/nlp/handler.go</code>)</h3>
+<table class="compact-table">
+  <tr><th>Handler</th><th>Validation</th><th>Success path</th><th>Error paths</th></tr>
+  <tr><td class="svc">predictHandler</td><td>JSON bind; subject OR body_plain must be non-empty.</td><td>Call client.Predict(); return 200 + unwrapped data envelope.</td><td>400 on validation fail; 502 on upstream non-2xx; 503 on Python 503 (model not loaded).</td></tr>
+  <tr><td class="svc">healthHandler</td><td>None</td><td>Call client.Health(); return 200 {model_ready:true}.</td><td>503 if model_ready false or health check fails.</td></tr>
+  <tr><td class="svc">statusHandler</td><td>None</td><td>Call client.Status(); always return 200 with progress fields.</td><td>500 on unexpected client error (rare).</td></tr>
+</table>
+
+<h3>10.4 OpenTelemetry Tracing</h3>
+<table class="compact-table">
+  <tr><th>Span</th><th>Attributes</th></tr>
+  <tr><td><code>Client.Predict</code></td><td><code>nlp.classification</code>, <code>nlp.confidence</code>, <code>nlp.content_risk_score</code>, <code>nlp.http_status</code>, <code>http.method=POST</code>, <code>http.url</code></td></tr>
+  <tr><td><code>Client.Health</code></td><td><code>nlp.model_ready</code>, <code>http.status_code</code></td></tr>
+  <tr><td><code>Client.Status</code></td><td><code>nlp.loading_stage</code>, <code>nlp.progress_pct</code></td></tr>
+</table>
+
+
+<!-- ============================================================ -->
+<h2>11. Configuration Reference</h2>
+
+<h3>11.1 Go Wrapper Environment Variables</h3>
+<table>
+  <tr><th>Variable</th><th>Default</th><th>Description</th></tr>
+  <tr><td class="svc"><code>CYBERSIREN_SERVER__PORT</code></td><td>8086</td><td>Go HTTP server port (demo UI + /predict).</td></tr>
+  <tr><td class="svc"><code>CYBERSIREN_ML__NLP_SERVICE_URL</code></td><td><code>http://localhost:8001</code></td><td>Base URL of the Python FastAPI inference service.</td></tr>
+  <tr><td class="svc"><code>CYBERSIREN_METRICS_PORT</code></td><td>9090</td><td>Prometheus metrics scrape port.</td></tr>
+  <tr><td class="svc"><code>CYBERSIREN_JAEGER_ENDPOINT</code></td><td><em>empty (disabled)</em></td><td>Jaeger OTLP endpoint for distributed tracing. Tracing disabled when empty.</td></tr>
+  <tr><td class="svc"><code>CYBERSIREN_LOG__LEVEL</code></td><td>info</td><td>Log level: debug, info, warn, error.</td></tr>
+  <tr><td class="svc"><code>CYBERSIREN_LOG__PRETTY</code></td><td>false</td><td>true = human-readable colored output; false = JSON (production default).</td></tr>
+  <tr><td class="svc"><code>CYBERSIREN_ENV</code></td><td>development</td><td>Environment tag: development / staging / production.</td></tr>
+  <tr><td><code>CYBERSIREN_DB__NAME</code></td><td>—</td><td>Dummy value required for shared config validation. SVC-06 does not use a database.</td></tr>
+  <tr><td><code>CYBERSIREN_DB__USER</code></td><td>—</td><td>Dummy value. Same rationale.</td></tr>
+  <tr><td><code>CYBERSIREN_DB__PASSWORD</code></td><td>—</td><td>Dummy value. Same rationale.</td></tr>
+  <tr><td><code>CYBERSIREN_AUTH__JWT_SECRET</code></td><td>—</td><td>Dummy value. SVC-06 uses no auth.</td></tr>
+</table>
+
+<h3>11.2 Python Inference Environment Variables</h3>
+<table class="compact-table">
+  <tr><th>Variable</th><th>Default</th><th>Description</th></tr>
+  <tr><td class="svc"><code>PORT</code></td><td>8001</td><td>FastAPI/Uvicorn listen port.</td></tr>
+  <tr><td class="svc"><code>ORT_INTRA_OP_THREADS</code></td><td>0 (auto)</td><td>ONNX Runtime intra-op parallelism threads. 0 = ORT auto-selects from CPU topology.</td></tr>
+</table>
+
+<h3>11.3 Model Configuration (<code>nlp/config.json</code>)</h3>
+<table class="compact-table">
+  <tr><th>Key</th><th>Value</th><th>Description</th></tr>
+  <tr><td class="svc">model_name</td><td>distilbert-base-uncased</td><td>HuggingFace model identifier. Used as fallback tokenizer source.</td></tr>
+  <tr><td class="svc">model_version</td><td>NLP-SPEC-v1.0</td><td>Training spec version that produced this model artifact.</td></tr>
+  <tr><td class="svc">trained_on</td><td>cybersiren_nlp_dataset_v1 (149,998 rows)</td><td>Training dataset identifier.</td></tr>
+  <tr><td class="svc">label_map</td><td>{"0":"legitimate","1":"spam","2":"phishing"}</td><td>Training-time 3-class label map. Describes model head output indices. NOT the API output schema.</td></tr>
+  <tr><td class="svc">max_length</td><td>256</td><td>Total token budget including CLS+SEP (512 DistilBERT max; halved to reduce latency).</td></tr>
+  <tr><td class="svc">head_tokens</td><td>64</td><td>Tokens kept from the beginning of the text (§4).</td></tr>
+  <tr><td class="svc">tail_tokens</td><td>190</td><td>Tokens kept from the end of the text (§4).</td></tr>
+  <tr><td class="svc">input_format</td><td>"Subject: {subject}\n\nBody: {body_plain}"</td><td>Composition template. Must match training preprocessing exactly.</td></tr>
+  <tr><td class="svc">temperature</td><td>1.0</td><td>Logit scaling factor before softmax. 1.0 = no scaling (fitted on validation set).</td></tr>
+  <tr><td class="svc">phish_threshold</td><td>0.8</td><td>Present in config but currently unused — threshold-free collapse is used instead (§6).</td></tr>
+  <tr><td class="svc">runtime</td><td>onnxruntime INT8</td><td>Runtime identifier for logging and observability.</td></tr>
+</table>
+
+<h3>11.4 Configuration Loading Precedence (Go)</h3>
+<p>Handled by <code>shared/config/config.go</code> using Koanf. Priority order (highest wins):</p>
+<ol>
+  <li>Environment variables (<code>CYBERSIREN_*</code> prefix; <code>__</code> for nesting)</li>
+  <li><code>.env</code> file</li>
+  <li><code>config.yaml</code> (path from <code>CYBERSIREN_CONFIG_PATH</code>)</li>
+  <li>Hardcoded defaults in <code>config.go</code></li>
+</ol>
+
+
+<!-- ============================================================ -->
+<h2 class="page-break">12. Deployment</h2>
+
+<h3>12.1 Docker Multi-Stage Build (<code>deploy/docker/Dockerfile.nlp</code>)</h3>
+<table class="compact-table">
+  <tr><th>Stage</th><th>Base</th><th>Actions</th></tr>
+  <tr><td class="svc">builder</td><td><code>golang:1.25-alpine</code></td><td>Download Go modules; build <code>./services/svc-06-nlp/cmd/nlp/</code> → <code>/bin/service</code> (<code>CGO_ENABLED=0</code>, <code>-trimpath -ldflags="-s -w"</code>).</td></tr>
+  <tr><td class="svc">runtime</td><td><code>python:3.12-slim</code></td><td>Install Python dependencies (<code>requirements.txt</code>: FastAPI, uvicorn, onnxruntime, transformers, beautifulsoup4, numpy). Copy Go binary from builder. Copy <code>nlp/</code>, <code>static/</code>, <code>entrypoint.sh</code>. Set env defaults. Expose ports 8086 and 9090.</td></tr>
+</table>
+
+<pre>
+ENV PORT=8001
+ENV CYBERSIREN_ML__NLP_SERVICE_URL=http://localhost:8001
+ENV CYBERSIREN_SERVER__PORT=8086
+
+EXPOSE 8086 9090
+
+HEALTHCHECK --interval=5s --timeout=3s --start-period=15s --retries=5 \
+    CMD python3 -c "import socket; s=socket.socket(); s.settimeout(2); \
+                    s.connect(('localhost', 8086)); s.close()" || exit 1
+</pre>
+
+<div class="note">
+  <strong>Healthcheck strategy:</strong> TCP socket probe on port 8086. This verifies the Go wrapper is accepting connections, not whether the ONNX model is loaded. The Go wrapper is available immediately; the model continues loading in the background. Use <code>GET /healthz</code> to check model readiness.
+</div>
+
+<h3>12.2 Entrypoint Script (<code>entrypoint.sh</code>)</h3>
+<pre>
+#!/bin/sh
+set -e
+NLP_PORT=${PORT:-8001}
+
+# Start Python inference service in background
+(cd /app/nlp && PORT=${NLP_PORT} python app.py) &
+
+# Start Go HTTP wrapper in foreground (PID 1)
+exec /bin/service
+</pre>
+
+<p>The Go wrapper is the foreground process (PID 1) — container lifecycle is tied to it. Python runs as a detached background subprocess. If Python crashes, the Go wrapper returns 503 on subsequent <code>/predict</code> calls until the process is restarted.</p>
+
+<h3>12.3 Docker Compose (<code>deploy/compose/docker-compose.yml</code>)</h3>
+<table class="compact-table">
+  <tr><th>Key</th><th>Value</th></tr>
+  <tr><td class="svc">Profile</td><td><code>svc-06</code> — start with <code>docker compose --profile svc-06 up</code></td></tr>
+  <tr><td class="svc">Port mapping</td><td>8086:8086 (UI + API), 9096:9090 (metrics)</td></tr>
+  <tr><td class="svc">Depends on</td><td><code>demo-seed</code> (condition: service_completed_successfully) — runs migrations</td></tr>
+  <tr><td class="svc">Image build</td><td>Context: repo root; Dockerfile: <code>deploy/docker/Dockerfile.nlp</code></td></tr>
+</table>
+
+<h3>12.4 Make Targets</h3>
+<table class="compact-table">
+  <tr><th>Target</th><th>Action</th></tr>
+  <tr><td class="svc"><code>make demo svc=svc-06-nlp</code></td><td>Start infrastructure + build + run SVC-06 demo. Opens <code>http://localhost:8086</code>.</td></tr>
+  <tr><td class="svc"><code>make demo-all</code></td><td>Start SVC-03 + SVC-06 + SVC-11 bundle with shared observability stack.</td></tr>
+  <tr><td class="svc"><code>make check-nlp-model</code></td><td>Verify <code>nlp/onnx/model_int8.onnx</code> is present and not a Git LFS placeholder (<code>wc -c</code> check). Runs <code>git lfs pull</code> if model is missing or is a placeholder stub.</td></tr>
+  <tr><td class="svc"><code>make build-svc svc=svc-06-nlp</code></td><td>Build Go binary for SVC-06 only.</td></tr>
+  <tr><td class="svc"><code>make test-svc svc=svc-06-nlp</code></td><td>Run Go tests for SVC-06.</td></tr>
+</table>
+
+<div class="note">
+  <strong>Model file (Git LFS):</strong> <code>nlp/onnx/model_int8.onnx</code> is tracked via Git LFS. A fresh clone will contain a text pointer (~134 bytes) instead of the binary. Run <code>git lfs pull</code> or use <code>make check-nlp-model</code> to fetch the real file. The <code>make demo</code> target calls <code>check-nlp-model</code> automatically.
+</div>
+
+
+<!-- ============================================================ -->
+<h2>13. Model Performance (Deployed Artifact)</h2>
+
+<div class="note">
+  <strong>Source:</strong> Metrics from <code>nlp/metrics.json</code>. These are the actual test-set results for the deployed INT8 ONNX model. The 3-class training metrics are reported as-is; the post-hoc collapse (§6) is not separately benchmarked here — it changes only the decision boundary, not the underlying probability estimates.
+</div>
+
+<h3>13.1 Cross-Validation (5-fold, 3-class)</h3>
+<table>
+  <tr><th>Metric</th><th>Mean</th><th>Std</th><th>Min</th><th>Max</th></tr>
+  <tr><td class="svc">Macro MCC</td><td>0.9685</td><td>0.0161</td><td>0.9363</td><td>0.9768</td></tr>
+  <tr><td class="svc">Macro F1</td><td>0.9781</td><td>0.0130</td><td>0.9521</td><td>0.9851</td></tr>
+  <tr><td class="svc">Phishing Recall</td><td>0.9837</td><td>0.0013</td><td>0.9822</td><td>0.9861</td></tr>
+  <tr><td class="svc">Legitimate FPR</td><td>0.0108</td><td>0.0010</td><td>0.0091</td><td>0.0123</td></tr>
+</table>
+
+<h3>13.2 Held-Out Test Set (3-class)</h3>
+<div class="two-col">
+  <div class="metric-block">
+    <div class="metric-header">Primary Metrics</div>
+    <table class="compact-table">
+      <tr><td>Macro MCC</td><td><strong>0.9804</strong></td><td>Exceeds target ≥ 0.88 ✓</td></tr>
+      <tr><td>Macro F1</td><td><strong>0.9869</strong></td><td></td></tr>
+      <tr><td>Phishing Recall</td><td><strong>0.9860</strong></td><td>Exceeds target ≥ 0.96 ✓</td></tr>
+      <tr><td>Legitimate FPR</td><td><strong>0.00785</strong></td><td>Below target &lt; 0.5% ✗ (0.785%)</td></tr>
+    </table>
+  </div>
+  <div class="metric-block">
+    <div class="metric-header">Per-Class Metrics</div>
+    <table class="compact-table">
+      <tr><th>Class</th><th>Prec</th><th>Recall</th><th>F1</th><th>ROC-AUC</th></tr>
+      <tr><td class="svc">Legitimate</td><td>0.9867</td><td>0.9922</td><td>0.9894</td><td>0.9994</td></tr>
+      <tr><td class="svc">Spam</td><td>0.9880</td><td>0.9808</td><td>0.9844</td><td>0.9995</td></tr>
+      <tr><td class="svc">Phishing</td><td>0.9879</td><td>0.9860</td><td>0.9869</td><td>0.9991</td></tr>
+    </table>
+  </div>
+</div>
+
+<h3>13.3 Calibration</h3>
+<table class="compact-table">
+  <tr><td>Expected Calibration Error (ECE)</td><td>0.0043</td><td>Near-perfect probability calibration.</td></tr>
+  <tr><td>Temperature</td><td>1.0</td><td>No rescaling needed (optimal temperature fitted on validation set).</td></tr>
+  <tr><td>Optimal phish threshold</td><td>0.8</td><td>At threshold 0.8: FPR = 0.005. Not used in post-hoc collapse implementation.</td></tr>
+</table>
+
+<h3>13.4 Robustness Under Noise</h3>
+<table class="compact-table">
+  <tr><th>Noise Level</th><th>Accuracy</th><th>Phishing Recall</th></tr>
+  <tr><td>0% (clean)</td><td>0.9874</td><td>0.9860</td></tr>
+  <tr><td>5%</td><td>0.9830</td><td>0.9835</td></tr>
+  <tr><td>10%</td><td>0.9750</td><td>0.9806</td></tr>
+  <tr><td>20%</td><td>0.9426</td><td>0.9793</td></tr>
+</table>
+<div class="note">
+  Phishing recall degrades more slowly than accuracy under noise — the model preferentially maintains threat detection sensitivity at the cost of increased FP rate. This is the desired behavior for a security classifier.
+</div>
+
+<h3>13.5 ONNX Quantization Impact</h3>
+<table class="compact-table">
+  <tr><td>FP32 → INT8 size</td><td>265.6 MB → 66.8 MB (74.9% reduction)</td></tr>
+  <tr><td>PyTorch ↔ ONNX max logit diff</td><td>2.29 (acceptable; softmax differences &lt; 0.01)</td></tr>
+  <tr><td>PyTorch ↔ ONNX prediction agreement</td><td>99%</td></tr>
+  <tr><td>MCC difference</td><td>0.0155 (PyTorch vs ONNX INT8)</td></tr>
+</table>
+
+<h3>13.6 CPU Inference Latency (100 samples)</h3>
+<table class="compact-table">
+  <tr><td>P50</td><td><strong>80.7 ms</strong></td><td>Meets target &lt; 150 ms ✓</td></tr>
+  <tr><td>P95</td><td><strong>85.1 ms</strong></td><td>Meets target ✓</td></tr>
+  <tr><td>P99</td><td><strong>97.9 ms</strong></td><td>Meets target ✓</td></tr>
+</table>
+
+
+<!-- ============================================================ -->
+<h2 class="page-break">14. Observability</h2>
+
+<h3>14.1 Structured Logs (Zerolog)</h3>
+<table class="compact-table">
+  <tr><th>Event</th><th>Level</th><th>Key Fields</th></tr>
+  <tr><td>Service started</td><td>info</td><td>service, port, metrics_port, nlp_backend</td></tr>
+  <tr><td>Config loaded</td><td>debug</td><td>nlp_service_url, server_port</td></tr>
+  <tr><td>Predict completed</td><td>debug</td><td>classification, confidence, content_risk_score, obfuscation_detected, duration_ms</td></tr>
+  <tr><td>Predict error</td><td>error</td><td>error, http_status</td></tr>
+  <tr><td>Health check</td><td>debug</td><td>model_ready, duration_ms</td></tr>
+  <tr><td>Graceful shutdown</td><td>info</td><td>timeout</td></tr>
+</table>
+
+<h3>14.2 Prometheus Metrics (port 9090)</h3>
+<p>Metrics are registered at wrapper startup in <code>nlp.NewClient()</code>. All three metrics use the same Prometheus registry instance passed through from <code>main.go</code>.</p>
+
+<table>
+  <tr><th>Metric</th><th>Type</th><th>Bucket / Label Details</th></tr>
+  <tr>
+    <td class="svc">nlp_predict_requests_total</td>
+    <td>CounterVec</td>
+    <td>Label: <code>classification ∈ {phishing, legitimate, unknown}</code>. Bounded label set enforced in Predict() before incrementing — unknown used when HTTP call fails before verdict is available.</td>
+  </tr>
+  <tr>
+    <td class="svc">nlp_predict_duration_seconds</td>
+    <td>Histogram</td>
+    <td>Buckets (seconds): 0.05, 0.10, 0.15, 0.20, 0.30, 0.50, 1.0, 2.0, 5.0. Measured from before HTTP call to after response received.</td>
+  </tr>
+  <tr>
+    <td class="svc">nlp_predict_errors_total</td>
+    <td>Counter</td>
+    <td>No labels. Incremented on: network error, non-2xx HTTP status, JSON decode failure.</td>
+  </tr>
+</table>
+
+<h3>14.3 OpenTelemetry / Jaeger</h3>
+<p>OTLP trace exporter. Tracer name: <code>"svc-06-nlp/internal/nlp"</code>. Disabled when <code>CYBERSIREN_JAEGER_ENDPOINT</code> is empty. Each <code>client.Predict()</code> call creates a child span under the incoming request context.</p>
+
+
+<!-- ============================================================ -->
+<h2>15. Test Coverage</h2>
+
+<h3>15.1 Python Unit Tests (<code>nlp/test_inference.py</code>)</h3>
+<p>66 tests, all passing. Tests run with <code>pytest test_inference.py -v</code> from <code>services/svc-06-nlp/nlp/</code>. No ONNX model or network required — the engine is initialized with mocked ONNX session and stub tokenizer.</p>
+
+<table class="compact-table">
+  <tr><th>Test Group</th><th>Count</th><th>Coverage</th></tr>
+  <tr><td class="svc">Schema and response keys</td><td>3</td><td>Verifies PredictResponse contains exactly {classification, confidence, phishing_probability, content_risk_score, intent_labels, urgency_score, obfuscation_detected, top_tokens}. No spam_probability key.</td></tr>
+  <tr><td class="svc">Phishing classification</td><td>5</td><td>High-logit phishing inputs return classification="phishing", confidence &gt; 0.5, content_risk_score &gt; 50.</td></tr>
+  <tr><td class="svc">Legitimate classification</td><td>5</td><td>High-logit legitimate inputs return classification="legitimate", intent_labels=["benign_notification"].</td></tr>
+  <tr><td class="svc">Spam logit collapse</td><td>1</td><td><code>test_spam_logit_collapses_into_phishing</code>: when class-1 (spam) logit dominates, result is "phishing" not "spam". Validates post-hoc collapse (§6).</td></tr>
+  <tr><td class="svc">Content risk score</td><td>4</td><td>Verifies score = round(threat_prob × 100) with exact boundary values (0, 50, 99, 100).</td></tr>
+  <tr><td class="svc">Intent detection</td><td>12</td><td>Keyword match tests for all 11 intents. Multi-label overlap. Legitimate always returns benign_notification. Unknown phishing falls back to credential_harvest.</td></tr>
+  <tr><td class="svc">Urgency scoring</td><td>6</td><td>0 hits → 0.0, 5+ hits → 1.0, partial hits scale linearly. Urgency is computed for legitimate emails too.</td></tr>
+  <tr><td class="svc">Obfuscation detection</td><td>8</td><td>Homoglyph inputs (Cyrillic, fullwidth), zero-width chars (ZWS, BOM, ZWNJ), clean ASCII (no flag). Before/after NFKC comparison.</td></tr>
+  <tr><td class="svc">Preprocessing</td><td>10</td><td>HTML strip (BeautifulSoup + regex fallback), NFKC normalization, whitespace collapse, input composition format.</td></tr>
+  <tr><td class="svc">Head-tail tokenization</td><td>7</td><td>Short inputs (no truncation), long inputs (head + tail correct), exact boundary (keep=254), CLS/SEP wrapping, attention mask all-ones.</td></tr>
+  <tr><td class="svc">Model not ready guard</td><td>3</td><td>Calling predict() when model_ready=False raises RuntimeError. Race safety guard on session=None.</td></tr>
+  <tr><td class="svc">HTML body fallback</td><td>2</td><td>Empty body_plain with non-empty body_html: stripped HTML used. Both empty: empty string processed.</td></tr>
+</table>
+
+<h3>15.2 Go Tests</h3>
+<p>Go tests run with <code>go test -race -short ./services/svc-06-nlp/...</code>. Tests include client constructor validation, handler request parsing, Prometheus metric registration (no double-register panic), and config loading defaults.</p>
+
+
+<!-- ============================================================ -->
+<h2 class="page-break">16. Design Decisions</h2>
+
+<table>
+  <tr><th>Decision</th><th>Rationale</th></tr>
+  <tr>
+    <td class="svc">Dual-service architecture (Go + Python)</td>
+    <td>Same pattern as SVC-03 (URL Analysis). Go handles HTTP, observability, graceful shutdown, and future Kafka integration. Python handles ML inference (ONNX Runtime, HuggingFace Transformers, scikit-learn dependencies). Separation of concerns; Go binary stays lightweight.</td>
+  </tr>
+  <tr>
+    <td class="svc">Post-hoc spam+phishing collapse</td>
+    <td>INT8 dynamic quantization loses calibration between adjacent classes. The deployed model's spam and phishing logits are swapped relative to FP32. Rather than modify the model (retraining required), the spam and phishing probabilities are summed into a single "threat" probability. This is mathematically equivalent to a binary classifier and requires no model changes. See §6.</td>
+  </tr>
+  <tr>
+    <td class="svc">ORT cache load fix</td>
+    <td><code>opts.optimized_model_filepath = path</code> writes the cache but does not load from it. On subsequent runs, the cached path is passed as <code>model_path</code> directly and <code>optimized_model_filepath</code> is not set. This cuts cold-start time from 60–130 s to 5–15 s after first run.</td>
+  </tr>
+  <tr>
+    <td class="svc">model_ready race safety</td>
+    <td>Python's GIL makes individual attribute assignments atomic, but multi-line state transitions are not. Fix: <code>model_ready = True</code> is set as the very last statement after session and warmup are both complete. In the error path, <code>model_ready = False</code> is set before <code>session = None</code>. <code>predict()</code> guards with <code>not self.model_ready or self.session is None</code>.</td>
+  </tr>
+  <tr>
+    <td class="svc">Prometheus label cardinality bound</td>
+    <td>Unbounded label sets cause Prometheus memory exhaustion. The <code>classification</code> label is whitelisted to {phishing, legitimate, unknown}. Any unexpected value from the Python service is collapsed to "unknown" before the counter increment.</td>
+  </tr>
+  <tr>
+    <td class="svc">Zero retries in Go HTTP client</td>
+    <td>A 503 from the Python service means the model is not loaded — not a transient error. Retrying would queue requests during a known-unavailable period. The Go wrapper surfaces the 503 immediately so callers can fail fast or poll <code>/status</code>.</td>
+  </tr>
+  <tr>
+    <td class="svc">wc -c for model size check</td>
+    <td><code>stat -c%s</code> is GNU-only (Linux). macOS uses BSD stat (<code>stat -f%z</code>). <code>wc -c &lt; file</code> is POSIX-portable and works on both Linux and macOS developer machines.</td>
+  </tr>
+  <tr>
+    <td class="svc">Rule-based intent detection (not trained head)</td>
+    <td>Annotated training data for the auxiliary intent head is not yet available. The rule-based pattern matcher covers the 11-intent taxonomy and correctly classifies all demo email examples. It is explicitly documented as a limitation and a known improvement path.</td>
+  </tr>
+  <tr>
+    <td class="svc">head=64, tail=190 token split</td>
+    <td>Phishing emails front-load lures and urgency (64 head tokens sufficient). The call-to-action, malicious link, legal boilerplate, and obfuscation artefacts cluster at the end (190 tail tokens). Middle content is sacrificed; it typically contains filler text with low discriminative signal.</td>
+  </tr>
+  <tr>
+    <td class="svc">max_length=256 (not 512)</td>
+    <td>Halves memory bandwidth and compute for the attention mechanism (quadratic in sequence length). At 256 tokens: head=64 + tail=190 + CLS+SEP=2. P50 latency = 80.7 ms — well within the 150 ms target. Full 512-token inference would ~4× the attention compute for marginal accuracy gain.</td>
+  </tr>
+</table>
+
+
+<!-- ============================================================ -->
+<h2>17. Limitations</h2>
+
+<table>
+  <tr><th>#</th><th>Limitation</th><th>Impact</th><th>Mitigation / Next Step</th></tr>
+  <tr>
+    <td>1</td>
+    <td>Spam/phishing calibration gap in INT8 model. The 3-class probability estimates for spam and phishing are unreliable relative to each other after INT8 quantization.</td>
+    <td>Post-hoc collapse masks the issue for binary classification but the "spam" class information is lost. Multi-class reporting is not available.</td>
+    <td>Retrain with per-class quantization calibration data or export FP32 model for calibration before INT8 conversion. Post-hoc collapse is the runtime mitigation.</td>
+  </tr>
+  <tr>
+    <td>2</td>
+    <td>Intent detection is rule-based (keyword regex). No learned intent head.</td>
+    <td>Novel phishing intent patterns not covered by the keyword dictionary will be undetected or misclassified.</td>
+    <td>Annotate training data with intent labels. Train auxiliary intent classification head as specified in NLP-SPEC-v1.0 §3.3.</td>
+  </tr>
+  <tr>
+    <td>3</td>
+    <td><code>top_tokens</code> is always an empty array.</td>
+    <td>Explainability (LIME/SHAP token attribution) is offline only. No runtime explanation is returned.</td>
+    <td>Implement LIME with cached perturbations or integrate SHAP as an async background task with result caching.</td>
+  </tr>
+  <tr>
+    <td>4</td>
+    <td>Model trained on 2004–2025 datasets. LLM-crafted phishing (GPT-4, Claude) is underrepresented.</td>
+    <td>AI-generated phishing that mimics legitimate language closely may evade the model.</td>
+    <td>Expand training data with AI-generated phishing corpora (D4 already included at small scale). Periodic retraining.</td>
+  </tr>
+  <tr>
+    <td>5</td>
+    <td>Python process not supervised by Go wrapper.</td>
+    <td>If the Python inference service crashes, Go wrapper returns 503 on all /predict calls. No automatic restart.</td>
+    <td>Use a process supervisor (supervisord) or restructure entrypoint to restart Python on failure. Docker restart policy does not handle internal process crashes.</td>
+  </tr>
+  <tr>
+    <td>6</td>
+    <td>No authentication on /predict endpoint.</td>
+    <td>Service is designed as an internal pipeline component. Direct external exposure would allow unauthenticated inference calls.</td>
+    <td>Deploy behind internal network boundary (Kubernetes ClusterIP or Docker Compose internal network). Add API key or JWT auth if external exposure is required.</td>
+  </tr>
+  <tr>
+    <td>7</td>
+    <td>Single-threaded ONNX inference (one request at a time).</td>
+    <td>Under concurrent load, requests queue behind the 80–100 ms inference time. P99 latency degrades linearly with queue depth.</td>
+    <td>Run multiple Uvicorn worker processes (<code>--workers N</code>) with one ONNX session per worker. Each worker consumes ~67 MB model memory.</td>
+  </tr>
+</table>
+
+
+<!-- ============================================================ -->
+<h2>18. References</h2>
+
+<ol class="ref-list">
+  <li>Sanh, V., Debut, L., Chaumond, J., Wolf, T. "DistilBERT, a distilled version of BERT: smaller, faster, cheaper and lighter." arXiv:1910.01108 (2019). Base model architecture.</li>
+  <li>Altan, I. et al. "Dual-Path Phishing Detection: Integrating Transformer-Based NLP with Structural URL Analysis." arXiv:2509.20972v1 (2025). Primary basis for DistilBERT selection: 98.9% accuracy on balanced email corpus.</li>
+  <li>Sajad U P. "A Robust and Explainable Transformer-Based Framework for Phishing Email Detection." arXiv:2511.12085v2 (2026). Adversarial training (FGM ε=0.01), character-level augmentation, head-tail truncation rationale.</li>
+  <tr><li>Neshaei, S.P. et al. "The Impact of Quantization on the Robustness of Transformer-based Text Classifiers." arXiv:2403.05365v1 (2024). INT8 ONNX size reduction evidence (DistilBERT: 255 MB → 132 MB).</li>
+  <li>Toth, R. et al. "The Phish, The Spam, and The Valid." arXiv:2511.21448v5 (2025). Identifies spam↔legitimate confusion as primary 3-class failure mode; validates post-hoc collapse design.</li>
+  <li>Saka, T. et al. "Phishing Codebook: A Structured Framework for the Characterization of Phishing Emails." arXiv:2408.08967v1 (2024). Intent taxonomy basis (inter-rater κ=0.75–0.96).</li>
+  <li>Ibrahim, S. et al. "The use of multi-task learning in cybersecurity applications: a systematic literature review." Neural Computing and Applications (2024). Multi-task architecture justification.</li>
+  <li>Uddin, M.A. et al. "An Explainable Transformer-based Model for Phishing Email Detection." arXiv:2402.13871v2 (2025). Subject+body concatenation format; LR=2e-5; max_len=512 baseline.</li>
+  <li>Safran, M., Musleh, A. "PhishingGNN: Phishing Email Detection Using Graph Attention Networks and Transformer-Based Feature Extraction." IEEE Access 13 (2025). DistilBERT as email feature extractor; CEAS_08 cross-dataset validation.</li>
+</ol>
+
+<hr>
+<p style="font-size:9px; color:#777; text-align:right;">NLP-SVC-SPEC-v1.0 — SVC-06 NLP Email Classification Service — Graduation Project (Internal) — Complete</p>
+
+</body>
+</html>

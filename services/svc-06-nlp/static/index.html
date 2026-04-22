@@ -100,7 +100,7 @@
   .example-card .ex-preview{color:var(--text-dim);font-size:.78rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .phishing-card:hover{border-color:var(--red);background:rgba(255,68,68,.05)}
   .legit-card:hover{border-color:var(--green);background:rgba(0,255,65,.05)}
-  .spam-card:hover{border-color:var(--yellow);background:rgba(255,170,0,.05)}
+  .spam-card{display:none}
 
   /* ── Model loading banner ── */
   .model-loading{
@@ -267,11 +267,6 @@
     <h3>✅ Legitimate Examples</h3>
     <div class="example-cards" id="legit-examples"></div>
   </div>
-
-  <div class="examples-section">
-    <h3>⚠️ Spam Examples</h3>
-    <div class="example-cards" id="spam-examples"></div>
-  </div>
 </div>
 
 <div id="spinner" class="spinner"></div>
@@ -294,14 +289,10 @@
   <div class="bar-wrap"><div class="bar-track"><div id="r-confidence-bar" class="bar-fill"></div></div></div>
 
   <!-- Probabilities -->
-  <div class="section-title">Probabilities</div>
+  <div class="section-title">Probability</div>
   <div class="result-field">
     <span class="result-label">Phishing probability</span>
     <span class="result-value" id="r-phishing-prob">—</span>
-  </div>
-  <div class="result-field">
-    <span class="result-label">Spam probability</span>
-    <span class="result-value" id="r-spam-prob">—</span>
   </div>
 
   <!-- Risk signals -->
@@ -467,96 +458,11 @@ Saif`
     }
   ];
 
-  const SPAM = [
-    {
-      subject: '🔥 FLASH SALE: 70% off EVERYTHING — ends at midnight!',
-      body: `Dear Valued Customer,
-
-DON'T MISS OUT! Our BIGGEST sale of the year is here and it ends TONIGHT at midnight!
-
-🛒 70% OFF storewide — no code needed
-🚀 Free shipping on ALL orders over $9.99
-🎁 FREE mystery gift with every purchase over $49
-
-SHOP NOW before it's too late:
-https://deals.megashop-bargains.biz/flash-sale-2025
-
-Our hottest deals RIGHT NOW:
-• Smart Watch Pro X9 — was $299, NOW ONLY $89!
-• Wireless Earbuds Ultra — was $149, NOW ONLY $44!
-• 4K Mini Projector — was $599, NOW ONLY $179!
-
-⏰ HURRY! Stock is running out FAST and these prices WON'T LAST!
-Over 10,000 happy customers already shopping — join them NOW!
-
-Reply STOP to unsubscribe. MegaShop Inc., 1234 Nowhere Blvd, Commerce City, CA 90001.`
-    },
-    {
-      subject: 'How I made $12,847 last month working 2 hours a day (copy my system)',
-      body: `Hey there,
-
-My name is Brad Thompson and 18 months ago I was flat broke, $40K in debt, and working a soul-crushing 9-to-5 I hated.
-
-Then I discovered the EXACT system that now generates $12,000–$15,000 per month for me — on autopilot — while I spend time with my family.
-
-And I want to share it with you FOR FREE.
-
-The system is simple:
-→ No experience required
-→ No startup costs (under $50 to launch)
-→ Works from any country
-→ Takes 2 hours a day MAX
-
-Thousands of people just like you are already using this. Here are a few recent results from our community:
-• Sarah M. — $8,200 in her first month!
-• James K. — $22,000 in 3 months, quit his day job!
-• Lisa P. — $5,600/month while raising 3 kids!
-
-Watch my FREE training video (only up for 48 hours):
-https://wealthsystem.auto-profits.xyz/free-training
-
-This is NOT a pyramid scheme or MLM. This is a proven, legitimate online business model.
-
-To your success,
-Brad Thompson
-Founder, AutoProfit Systems
-
-P.S. — I'm limiting this to the next 500 people. Once the spots are gone, this page comes down. Click NOW.
-
-Unsubscribe: https://wealthsystem.auto-profits.xyz/unsub`
-    },
-    {
-      subject: 'Re: Your Amazon order #112-4859302 — CLAIM YOUR REWARD',
-      body: `Congratulations!
-
-You have been selected as one of our LUCKY WINNERS in the Amazon Customer Appreciation Sweepstakes!
-
-As a valued Amazon shopper, you are entitled to claim:
-
-★ 1x Apple iPhone 16 Pro Max (valued at $1,199)
-★ 1x $500 Amazon Gift Card
-★ 1x Premium Membership (12 months FREE)
-
-To claim your rewards, simply complete a short 30-second survey about your recent shopping experience:
-
-CLAIM MY PRIZE → https://amazon-rewards-survey.promo-winners.net/claim?id=8492
-
-IMPORTANT: You must claim within the next 24 hours or your prize will be forfeited and reassigned to another winner.
-
-Survey takes under 60 seconds. No purchase necessary. Prizes shipped worldwide.
-
-You received this because you are a registered Amazon customer. To opt out of future promotional offers, click here: https://amazon-rewards-survey.promo-winners.net/optout
-
-Amazon Customer Rewards Team
-Sent on behalf of Amazon Inc., Seattle WA (promotional partner)`
-    }
-  ];
-
   /* ── Populate example cards ── */
   function makeCard(ex, type) {
     const btn = document.createElement('button');
     btn.type = 'button';
-    const cardClass = type === 'phishing' ? 'phishing-card' : type === 'spam' ? 'spam-card' : 'legit-card';
+    const cardClass = type === 'phishing' ? 'phishing-card' : 'legit-card';
     btn.className = 'example-card ' + cardClass;
     btn.innerHTML =
       '<div class="ex-subject">' + esc(ex.subject) + '</div>' +
@@ -572,10 +478,8 @@ Sent on behalf of Amazon Inc., Seattle WA (promotional partner)`
 
   const phishingContainer = document.getElementById('phishing-examples');
   const legitContainer    = document.getElementById('legit-examples');
-  const spamContainer     = document.getElementById('spam-examples');
   PHISHING.forEach(function (ex) { phishingContainer.appendChild(makeCard(ex, 'phishing')); });
   LEGIT.forEach(function (ex)    { legitContainer.appendChild(makeCard(ex, 'legit')); });
-  SPAM.forEach(function (ex)     { spamContainer.appendChild(makeCard(ex, 'spam')); });
 
   /* ── HTML body toggle ── */
   const htmlToggle  = document.getElementById('html-toggle');
@@ -664,7 +568,6 @@ Sent on behalf of Amazon Inc., Seattle WA (promotional partner)`
 
     /* Probabilities */
     document.getElementById('r-phishing-prob').textContent = typeof d.phishing_probability === 'number' ? pct(d.phishing_probability) : '—';
-    document.getElementById('r-spam-prob').textContent    = typeof d.spam_probability    === 'number' ? pct(d.spam_probability)    : '—';
 
     /* Content risk score */
     const risk = typeof d.content_risk_score === 'number' ? d.content_risk_score : 0;
@@ -738,13 +641,11 @@ Sent on behalf of Amazon Inc., Seattle WA (promotional partner)`
 
   function classificationBadge(cls) {
     if (cls === 'legitimate') return 'badge-green';
-    if (cls === 'spam')       return 'badge-yellow';
     return 'badge-red';
   }
 
   function classificationColor(cls) {
     if (cls === 'legitimate') return 'var(--green)';
-    if (cls === 'spam')       return 'var(--yellow)';
     return 'var(--red)';
   }
 

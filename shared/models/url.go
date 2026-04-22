@@ -22,21 +22,21 @@ type URLTarget struct {
 
 // URLAnalysisResponse is the service-level output published as scores.url.
 type URLAnalysisResponse struct {
-	EmailID          string            `json:"email_id"`
-	OrgID            int64             `json:"org_id"`
-	Component        string            `json:"component"` // "url"
-	Score            int               `json:"score"`     // 0..100
-	URLCount         int               `json:"url_count"`
-	TIBlockedCount   int               `json:"ti_blocked_count"`
-	MLScoredCount    int               `json:"ml_scored_count"`
-	CacheHitCount    int               `json:"cache_hit_count"`
-	RiskiestURL      string            `json:"riskiest_url,omitempty"`
-	URLDetails       []URLScoreDetail  `json:"url_details,omitempty"`
-	ProcessingTimeMS int64             `json:"processing_time_ms"`
-	Metadata         json.RawMessage   `json:"metadata,omitempty"`
-	GeneratedAt      time.Time         `json:"generated_at"`
-	PartialAnalysis  bool              `json:"partial_analysis,omitempty"`
-	MissingSignals   []string          `json:"missing_signals,omitempty"`
+	EmailID          string           `json:"email_id"`
+	OrgID            int64            `json:"org_id"`
+	Component        string           `json:"component"` // "url"
+	Score            int              `json:"score"`     // 0..100
+	URLCount         int              `json:"url_count"`
+	TIBlockedCount   int              `json:"ti_blocked_count"`
+	MLScoredCount    int              `json:"ml_scored_count"`
+	CacheHitCount    int              `json:"cache_hit_count"`
+	RiskiestURL      string           `json:"riskiest_url,omitempty"`
+	URLDetails       []URLScoreDetail `json:"url_details,omitempty"`
+	ProcessingTimeMS int64            `json:"processing_time_ms"`
+	Metadata         json.RawMessage  `json:"metadata,omitempty"`
+	GeneratedAt      time.Time        `json:"generated_at"`
+	PartialAnalysis  bool             `json:"partial_analysis,omitempty"`
+	MissingSignals   []string         `json:"missing_signals,omitempty"`
 }
 
 // URLScoreDetail is the per-URL scoring and explainability record.

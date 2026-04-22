@@ -158,8 +158,8 @@ func statusHandler(client *nlppkg.Client, log zerolog.Logger) sharedhttp.Handler
 		if err != nil {
 			log.Warn().Err(err).Msg("nlp status check failed")
 			_ = ctx.OK(map[string]any{
-				"model_ready":         false,
-				"loading_stage":       "starting",
+				"model_ready":          false,
+				"loading_stage":        "starting",
 				"loading_progress_pct": 0,
 			})
 			return

@@ -70,8 +70,12 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="CyberSiren NLP Service",
     description=(
-        "SVC-06 — Phishing / Spam / Legitimate email text classifier. "
-        "Backbone: distilbert-base-uncased (INT8 ONNX). Spec: NLP-SPEC-v1.0."
+        "SVC-06 — Phishing / Legitimate email text classifier. "
+        "Backbone: distilbert-base-uncased (INT8 ONNX). Spec: NLP-SPEC-v1.0. "
+        "Note: the underlying model has a 3-class head (legitimate/spam/phishing) "
+        "but spam+phishing logits are collapsed post-hoc into a single 'phishing' "
+        "verdict because the INT8 checkpoint is poorly calibrated between those "
+        "two classes."
     ),
     version="1.0.0",
     lifespan=lifespan,
@@ -92,10 +96,9 @@ class TokenScore(BaseModel):
 
 
 class PredictResponse(BaseModel):
-    classification: str          # "phishing" | "spam" | "legitimate"
+    classification: str          # "phishing" | "legitimate"
     confidence: float            # 0.0 – 1.0
-    phishing_probability: float  # 0.0 – 1.0
-    spam_probability: float      # 0.0 – 1.0
+    phishing_probability: float  # 0.0 – 1.0  (collapsed spam+phishing logit)
     content_risk_score: int      # 0 – 100  (feeds emails.content_risk_score)
     intent_labels: list[str]     # e.g. ["credential_harvest", "urgency_threat"]
     urgency_score: float         # 0.0 – 1.0
