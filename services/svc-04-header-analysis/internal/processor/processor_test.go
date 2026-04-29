@@ -16,7 +16,6 @@ func TestDecodeMessage(t *testing.T) {
 
 	good := contractsk.AnalysisHeadersMessage{
 		EmailID:     7,
-		InternalID:  7,
 		FetchedAt:   time.Now().UTC(),
 		OrgID:       1,
 		SenderEmail: "a@b.com",
@@ -38,17 +37,12 @@ func TestDecodeMessage(t *testing.T) {
 		t.Errorf("expected error on garbage")
 	}
 
-	bad := contractsk.AnalysisHeadersMessage{EmailID: 0, InternalID: 7, FetchedAt: time.Now().UTC()}
+	bad := contractsk.AnalysisHeadersMessage{EmailID: 0, FetchedAt: time.Now().UTC()}
 	body, _ = json.Marshal(bad)
 	if _, err := decodeMessage(body); err == nil {
 		t.Errorf("expected error on email_id=0")
 	}
-	bad = contractsk.AnalysisHeadersMessage{EmailID: 7, InternalID: 0, FetchedAt: time.Now().UTC()}
-	body, _ = json.Marshal(bad)
-	if _, err := decodeMessage(body); err == nil {
-		t.Errorf("expected error on internal_id=0")
-	}
-	bad = contractsk.AnalysisHeadersMessage{EmailID: 7, InternalID: 7}
+	bad = contractsk.AnalysisHeadersMessage{EmailID: 7}
 	body, _ = json.Marshal(bad)
 	if _, err := decodeMessage(body); err == nil {
 		t.Errorf("expected error on missing fetched_at")
