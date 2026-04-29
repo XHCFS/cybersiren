@@ -157,7 +157,7 @@ func (p *Processor) Handle(ctx context.Context, msg sharedconsumer.Message) erro
 
 	// Persist before publishing — ARCH-SPEC §6 requires that offset is
 	// only committed after rule_hits commit success.
-	outcome, writeErr := p.writer.Write(ctx, parsed.InternalID, parsed.FetchedAt, evalResult.Fired)
+	outcome, writeErr := p.writer.Write(ctx, parsed.EmailID, parsed.FetchedAt, evalResult.Fired)
 	p.metrics.WriteRetries.WithLabelValues(outcome).Inc()
 	if writeErr != nil {
 		p.observeError("db_write")
@@ -236,9 +236,6 @@ func decodeMessage(body []byte) (contractsk.AnalysisHeadersMessage, error) {
 	}
 	if out.EmailID <= 0 {
 		return out, fmt.Errorf("analysis.headers email_id must be > 0, got %d", out.EmailID)
-	}
-	if out.InternalID <= 0 {
-		return out, fmt.Errorf("analysis.headers internal_id must be > 0, got %d", out.InternalID)
 	}
 	if out.FetchedAt.IsZero() {
 		return out, errors.New("analysis.headers fetched_at is required")

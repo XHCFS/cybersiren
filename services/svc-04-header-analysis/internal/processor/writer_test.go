@@ -18,7 +18,7 @@ func TestRuleHitWriterDuplicateDeliveriesAreAppendOnly(t *testing.T) {
 	}
 }
 
-func TestBuildInsertRuleHitParams_UsesInternalIDAndFetchedAt(t *testing.T) {
+func TestBuildInsertRuleHitParams_UsesEmailIDAndFetchedAt(t *testing.T) {
 	t.Parallel()
 
 	fetchedAt := time.Now().UTC().Truncate(time.Second)

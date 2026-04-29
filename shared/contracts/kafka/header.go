@@ -8,11 +8,19 @@
 //
 // CONTRACT NOTE for SVC-04:
 //
-//	`email_id` on every analysis.* / scores.* topic is the BIGINT value
-//	of `emails.internal_id`. SVC-04 uses it directly as
+//	`email_id` on every analysis.* / scores.* topic carries the BIGINT
+//	value of `emails.internal_id`. SVC-04 uses it directly as
 //	`rule_hits.entity_id` and as the partitioning key. ARCH-SPEC §14
 //	step 3b confirms this mapping. SVC-02 (Parser) is the source of
 //	truth and is responsible for emitting the correct `internal_id`.
+//	The companion `fetched_at` field is required so consumers can
+//	reconstruct the partitioned `(internal_id, fetched_at)` PK without
+//	an extra DB lookup (per ARCH-SPEC §1 step 4 precedent).
+//
+//	NOTE: ARCH-SPEC §1 describes `email_id` as a UUIDv7 logical
+//	identifier. The repo currently models it as BIGINT to match the
+//	emails table primary key; aligning these two representations is a
+//	tracked architectural follow-up.
 package kafka
 
 import (
@@ -26,13 +34,12 @@ import (
 // omit fields it could not parse from the raw RFC822 headers. SVC-04 must
 // treat zero-values as "missing", not as failed authentication.
 type AnalysisHeadersMessage struct {
-	// EmailID == emails.internal_id (BIGINT).
+	// EmailID is the BIGINT value of emails.internal_id. SVC-04 writes it
+	// to rule_hits.entity_id and uses it as the Kafka partitioning key.
 	EmailID int64 `json:"email_id"`
-	// InternalID is emails.internal_id (BIGINT). Required for rule_hits.entity_id.
-	// Populated by SVC-02 immediately after the emails INSERT.
-	InternalID int64 `json:"internal_id"`
-	// FetchedAt is emails.fetched_at (partition key / FK companion for rule_hits).
-	// Populated by SVC-02 alongside InternalID.
+	// FetchedAt is emails.fetched_at, the partition key on the partitioned
+	// emails table and the companion for rule_hits.email_fetched_at.
+	// Populated by SVC-02 alongside EmailID per ARCH-SPEC §1 step 4.
 	FetchedAt time.Time `json:"fetched_at"`
 	// OrgID is the owning tenant; required for rules cache scoping.
 	OrgID int64 `json:"org_id"`
