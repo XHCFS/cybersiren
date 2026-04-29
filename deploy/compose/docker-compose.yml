@@ -20,6 +20,7 @@
 #   observability — Jaeger tracing UI
 #   monitoring    — Prometheus + Grafana (metrics dashboards)
 #   svc-03        — svc-03-url-analysis container
+#   svc-04        — svc-04-header-analysis container
 #   svc-06        — svc-06-nlp container (NLP email classifier demo)
 #   svc-11        — svc-11-ti-sync container
 #   demo          — svc-03 + monitoring + observability (backward compat)
@@ -154,7 +155,7 @@ services:
   # Runs automatically when any service profile is activated.
   demo-seed:
     image: postgres:15-alpine
-    profiles: ["demo", "svc-03", "svc-06", "svc-11"]
+    profiles: ["demo", "svc-03", "svc-04", "svc-06", "svc-11"]
     depends_on:
       postgres:
         condition: service_healthy
@@ -180,6 +181,8 @@ services:
         psql -f /seeds/feeds.sql
         echo "Seeding TI demo data..."
         psql -f /seeds/ti_demo_seed.sql
+        echo "Seeding header rules..."
+        psql -f /seeds/header_rules_demo_seed.sql
         echo "Demo seed complete."
     networks:
       - cybersiren
@@ -215,6 +218,54 @@ services:
       CYBERSIREN_ML__URL_MODEL_PATH: /app/ml/inference_script.py
       CYBERSIREN_METRICS_PORT: "9090"
       CYBERSIREN_JAEGER_ENDPOINT: http://jaeger:4318
+    networks:
+      - cybersiren
+    restart: unless-stopped
+
+  # ── svc-04-header-analysis ─────────────────────────────────────────────────
+  # Consumes analysis.headers, evaluates rules, persists rule_hits, and
+  # publishes scores.header. Stateless; scale horizontally by adding
+  # replicas (Kafka partitioning handles distribution).
+  svc-04-header-analysis:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.header_analysis
+    profiles: ["svc-04"]
+    depends_on:
+      demo-seed:
+        condition: service_completed_successfully
+      valkey:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+    ports:
+      - "9094:9090"
+    environment:
+      CYBERSIREN_ENV: development
+      CYBERSIREN_LOG__LEVEL: debug
+      CYBERSIREN_LOG__PRETTY: "true"
+      CYBERSIREN_DB__HOST: postgres
+      CYBERSIREN_DB__PORT: "5432"
+      CYBERSIREN_DB__NAME: cybersiren
+      CYBERSIREN_DB__USER: ${POSTGRES_USER:-postgres}
+      CYBERSIREN_DB__PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      CYBERSIREN_DB__SSL_MODE: disable
+      CYBERSIREN_VALKEY__ADDR: valkey:6379
+      CYBERSIREN_AUTH__JWT_SECRET: demo-secret-not-for-production-use!!
+      CYBERSIREN_METRICS_PORT: "9090"
+      CYBERSIREN_JAEGER_ENDPOINT: http://jaeger:4318
+      CYBERSIREN_KAFKA__BROKERS: kafka:29092
+      CYBERSIREN_KAFKA__CLIENT_ID: svc-04-header-analysis
+      CYBERSIREN_HEADER__CONSUME_TOPIC: analysis.headers
+      CYBERSIREN_HEADER__PRODUCE_TOPIC: scores.header
+      CYBERSIREN_HEADER__CONSUMER_GROUP: cg-header-analysis
+      CYBERSIREN_HEADER__RULE_CACHE_TTL_SECONDS: "60"
+      CYBERSIREN_HEADER__HOP_COUNT_THRESHOLD: "15"
+      CYBERSIREN_HEADER__TIME_DRIFT_HOURS_THRESHOLD: "24"
+      CYBERSIREN_HEADER__TYPOSQUAT_MAX_DISTANCE: "2"
+      CYBERSIREN_HEADER__SCORING_BLEND: max
     networks:
       - cybersiren
     restart: unless-stopped
