@@ -166,8 +166,13 @@ func (p *Processor) Handle(ctx context.Context, msg sharedconsumer.Message) erro
 		logCtx.Error().Err(writeErr).Int("fired_rules", len(evalResult.Fired)).
 			Msg("rule_hits write failed; offset will NOT be committed")
 		p.metrics.MessagesTotal.WithLabelValues("error").Inc()
-		// Returning a non-nil error keeps the offset un-committed so the
-		// consumer redelivers the message after the rebalance / next poll.
+		// Returning a non-nil error keeps the offset un-committed. Note
+		// that segmentio/kafka-go advances FetchMessage even when the
+		// handler errors, so the failed message will only be re-read
+		// after consumer restart or partition rebalance. The bounded
+		// retry-with-backoff inside RuleHitWriter is therefore the
+		// in-process retry path; this branch only triggers after that
+		// budget is exhausted.
 		return writeErr
 	}
 

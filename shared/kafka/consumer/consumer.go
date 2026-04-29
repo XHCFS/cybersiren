@@ -54,8 +54,18 @@ type Config struct {
 }
 
 // Handler processes a single Kafka message and returns nil on success.
-// On non-nil error the offset is NOT committed and the message will be
-// re-delivered on the next fetch (after the broker's session timeout).
+//
+// On non-nil error the consumer logs the failure, increments error metrics,
+// and advances to the next message WITHOUT committing the failed offset.
+// segmentio/kafka-go's FetchMessage advances on the underlying reader, so
+// the failed message is NOT re-fetched in the current run; it will be
+// re-read only after a consumer restart or partition rebalance, at which
+// point the broker resends from the last committed offset.
+//
+// Callers that need in-process retry must implement it inside the handler
+// (e.g., a bounded retry-with-backoff around the inner DB write) before
+// returning. Returning an error is the correct signal for "this message
+// must not be acknowledged"; it is not a request for immediate redelivery.
 type Handler func(ctx context.Context, msg Message) error
 
 // Message is a thin wrapper over kafkago.Message that exposes only what
@@ -170,8 +180,11 @@ func New(cfg Config, log zerolog.Logger, reg *prometheus.Registry) (*Consumer, e
 // committed after handler returns nil. The loop exits when ctx is
 // cancelled or the underlying reader returns a non-recoverable error.
 //
-// Errors returned by handler are logged but DO NOT terminate the loop —
-// they only suppress the offset commit so the message will be redelivered.
+// Errors returned by handler are logged but DO NOT terminate the loop.
+// They only suppress the offset commit for that message; the consumer
+// advances to the next message in the current fetch. Failed messages are
+// re-read only after consumer restart or partition rebalance — see the
+// Handler doc for in-process retry guidance.
 func (c *Consumer) Run(ctx context.Context, handler Handler) error {
 	if c == nil {
 		return errors.New("kafka consumer: nil receiver")
