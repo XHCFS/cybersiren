@@ -58,6 +58,33 @@ func TestExtractStructural_MissingMailer(t *testing.T) {
 	}
 }
 
+func TestExtractStructural_EmptyReceivedChain(t *testing.T) {
+	t.Parallel()
+
+	got := ExtractStructural(&contractsk.AnalysisHeadersMessage{
+		HopCount:      2,
+		SentTimestamp: 1700000000,
+		ReceivedChain: []contractsk.ReceivedHop{},
+	}, StructuralExtractorConfig{HopCountThreshold: 15, TimeDriftHoursThreshold: 24})
+	if got.HopCount != 2 {
+		t.Errorf("HopCount = %d, want message value 2", got.HopCount)
+	}
+	if got.TimeDriftHours != 0 || got.TimeDriftAboveThreshold {
+		t.Errorf("empty received_chain must not inflate drift, got %+v", got)
+	}
+}
+
+func TestExtractStructural_NonASCIISenderDomain(t *testing.T) {
+	t.Parallel()
+
+	got := ExtractStructural(&contractsk.AnalysisHeadersMessage{
+		SenderEmail: "admin@пример.com",
+	}, StructuralExtractorConfig{HopCountThreshold: 15, TimeDriftHoursThreshold: 24})
+	if !got.NonASCIISenderDomain {
+		t.Errorf("expected Cyrillic sender domain to be flagged, got %+v", got)
+	}
+}
+
 func TestExtractStructural_SuspiciousMailer(t *testing.T) {
 	t.Parallel()
 

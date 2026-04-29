@@ -46,6 +46,7 @@ func SignalsToSnapshot(s header.HeaderSignals) SignalSnapshot {
 		"structural.missing_mailer":             s.Structural.MissingMailer,
 		"structural.suspicious_mailer_agent":    s.Structural.SuspiciousMailerAgent,
 		"structural.mailer_agent":               s.Structural.MailerAgent,
+		"structural.non_ascii_sender_domain":    s.Structural.NonASCIISenderDomain,
 	}
 	if s.Reputation.DomainAgeDays != nil {
 		snap["reputation.domain_age_days"] = *s.Reputation.DomainAgeDays
