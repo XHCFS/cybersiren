@@ -39,8 +39,8 @@ func NewMetrics(reg *prometheus.Registry) *Metrics {
 
 	m.Duration = registerHistogram(reg, prometheus.NewHistogram(
 		prometheus.HistogramOpts{
-			Name:    "header_analysis_duration_seconds",
-			Help:    "Per-message processing duration for SVC-04.",
+			Name: "header_analysis_duration_seconds",
+			Help: "Per-message processing duration for SVC-04.",
 			// Go-only header analysis should typically complete in <100ms.
 			// Keep bucket granularity tight around the expected SLO range.
 			Buckets: []float64{0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5},
