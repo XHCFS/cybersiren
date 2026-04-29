@@ -1,4 +1,4 @@
-package header
+package ti
 
 import (
 	"context"
@@ -8,15 +8,15 @@ import (
 	"github.com/rs/zerolog"
 )
 
-type stubTIIndicatorLookup struct {
-	calls         []string
-	hit           bool
-	score         int
-	threatType    string
-	err           error
+type stubIndicatorLookup struct {
+	calls      []string
+	hit        bool
+	score      int
+	threatType string
+	err        error
 }
 
-func (s *stubTIIndicatorLookup) LookupTIIndicator(
+func (s *stubIndicatorLookup) LookupTIIndicator(
 	_ context.Context,
 	indicatorType string,
 	value string,
@@ -28,11 +28,11 @@ func (s *stubTIIndicatorLookup) LookupTIIndicator(
 	return s.hit, s.score, s.threatType, nil
 }
 
-func TestFallbackTILookup_UsesPostgresWhenValkeyUnavailable(t *testing.T) {
+func TestFallbackLookup_UsesPostgresWhenValkeyUnavailable(t *testing.T) {
 	t.Parallel()
 
-	db := &stubTIIndicatorLookup{hit: true, score: 91, threatType: "phishing"}
-	lookup := NewFallbackTILookup(nil, db, zerolog.Nop())
+	db := &stubIndicatorLookup{hit: true, score: 91, threatType: "phishing"}
+	lookup := NewFallbackLookup(nil, db, zerolog.Nop())
 
 	hit, score, threat, err := lookup.IsBlocklisted(context.Background(), "Example.COM.")
 	if err != nil {
@@ -46,11 +46,11 @@ func TestFallbackTILookup_UsesPostgresWhenValkeyUnavailable(t *testing.T) {
 	}
 }
 
-func TestFallbackTILookup_DBErrorIsObservableToExtractor(t *testing.T) {
+func TestFallbackLookup_DBErrorIsObservableToExtractor(t *testing.T) {
 	t.Parallel()
 
-	db := &stubTIIndicatorLookup{err: errors.New("db down")}
-	lookup := NewFallbackTILookup(nil, db, zerolog.Nop())
+	db := &stubIndicatorLookup{err: errors.New("db down")}
+	lookup := NewFallbackLookup(nil, db, zerolog.Nop())
 
 	_, _, _, err := lookup.IsBlocklisted(context.Background(), "[2001:db8::1]")
 	if err == nil {

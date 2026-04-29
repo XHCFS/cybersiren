@@ -1,4 +1,4 @@
-package header
+package ti
 
 import (
 	"context"
@@ -16,20 +16,20 @@ import (
 	"github.com/saif/cybersiren/shared/normalization"
 )
 
-// TIIndicatorLookup is the Postgres fallback used when Valkey misses or fails.
-type TIIndicatorLookup interface {
+// IndicatorLookup is the Postgres fallback used when Valkey misses or fails.
+type IndicatorLookup interface {
 	LookupTIIndicator(ctx context.Context, indicatorType, value string) (bool, int, string, error)
 }
 
-type PostgresTIIndicatorLookup struct {
+type PostgresIndicatorLookup struct {
 	pool *pgxpool.Pool
 }
 
-func NewPostgresTIIndicatorLookup(pool *pgxpool.Pool) *PostgresTIIndicatorLookup {
-	return &PostgresTIIndicatorLookup{pool: pool}
+func NewPostgresIndicatorLookup(pool *pgxpool.Pool) *PostgresIndicatorLookup {
+	return &PostgresIndicatorLookup{pool: pool}
 }
 
-func (l *PostgresTIIndicatorLookup) LookupTIIndicator(
+func (l *PostgresIndicatorLookup) LookupTIIndicator(
 	ctx context.Context,
 	indicatorType string,
 	value string,
@@ -59,21 +59,21 @@ LIMIT 1`
 	return true, riskScore, threatType, nil
 }
 
-// FallbackTILookup checks Valkey first, then Postgres. Errors from both tiers
-// are returned to the caller so SVC-04 can increment its ti_lookup error metric
+// FallbackLookup checks Valkey first, then Postgres. Errors from both tiers are
+// returned to the caller so SVC-04 can increment its ti_lookup error metric
 // while still treating the message as "no TI match" per ARCH-SPEC §6.
-type FallbackTILookup struct {
+type FallbackLookup struct {
 	valkey valkeygo.Client
-	db     TIIndicatorLookup
+	db     IndicatorLookup
 	log    zerolog.Logger
 }
 
-func NewFallbackTILookup(valkey valkeygo.Client, db TIIndicatorLookup, log zerolog.Logger) *FallbackTILookup {
-	return &FallbackTILookup{valkey: valkey, db: db, log: log}
+func NewFallbackLookup(valkey valkeygo.Client, db IndicatorLookup, log zerolog.Logger) *FallbackLookup {
+	return &FallbackLookup{valkey: valkey, db: db, log: log}
 }
 
-func (l *FallbackTILookup) IsBlocklisted(ctx context.Context, value string) (bool, int, string, error) {
-	indicatorType, normalized := normalizeTIValue(value)
+func (l *FallbackLookup) IsBlocklisted(ctx context.Context, value string) (bool, int, string, error) {
+	indicatorType, normalized := normalizeValue(value)
 	if normalized == "" {
 		return false, 0, "", nil
 	}
@@ -93,7 +93,7 @@ func (l *FallbackTILookup) IsBlocklisted(ctx context.Context, value string) (boo
 	return l.db.LookupTIIndicator(ctx, indicatorType, normalized)
 }
 
-func (l *FallbackTILookup) lookupValkey(ctx context.Context, value string) (bool, int, string, error) {
+func (l *FallbackLookup) lookupValkey(ctx context.Context, value string) (bool, int, string, error) {
 	key := fmt.Sprintf("ti_domain:{%s}", value)
 	cmd := l.valkey.Do(ctx, l.valkey.B().Hgetall().Key(key).Build())
 	if err := cmd.Error(); err != nil {
@@ -116,7 +116,7 @@ func (l *FallbackTILookup) lookupValkey(ctx context.Context, value string) (bool
 	return true, score, result["threat_type"], nil
 }
 
-func normalizeTIValue(value string) (indicatorType string, normalized string) {
+func normalizeValue(value string) (indicatorType string, normalized string) {
 	v := strings.TrimSpace(value)
 	v = strings.TrimPrefix(strings.TrimSuffix(v, "]"), "[")
 	if addr, err := netip.ParseAddr(v); err == nil {
