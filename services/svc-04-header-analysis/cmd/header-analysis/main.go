@@ -22,6 +22,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+
 	"github.com/saif/cybersiren/services/svc-04-header-analysis/internal/header"
 	"github.com/saif/cybersiren/services/svc-04-header-analysis/internal/processor"
 	"github.com/saif/cybersiren/services/svc-04-header-analysis/internal/rules"
@@ -32,7 +34,6 @@ import (
 	"github.com/saif/cybersiren/shared/observability/metrics"
 	"github.com/saif/cybersiren/shared/observability/tracing"
 	"github.com/saif/cybersiren/shared/postgres/pool"
-	"github.com/saif/cybersiren/shared/postgres/repository"
 	sharedvalkey "github.com/saif/cybersiren/shared/valkey"
 )
 
@@ -88,6 +89,7 @@ func run() error {
 	}()
 
 	reg := metrics.Init(serviceName)
+	valkeyHealthy := registerValkeyHealthGauge(reg)
 	metricsShutdown, err := metrics.StartServer(cfg.MetricsPort, reg, log)
 	if err != nil {
 		log.Error().Err(err).Msg("failed to start metrics server")
@@ -104,15 +106,18 @@ func run() error {
 	}, log)
 	defer dbPool.Close()
 
-	valkeyClient := sharedvalkey.MustNew(sharedvalkey.ClientOptions{
+	valkeyClient, valkeyErr := sharedvalkey.New(sharedvalkey.ClientOptions{
 		Addr:     cfg.Valkey.Addr,
 		Password: cfg.Valkey.Password,
 		DB:       cfg.Valkey.DB,
 	}, log)
-	defer valkeyClient.Close()
-
-	tiRepo := repository.NewTIRepository(dbPool, log, reg)
-	tiCache := sharedvalkey.NewTICache(valkeyClient, tiRepo, log, reg, int64(cfg.TIHashCacheTTLSeconds))
+	if valkeyErr != nil {
+		valkeyHealthy.Set(0)
+		log.Warn().Err(valkeyErr).Msg("Valkey unavailable at startup; continuing with Postgres-backed TI and rules lookup")
+	} else {
+		valkeyHealthy.Set(1)
+		defer valkeyClient.Close()
+	}
 
 	rulesCache := rules.NewCache(dbPool, valkeyClient, rules.CacheConfig{
 		Targets: []string{"header", "email"},
@@ -127,8 +132,6 @@ func run() error {
 	}
 
 	go rulesCache.StartRefreshLoop(ctx)
-
-	reputationExtractor := header.NewReputationExtractor(tiCache, cfg.Header.TyposquatMaxDistance, log)
 
 	producer, err := sharedproducer.New(sharedproducer.Config{
 		Brokers:  cfg.Kafka.Brokers,
@@ -153,6 +156,13 @@ func run() error {
 	defer func() { _ = consumer.Close() }()
 
 	procMetrics := processor.NewMetrics(reg)
+	tiLookup := header.NewFallbackTILookup(valkeyClient, header.NewPostgresTIIndicatorLookup(dbPool), log)
+	reputationExtractor := header.NewReputationExtractorWithObserver(
+		tiLookup,
+		cfg.Header.TyposquatMaxDistance,
+		log,
+		func() { procMetrics.ErrorsTotal.WithLabelValues("ti_lookup").Inc() },
+	)
 
 	writer := processor.NewRuleHitWriter(dbPool, cfg.Header.DBWriteRetryAttempts, log)
 
@@ -183,4 +193,20 @@ func run() error {
 
 	log.Info().Msg("shutdown complete")
 	return nil
+}
+
+func registerValkeyHealthGauge(reg *prometheus.Registry) prometheus.Gauge {
+	gauge := prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "header_analysis_valkey_healthy",
+		Help: "Whether SVC-04 connected to Valkey at startup (1 healthy, 0 degraded).",
+	})
+	if err := reg.Register(gauge); err != nil {
+		var already prometheus.AlreadyRegisteredError
+		if errors.As(err, &already) {
+			if existing, ok := already.ExistingCollector.(prometheus.Gauge); ok {
+				return existing
+			}
+		}
+	}
+	return gauge
 }
