@@ -76,6 +76,13 @@ func TestExtractAuth_AlignmentMatrix(t *testing.T) {
 			wantHasReplyTo:   true,
 		},
 		{
+			name:             "mixed case and trailing dot align",
+			from:             "alice@Example.COM.",
+			replyTo:          "bob@example.com",
+			wantReplyToMatch: true,
+			wantHasReplyTo:   true,
+		},
+		{
 			name:             "Reply-To on different brand → mismatch",
 			from:             "billing@bank.com",
 			replyTo:          "billing@bank-secure.com",

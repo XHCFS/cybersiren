@@ -55,6 +55,11 @@ func ExtractStructural(msg *contractsk.AnalysisHeadersMessage, cfg StructuralExt
 		signals.SuspiciousMailerAgent = isSuspiciousMailer(signals.MailerAgent)
 	}
 
+	senderDomain := normalizedSenderDomain(msg)
+	if senderDomain != "" {
+		signals.NonASCIISenderDomain = containsNonASCII(senderDomain)
+	}
+
 	return signals
 }
 
@@ -170,6 +175,15 @@ func isSuspiciousMailer(mailer string) bool {
 	}
 	for _, s := range suspicious {
 		if strings.Contains(v, s) {
+			return true
+		}
+	}
+	return false
+}
+
+func containsNonASCII(value string) bool {
+	for _, r := range value {
+		if r > 127 {
 			return true
 		}
 	}

@@ -68,6 +68,7 @@ type StructuralSignals struct {
 	MailerAgent             string
 	MissingMailer           bool
 	SuspiciousMailerAgent   bool
+	NonASCIISenderDomain    bool
 }
 
 // HeaderSignals is the union of all three dimensions plus a back-pointer
