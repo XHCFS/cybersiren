@@ -39,10 +39,15 @@ func NewRuleHitWriter(pool *pgxpool.Pool, maxRetries int, log zerolog.Logger) *R
 // dedupe (rule_id, entity_type, entity_id, rule_version); duplicate upstream
 // deliveries create duplicate history rows.
 //
-// emailInternalID corresponds to emails.internal_id (BIGINT). See
-// shared/contracts/kafka.AnalysisHeadersMessage.EmailID and
-// ARCH-SPEC §14 step 3b.
-func (w *RuleHitWriter) Write(ctx context.Context, emailInternalID int64, fired []rules.FiredRule) (retryOutcome string, err error) {
+// emailInternalID corresponds to emails.internal_id and emailFetchedAt to
+// emails.fetched_at. Both are required to support rule_hits polymorphic joins
+// against partitioned emails rows.
+func (w *RuleHitWriter) Write(
+	ctx context.Context,
+	emailInternalID int64,
+	emailFetchedAt time.Time,
+	fired []rules.FiredRule,
+) (retryOutcome string, err error) {
 	if w == nil || w.pool == nil {
 		return "exhausted", errors.New("rule_hits writer: not initialised")
 	}
@@ -61,7 +66,7 @@ func (w *RuleHitWriter) Write(ctx context.Context, emailInternalID int64, fired 
 			return "exhausted", err
 		}
 
-		err := w.runOnce(ctx, emailInternalID, fired)
+		err := w.runOnce(ctx, emailInternalID, emailFetchedAt, fired)
 		if err == nil {
 			return "ok", nil
 		}
@@ -90,7 +95,12 @@ func (w *RuleHitWriter) Write(ctx context.Context, emailInternalID int64, fired 
 	return "exhausted", lastErr
 }
 
-func (w *RuleHitWriter) runOnce(ctx context.Context, emailInternalID int64, fired []rules.FiredRule) error {
+func (w *RuleHitWriter) runOnce(
+	ctx context.Context,
+	emailInternalID int64,
+	emailFetchedAt time.Time,
+	fired []rules.FiredRule,
+) error {
 	tx, err := w.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return fmt.Errorf("begin rule_hits tx: %w", err)
@@ -102,14 +112,7 @@ func (w *RuleHitWriter) runOnce(ctx context.Context, emailInternalID int64, fire
 	q := dbsqlc.New(tx)
 
 	for _, fr := range fired {
-		_, err := q.InsertRuleHit(ctx, dbsqlc.InsertRuleHitParams{
-			RuleID:      pgtype.Int8{Int64: fr.Rule.ID, Valid: true},
-			RuleVersion: fr.Rule.Version,
-			EntityType:  dbsqlc.EntityTypeEnumEmail,
-			EntityID:    emailInternalID,
-			ScoreImpact: int32(fr.Rule.ScoreImpact),
-			MatchDetail: fr.MatchDetail,
-		})
+		_, err := q.InsertRuleHit(ctx, buildInsertRuleHitParams(emailInternalID, emailFetchedAt, fr))
 		if err != nil {
 			return fmt.Errorf("insert rule_hit (rule_id=%d): %w", fr.Rule.ID, err)
 		}
@@ -134,4 +137,23 @@ func backoffDuration(attempt int) time.Duration {
 		}
 	}
 	return d
+}
+
+func buildInsertRuleHitParams(
+	emailInternalID int64,
+	emailFetchedAt time.Time,
+	fr rules.FiredRule,
+) dbsqlc.InsertRuleHitParams {
+	return dbsqlc.InsertRuleHitParams{
+		RuleID:      pgtype.Int8{Int64: fr.Rule.ID, Valid: true},
+		RuleVersion: fr.Rule.Version,
+		EntityType:  dbsqlc.EntityTypeEnumEmail,
+		EntityID:    emailInternalID,
+		EmailFetchedAt: pgtype.Timestamptz{
+			Time:  emailFetchedAt,
+			Valid: !emailFetchedAt.IsZero(),
+		},
+		ScoreImpact: int32(fr.Rule.ScoreImpact),
+		MatchDetail: fr.MatchDetail,
+	}
 }
