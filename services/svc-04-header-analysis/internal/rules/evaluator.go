@@ -194,9 +194,12 @@ func categoryFromTarget(target string, fallback Category) Category {
 	}
 }
 
-// explicitCategory reports whether the rule logic blob explicitly
-// declared a category. We avoid re-parsing the same JSON twice by
-// checking byte-wise; close enough for the seed-rule contract.
+// explicitCategory reports whether the rule logic blob explicitly declared
+// a top-level "category" field. The full DSL evaluator (Evaluate) already
+// parsed this blob once; here we re-unmarshal only the top-level object so
+// we don't have to thread "was category explicit?" through every DSL node.
+// Avoiding the double-parse would require widening MatchResult, which is
+// the larger refactor tracked in the SVC-04 follow-ups.
 func explicitCategory(logic json.RawMessage) bool {
 	root := map[string]json.RawMessage{}
 	if err := json.Unmarshal(logic, &root); err != nil {
