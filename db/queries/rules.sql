@@ -37,6 +37,7 @@ INSERT INTO rule_hits (
     rule_version,
     entity_type,
     entity_id,
+    email_fetched_at,
     score_impact,
     match_detail
 ) VALUES (
@@ -45,6 +46,7 @@ INSERT INTO rule_hits (
     $3,
     $4,
     $5,
-    $6
+    $6,
+    $7
 )
 RETURNING id;

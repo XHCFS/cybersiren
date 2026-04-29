@@ -17,6 +17,7 @@ INSERT INTO rule_hits (
     rule_version,
     entity_type,
     entity_id,
+    email_fetched_at,
     score_impact,
     match_detail
 ) VALUES (
@@ -25,18 +26,20 @@ INSERT INTO rule_hits (
     $3,
     $4,
     $5,
-    $6
+    $6,
+    $7
 )
 RETURNING id
 `
 
 type InsertRuleHitParams struct {
-	RuleID      pgtype.Int8    `db:"rule_id" json:"rule_id"`
-	RuleVersion string         `db:"rule_version" json:"rule_version"`
-	EntityType  EntityTypeEnum `db:"entity_type" json:"entity_type"`
-	EntityID    int64          `db:"entity_id" json:"entity_id"`
-	ScoreImpact int32          `db:"score_impact" json:"score_impact"`
-	MatchDetail []byte         `db:"match_detail" json:"match_detail"`
+	RuleID         pgtype.Int8        `db:"rule_id" json:"rule_id"`
+	RuleVersion    string             `db:"rule_version" json:"rule_version"`
+	EntityType     EntityTypeEnum     `db:"entity_type" json:"entity_type"`
+	EntityID       int64              `db:"entity_id" json:"entity_id"`
+	EmailFetchedAt pgtype.Timestamptz `db:"email_fetched_at" json:"email_fetched_at"`
+	ScoreImpact    int32              `db:"score_impact" json:"score_impact"`
+	MatchDetail    []byte             `db:"match_detail" json:"match_detail"`
 }
 
 // Records a single rule fire. entity_type / entity_id form a polymorphic
@@ -49,6 +52,7 @@ func (q *Queries) InsertRuleHit(ctx context.Context, arg InsertRuleHitParams) (i
 		arg.RuleVersion,
 		arg.EntityType,
 		arg.EntityID,
+		arg.EmailFetchedAt,
 		arg.ScoreImpact,
 		arg.MatchDetail,
 	)
@@ -73,7 +77,7 @@ SELECT
     created_at
 FROM rules
 WHERE status = 'active'
-  AND target = ANY($1::text[])
+  AND target::text = ANY($1::text[])
   AND (org_id = $2 OR org_id IS NULL)
 ORDER BY id
 `

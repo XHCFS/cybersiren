@@ -15,7 +15,10 @@
 //	truth and is responsible for emitting the correct `internal_id`.
 package kafka
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"time"
+)
 
 // AnalysisHeadersMessage matches the `analysis.headers` topic payload.
 //
@@ -25,6 +28,12 @@ import "encoding/json"
 type AnalysisHeadersMessage struct {
 	// EmailID == emails.internal_id (BIGINT).
 	EmailID int64 `json:"email_id"`
+	// InternalID is emails.internal_id (BIGINT). Required for rule_hits.entity_id.
+	// Populated by SVC-02 immediately after the emails INSERT.
+	InternalID int64 `json:"internal_id"`
+	// FetchedAt is emails.fetched_at (partition key / FK companion for rule_hits).
+	// Populated by SVC-02 alongside InternalID.
+	FetchedAt time.Time `json:"fetched_at"`
 	// OrgID is the owning tenant; required for rules cache scoping.
 	OrgID int64 `json:"org_id"`
 
