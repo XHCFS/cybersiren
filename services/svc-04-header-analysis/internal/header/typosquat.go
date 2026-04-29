@@ -89,30 +89,73 @@ func FindTyposquat(domain string, maxDistance int) (target string, distance int)
 }
 
 // candidateLabels generates the label-suffix candidates we check against
-// the brand list. For "login.secure-paypa1.com" we yield:
+// the brand list. We yield:
 //
-//	login.secure-paypa1.com
-//	secure-paypa1.com
-//	paypa1.com (only if its label-count >= 2)
+//   - the full domain
+//   - every "label.tld" suffix walking from the front
+//   - for each label that contains a hyphen, the hyphen-separated
+//     sub-tokens combined with the TLD (so "secure-paypa1" yields the
+//     extra candidate "paypa1.com").
 //
-// We stop at 2 labels because brands are stored as registrable domains.
+// This is a deliberately small heuristic — see "Follow-ups" in the MR
+// for why a real PSL-based reducer is the right long-term answer.
 func candidateLabels(domain string) []string {
 	out := []string{domain}
+	tld := tldOf(domain)
+
+	// Walk left-to-right, collecting every "label.tld" suffix that has
+	// at least 2 labels (one dot). This avoids the degenerate "com"
+	// candidate that would be ≤2 distance from "x.com".
+	walk := domain
 	for {
-		idx := strings.Index(domain, ".")
+		idx := strings.Index(walk, ".")
 		if idx < 0 {
 			break
 		}
-		domain = domain[idx+1:]
-		if strings.Count(domain, ".") < 1 {
+		walk = walk[idx+1:]
+		if walk == "" || !strings.Contains(walk, ".") {
 			break
 		}
-		out = append(out, domain)
+		out = append(out, walk)
 	}
-	if strings.Count(out[len(out)-1], ".") >= 1 {
-		out = append(out, out[len(out)-1])
+
+	if tld != "" {
+		// For each label seen, also try hyphen-split sub-tokens combined
+		// with the TLD. This reaches "paypa1.com" from "secure-paypa1.com".
+		// Skip single-character tokens to avoid triggering matches with
+		// short brand names like "x.com".
+		for _, c := range append([]string{domain}, out...) {
+			label := firstLabel(c)
+			if !strings.Contains(label, "-") {
+				continue
+			}
+			for _, tok := range strings.Split(label, "-") {
+				tok = strings.TrimSpace(tok)
+				if len(tok) < 3 {
+					continue
+				}
+				out = append(out, tok+"."+tld)
+			}
+		}
 	}
+
 	return dedupe(out)
+}
+
+func tldOf(domain string) string {
+	idx := strings.LastIndex(domain, ".")
+	if idx < 0 {
+		return ""
+	}
+	return domain[idx+1:]
+}
+
+func firstLabel(domain string) string {
+	idx := strings.Index(domain, ".")
+	if idx < 0 {
+		return domain
+	}
+	return domain[:idx]
 }
 
 func dedupe(in []string) []string {
