@@ -9,7 +9,6 @@ import (
 
 	contractsk "github.com/saif/cybersiren/shared/contracts/kafka"
 	"github.com/saif/cybersiren/shared/normalization"
-	"github.com/saif/cybersiren/shared/valkey"
 )
 
 // TILookup is the minimal interface SVC-04 needs from the TI cache.
@@ -21,14 +20,12 @@ type TILookup interface {
 	IsBlocklisted(ctx context.Context, domain string) (bool, int, string, error)
 }
 
-// Compile-time check.
-var _ TILookup = (*valkey.ValkeyTICache)(nil)
-
 // ReputationExtractor turns a parsed header message into ReputationSignals.
 type ReputationExtractor struct {
 	tiLookup             TILookup
 	typosquatMaxDistance int
 	log                  zerolog.Logger
+	observeTILookupError func()
 }
 
 // NewReputationExtractor builds an extractor.
@@ -37,6 +34,15 @@ type ReputationExtractor struct {
 // extractor still runs typosquat / free-provider detection so unit tests
 // don't need a Redis fixture).
 func NewReputationExtractor(tiLookup TILookup, typosquatMaxDistance int, log zerolog.Logger) *ReputationExtractor {
+	return NewReputationExtractorWithObserver(tiLookup, typosquatMaxDistance, log, nil)
+}
+
+func NewReputationExtractorWithObserver(
+	tiLookup TILookup,
+	typosquatMaxDistance int,
+	log zerolog.Logger,
+	observeTILookupError func(),
+) *ReputationExtractor {
 	if typosquatMaxDistance < 0 {
 		typosquatMaxDistance = 0
 	}
@@ -44,6 +50,7 @@ func NewReputationExtractor(tiLookup TILookup, typosquatMaxDistance int, log zer
 		tiLookup:             tiLookup,
 		typosquatMaxDistance: typosquatMaxDistance,
 		log:                  log,
+		observeTILookupError: observeTILookupError,
 	}
 }
 
@@ -56,7 +63,7 @@ func (r *ReputationExtractor) Extract(ctx context.Context, msg *contractsk.Analy
 	}
 
 	signals := ReputationSignals{
-		SenderDomain:   normalization.NormalizeDomain(msg.SenderDomain),
+		SenderDomain:   normalizedSenderDomain(msg),
 		OriginatingIP:  strings.TrimSpace(msg.OriginatingIP),
 		XOriginatingIP: strings.TrimSpace(msg.XOriginatingIP),
 	}
@@ -84,6 +91,7 @@ func (r *ReputationExtractor) Extract(ctx context.Context, msg *contractsk.Analy
 	if r.tiLookup != nil && signals.SenderDomain != "" {
 		hit, score, threat, err := r.tiLookup.IsBlocklisted(ctx, signals.SenderDomain)
 		if err != nil {
+			r.observeTIError()
 			// Cache miss / Valkey down => no match. Log at debug so we
 			// don't drown the logs in scoring runs.
 			r.log.Debug().
@@ -107,6 +115,7 @@ func (r *ReputationExtractor) Extract(ctx context.Context, msg *contractsk.Analy
 	if r.tiLookup != nil && ipForLookup != "" {
 		hit, score, threat, err := r.tiLookup.IsBlocklisted(ctx, ipForLookup)
 		if err != nil {
+			r.observeTIError()
 			r.log.Debug().
 				Err(err).
 				Str("originating_ip", ipForLookup).
@@ -125,6 +134,23 @@ func (r *ReputationExtractor) Extract(ctx context.Context, msg *contractsk.Analy
 	signals.DomainAgeDays = nil
 
 	return signals
+}
+
+func normalizedSenderDomain(msg *contractsk.AnalysisHeadersMessage) string {
+	if msg == nil {
+		return ""
+	}
+	domain := normalization.NormalizeDomain(msg.SenderDomain)
+	if domain == "" {
+		domain = normalization.NormalizeDomain(domainOf(msg.SenderEmail))
+	}
+	return domain
+}
+
+func (r *ReputationExtractor) observeTIError() {
+	if r != nil && r.observeTILookupError != nil {
+		r.observeTILookupError()
+	}
 }
 
 // ErrTILookupUnavailable is returned by stub TI lookups that want to

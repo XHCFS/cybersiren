@@ -63,6 +63,17 @@ func TestReputationExtractor_FreeProviderAndTyposquat(t *testing.T) {
 	}
 
 	got = r.Extract(context.Background(), &contractsk.AnalysisHeadersMessage{
+		SenderEmail:  "user+tag@gmail.com",
+		ReplyToEmail: "support@gmail.com",
+	})
+	if got.SenderDomain != "gmail.com" {
+		t.Errorf("subaddressed sender domain = %q, want gmail.com", got.SenderDomain)
+	}
+	if !got.IsFreeProvider {
+		t.Errorf("subaddressed gmail sender must be flagged as free provider")
+	}
+
+	got = r.Extract(context.Background(), &contractsk.AnalysisHeadersMessage{
 		SenderDomain: "paypa1.com",
 	})
 	if got.TyposquatTarget != "paypal.com" || got.TyposquatDistance != 1 {
@@ -100,7 +111,8 @@ func TestReputationExtractor_TILookupErrorIsTolerated(t *testing.T) {
 	t.Parallel()
 
 	stub := &stubTILookup{err: errors.New("valkey unavailable")}
-	r := NewReputationExtractor(stub, 2, zerolog.Nop())
+	errorCount := 0
+	r := NewReputationExtractorWithObserver(stub, 2, zerolog.Nop(), func() { errorCount++ })
 
 	got := r.Extract(context.Background(), &contractsk.AnalysisHeadersMessage{
 		SenderDomain:  "example.com",
@@ -110,6 +122,9 @@ func TestReputationExtractor_TILookupErrorIsTolerated(t *testing.T) {
 	// Errors must not propagate as TI hits.
 	if got.TIDomainMatch || got.TIIPMatch {
 		t.Errorf("errors must not surface as hits, got %+v", got)
+	}
+	if errorCount != 2 {
+		t.Errorf("expected one ti_lookup error per failed domain/ip lookup, got %d", errorCount)
 	}
 }
 
