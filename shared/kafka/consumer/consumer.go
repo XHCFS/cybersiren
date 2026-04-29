@@ -51,7 +51,6 @@ type Config struct {
 	MaxWait time.Duration
 	// CommitInterval = 0 enables synchronous commits via CommitMessages
 	// (which is what we want for at-least-once delivery). Do not set.
-	startOffset int64 // unused; kafka-go default (latest) is fine for SVC-04
 }
 
 // Handler processes a single Kafka message and returns nil on success.
@@ -271,7 +270,10 @@ func (c *Consumer) Close() error {
 	if c == nil || c.reader == nil {
 		return nil
 	}
-	return c.reader.Close()
+	if err := c.reader.Close(); err != nil {
+		return fmt.Errorf("kafka reader close: %w", err)
+	}
+	return nil
 }
 
 func fromKafkaMessage(msg kafkago.Message, sc trace.SpanContext) Message {

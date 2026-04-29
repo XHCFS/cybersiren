@@ -53,19 +53,19 @@ func run() error {
 	cfg, err := config.Load()
 	if err != nil {
 		bootstrapLog.Error().Err(err).Msg("failed to load config")
-		return err
+		return fmt.Errorf("load config: %w", err)
 	}
 	if err := cfg.Validate(); err != nil {
 		bootstrapLog.Error().Err(err).Msg("invalid config")
-		return err
+		return fmt.Errorf("validate config: %w", err)
 	}
 	if err := cfg.Header.Validate(); err != nil {
 		bootstrapLog.Error().Err(err).Msg("invalid header config")
-		return err
+		return fmt.Errorf("validate header config: %w", err)
 	}
 	if err := cfg.Kafka.Validate(); err != nil {
 		bootstrapLog.Error().Err(err).Msg("invalid kafka config")
-		return err
+		return fmt.Errorf("validate kafka config: %w", err)
 	}
 
 	log := logger.New(cfg.Log.Level, cfg.Log.Pretty)
@@ -77,7 +77,7 @@ func run() error {
 	tracerShutdown, err := tracing.Init(ctx, serviceName, cfg.JaegerEndpoint)
 	if err != nil {
 		log.Error().Err(err).Msg("failed to initialize tracing")
-		return err
+		return fmt.Errorf("init tracing: %w", err)
 	}
 	defer func() {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -91,7 +91,7 @@ func run() error {
 	metricsShutdown, err := metrics.StartServer(cfg.MetricsPort, reg, log)
 	if err != nil {
 		log.Error().Err(err).Msg("failed to start metrics server")
-		return err
+		return fmt.Errorf("start metrics server: %w", err)
 	}
 	defer func() { _ = metricsShutdown(context.Background()) }()
 
@@ -137,7 +137,7 @@ func run() error {
 	}, log, reg)
 	if err != nil {
 		log.Error().Err(err).Msg("failed to build kafka producer")
-		return err
+		return fmt.Errorf("build kafka producer: %w", err)
 	}
 	defer func() { _ = producer.Close() }()
 
@@ -148,7 +148,7 @@ func run() error {
 	}, log, reg)
 	if err != nil {
 		log.Error().Err(err).Msg("failed to build kafka consumer")
-		return err
+		return fmt.Errorf("build kafka consumer: %w", err)
 	}
 	defer func() { _ = consumer.Close() }()
 
@@ -178,7 +178,7 @@ func run() error {
 
 	if runErr := consumer.Run(ctx, proc.Handle); runErr != nil && !errors.Is(runErr, context.Canceled) {
 		log.Error().Err(runErr).Msg("kafka consumer loop ended with error")
-		return runErr
+		return fmt.Errorf("consumer run: %w", runErr)
 	}
 
 	log.Info().Msg("shutdown complete")
