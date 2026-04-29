@@ -5,7 +5,7 @@ import "testing"
 func TestDamerauLevenshtein_KnownVectors(t *testing.T) {
 	t.Parallel()
 
-	cap := 100
+	maxDist := 100
 	cases := []struct {
 		a, b string
 		want int
@@ -24,7 +24,7 @@ func TestDamerauLevenshtein_KnownVectors(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		got := damerauLevenshtein(tc.a, tc.b, cap)
+		got := damerauLevenshtein(tc.a, tc.b, maxDist)
 		if got != tc.want {
 			t.Errorf("damerauLevenshtein(%q,%q) = %d, want %d", tc.a, tc.b, got, tc.want)
 		}
@@ -34,8 +34,8 @@ func TestDamerauLevenshtein_KnownVectors(t *testing.T) {
 func TestDamerauLevenshtein_EarlyExit(t *testing.T) {
 	t.Parallel()
 
-	// Beyond cap, the function may return cap+1 — we just need it
-	// to converge to a finite value.
+	// Beyond maxDist, the function may return maxDist+1 — we just need
+	// it to converge to a finite value.
 	d := damerauLevenshtein("abcdefghij", "qwertyuiop", 1)
 	if d <= 1 {
 		t.Errorf("expected distance > 1, got %d", d)
