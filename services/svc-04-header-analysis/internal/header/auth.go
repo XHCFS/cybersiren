@@ -112,11 +112,11 @@ func sameRegistrableDomain(a, b string) bool {
 		return true
 	}
 	if hasSuffixDot(a, b) || hasSuffixDot(b, a) {
-		// Require at least two labels in the shared suffix.
+		// Require at least two labels in the shared suffix. The "shared"
+		// piece is the shorter of the two, since `hasSuffixDot(longer,
+		// shorter)` reports that `longer` ends with ".shorter".
 		shared := a
-		if hasSuffixDot(b, a) {
-			shared = a
-		} else {
+		if len(b) < len(a) {
 			shared = b
 		}
 		return strings.Count(shared, ".") >= 1
