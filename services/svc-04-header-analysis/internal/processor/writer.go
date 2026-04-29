@@ -35,6 +35,10 @@ func NewRuleHitWriter(pool *pgxpool.Pool, maxRetries int, log zerolog.Logger) *R
 // Write persists fired rules for a single email atomically. When fired
 // is empty, no transaction is opened. Returns nil on success.
 //
+// rule_hits is an append-only audit log and the schema intentionally does not
+// dedupe (rule_id, entity_type, entity_id, rule_version); duplicate upstream
+// deliveries create duplicate history rows.
+//
 // emailInternalID corresponds to emails.internal_id (BIGINT). See
 // shared/contracts/kafka.AnalysisHeadersMessage.EmailID and
 // ARCH-SPEC §14 step 3b.
