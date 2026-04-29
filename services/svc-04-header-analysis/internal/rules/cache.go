@@ -87,7 +87,10 @@ func NewCache(
 
 	if reg != nil {
 		c.cacheHits = registerCounterVec(reg, prometheus.NewCounterVec(
-			prometheus.CounterOpts{Name: "header_rule_cache_hits_total", Help: "Total rule-cache lookups that returned an in-memory snapshot."},
+			prometheus.CounterOpts{
+				Name: "header_rule_cache_hits_total",
+				Help: "Total rule-cache lookups that returned an in-memory snapshot.",
+			},
 			[]string{"tier"},
 		))
 		c.cacheMisses = registerCounterVec(reg, prometheus.NewCounterVec(

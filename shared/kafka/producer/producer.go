@@ -8,6 +8,7 @@ package producer
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -201,7 +202,10 @@ func (p *Producer) Close() error {
 	if p == nil || p.writer == nil {
 		return nil
 	}
-	return p.writer.Close()
+	if err := p.writer.Close(); err != nil {
+		return fmt.Errorf("kafka writer close: %w", err)
+	}
+	return nil
 }
 
 func injectTraceContext(ctx context.Context) []kafkago.Header {

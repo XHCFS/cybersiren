@@ -180,7 +180,7 @@ func (p *Processor) Handle(ctx context.Context, msg sharedconsumer.Message) erro
 		span.SetStatus(codes.Error, "marshal scores.header failed")
 		logCtx.Error().Err(err).Msg("marshal scores.header failed")
 		p.metrics.MessagesTotal.WithLabelValues("error").Inc()
-		return err
+		return fmt.Errorf("marshal scores.header: %w", err)
 	}
 
 	if err := p.producer.Publish(ctx, encodeKey(parsed.EmailID), body, p.cfg.PublishRetryAttempts); err != nil {
@@ -189,7 +189,7 @@ func (p *Processor) Handle(ctx context.Context, msg sharedconsumer.Message) erro
 		span.SetStatus(codes.Error, "publish scores.header failed")
 		logCtx.Error().Err(err).Msg("publish scores.header failed")
 		p.metrics.MessagesTotal.WithLabelValues("error").Inc()
-		return err
+		return fmt.Errorf("publish scores.header: %w", err)
 	}
 
 	p.metrics.MessagesTotal.WithLabelValues("ok").Inc()
@@ -216,11 +216,11 @@ func (p *Processor) publishNeutral(ctx context.Context, parsed contractsk.Analys
 	out := buildScoresHeader(parsed, header.HeaderSignals{}, rules.EvaluationResult{}, 0, elapsed)
 	body, err := json.Marshal(out)
 	if err != nil {
-		return err
+		return fmt.Errorf("marshal neutral scores.header: %w", err)
 	}
 	if err := p.producer.Publish(ctx, encodeKey(parsed.EmailID), body, p.cfg.PublishRetryAttempts); err != nil {
 		p.observeError("publish")
-		return err
+		return fmt.Errorf("publish neutral scores.header: %w", err)
 	}
 	p.metrics.MessagesTotal.WithLabelValues("ok").Inc()
 	return nil
