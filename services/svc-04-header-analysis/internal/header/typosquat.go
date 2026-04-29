@@ -175,28 +175,28 @@ func dedupe(in []string) []string {
 // Levenshtein distance between a and b. It supports the four classic
 // edit operations: insert, delete, substitute, transpose-of-adjacent.
 //
-// `cap` allows the caller to stop computing once distance has exceeded
+// `maxDist` allows the caller to stop computing once distance has exceeded
 // the threshold of interest. Pass a large number to disable the bound.
 //
 // Implementation note: we use a 2-row rolling buffer (memory O(min(n,m)))
 // plus a third "two-rows-back" row for the transposition step.
 // Correctness verified against published OSA test vectors.
-func damerauLevenshtein(a, b string, cap int) int {
+func damerauLevenshtein(a, b string, maxDist int) int {
 	ar := []rune(strings.ToLower(a))
 	br := []rune(strings.ToLower(b))
 	la, lb := len(ar), len(br)
 
 	if la == 0 {
-		if lb < cap {
+		if lb < maxDist {
 			return lb
 		}
-		return cap
+		return maxDist
 	}
 	if lb == 0 {
-		if la < cap {
+		if la < maxDist {
 			return la
 		}
-		return cap
+		return maxDist
 	}
 
 	// Ensure ar is the shorter of the two for memory.
@@ -247,15 +247,15 @@ func damerauLevenshtein(a, b string, cap int) int {
 			}
 		}
 		// Early-exit: every value in this row is >= minInRow, so future
-		// rows can only grow above cap.
-		if minInRow > cap {
-			return cap + 1
+		// rows can only grow above maxDist.
+		if minInRow > maxDist {
+			return maxDist + 1
 		}
 		prevPrev, prev, curr = prev, curr, prevPrev
 	}
 
-	if prev[la] > cap {
-		return cap + 1
+	if prev[la] > maxDist {
+		return maxDist + 1
 	}
 	return prev[la]
 }
