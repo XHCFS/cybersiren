@@ -14,6 +14,7 @@ require (
 	github.com/knadh/koanf/v2 v2.3.3
 	github.com/prometheus/client_golang v1.23.2
 	github.com/rs/zerolog v1.34.0
+	github.com/segmentio/kafka-go v0.4.51
 	github.com/stretchr/testify v1.11.1
 	github.com/valkey-io/valkey-go v1.0.72
 	github.com/valkey-io/valkey-go/valkeyotel v1.0.72
@@ -22,6 +23,11 @@ require (
 	go.opentelemetry.io/otel/sdk v1.42.0
 	go.opentelemetry.io/otel/trace v1.42.0
 	resty.dev/v3 v3.0.0-beta.6
+)
+
+require (
+	github.com/klauspost/compress v1.18.0 // indirect
+	github.com/pierrec/lz4/v4 v4.1.15 // indirect
 )
 
 require (
