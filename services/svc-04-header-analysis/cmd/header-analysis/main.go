@@ -27,6 +27,7 @@ import (
 	"github.com/saif/cybersiren/services/svc-04-header-analysis/internal/header"
 	"github.com/saif/cybersiren/services/svc-04-header-analysis/internal/processor"
 	"github.com/saif/cybersiren/services/svc-04-header-analysis/internal/rules"
+	svcti "github.com/saif/cybersiren/services/svc-04-header-analysis/internal/ti"
 	"github.com/saif/cybersiren/shared/config"
 	sharedconsumer "github.com/saif/cybersiren/shared/kafka/consumer"
 	sharedproducer "github.com/saif/cybersiren/shared/kafka/producer"
@@ -156,7 +157,7 @@ func run() error {
 	defer func() { _ = consumer.Close() }()
 
 	procMetrics := processor.NewMetrics(reg)
-	tiLookup := header.NewFallbackTILookup(valkeyClient, header.NewPostgresTIIndicatorLookup(dbPool), log)
+	tiLookup := svcti.NewFallbackLookup(valkeyClient, svcti.NewPostgresIndicatorLookup(dbPool), log)
 	reputationExtractor := header.NewReputationExtractorWithObserver(
 		tiLookup,
 		cfg.Header.TyposquatMaxDistance,
