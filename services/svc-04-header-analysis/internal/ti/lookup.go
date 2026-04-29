@@ -90,7 +90,11 @@ func (l *FallbackLookup) IsBlocklisted(ctx context.Context, value string) (bool,
 	if l == nil || l.db == nil {
 		return false, 0, "", nil
 	}
-	return l.db.LookupTIIndicator(ctx, indicatorType, normalized)
+	hit, score, threat, err := l.db.LookupTIIndicator(ctx, indicatorType, normalized)
+	if err != nil {
+		return false, 0, "", fmt.Errorf("ti postgres fallback: %w", err)
+	}
+	return hit, score, threat, nil
 }
 
 func (l *FallbackLookup) lookupValkey(ctx context.Context, value string) (bool, int, string, error) {
