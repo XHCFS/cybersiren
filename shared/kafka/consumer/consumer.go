@@ -389,6 +389,3 @@ var (
 	_ kafkago.Logger = kafkaInfoLogger{}
 	_ kafkago.Logger = kafkaErrorLogger{}
 )
-
-// avoid unused import warning when kafka-go's Logger type ever drops.
-var _ = fmt.Sprintf
