@@ -23,7 +23,7 @@ SELECT
     created_at
 FROM rules
 WHERE status = 'active'
-  AND target = ANY(@targets::text[])
+  AND target::text = ANY(@targets::text[])
   AND (org_id = @org_id OR org_id IS NULL)
 ORDER BY id;
 
