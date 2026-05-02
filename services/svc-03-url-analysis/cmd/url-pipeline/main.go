@@ -1,20 +1,23 @@
 // svc-03 url-pipeline is the Kafka-side binary for SVC-03 URL Analysis.
-// It is distinct from cmd/url-analysis (the standalone HTTP demo) — this
-// binary consumes analysis.urls from Kafka, runs every URL through the
-// real XGBoost model (Python subprocess pool from internal/url), and
-// publishes the maximum risk score to scores.url.
+// It is distinct from cmd/url-analysis (the standalone HTTP demo) but uses
+// the SAME internal/url Go module. Per URL it runs:
 //
-// If the model fails to load (xgboost / joblib missing locally, model
-// file not present), the binary fails fast at startup so smoke surfaces
-// the misconfiguration. There is no random-fallback path.
+//  1. shared/normalization.NormalizeURL → canonical form
+//  2. urlpkg.URLModel.PredictWithRoute  → XGBoost score + routing flag
+//  3. urlpkg.TIChecker.Check            → Valkey-cached domain blocklist
+//  4. classifyLabel(score, ti, routed)  → final label per the demo's logic
+//
+// scores.url carries the maximum risk score across all URLs in the email,
+// plus the strongest TI hit and the per-URL detail for downstream debug.
 package main
 
 import (
-	"strconv"
 	"context"
 	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
+	"sync"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -22,20 +25,27 @@ import (
 	"github.com/saif/cybersiren/services/svc-03-url-analysis/internal/url"
 	contracts "github.com/saif/cybersiren/shared/contracts/kafka"
 	kafkaconsumer "github.com/saif/cybersiren/shared/kafka/consumer"
+	"github.com/saif/cybersiren/shared/normalization"
+	"github.com/saif/cybersiren/shared/postgres/repository"
 	"github.com/saif/cybersiren/shared/svckit"
+	sharedvalkey "github.com/saif/cybersiren/shared/valkey"
 )
 
 const (
-	serviceName = "svc-03-url-analysis"
+	serviceName    = "svc-03-url-analysis"
 	predictTimeout = 5 * time.Second
 )
 
-var urlModel *url.URLModel
+var (
+	urlModel  *url.URLModel
+	tiChecker *url.TIChecker
+)
 
 func main() {
 	if err := svckit.Run(svckit.Spec{
 		Name:           serviceName,
 		NeedsDB:        true,
+		NeedsValkey:    true,
 		ProducerTopics: []string{contracts.TopicScoresURL},
 		ConsumerTopics: []string{contracts.TopicAnalysisURLs},
 		GroupID:        contracts.GroupURLAnalysis,
@@ -54,6 +64,16 @@ func main() {
 			}
 			urlModel = m
 			log.Info().Str("script", scriptPath).Int("pool", poolSize).Msg("URL model ready")
+
+			// TI checker: Valkey-cached domain blocklist backed by Postgres
+			// ti_indicators. Mirrors the standalone /scan demo wiring.
+			tiRepo := repository.NewTIRepository(deps.Pool, deps.Log, deps.Registry)
+			tiCache := sharedvalkey.NewTICache(deps.Valkey, tiRepo, deps.Log, deps.Registry, 0)
+			if err := tiCache.RefreshDomainCache(ctx); err != nil {
+				log.Warn().Err(err).Msg("initial TI domain cache refresh failed (continuing)")
+			}
+			tiChecker = url.NewTIChecker(tiCache, log)
+			log.Info().Msg("TI checker ready")
 			return nil
 		},
 		Handler: handle,
@@ -64,6 +84,20 @@ func main() {
 	}
 }
 
+// urlScan is the per-URL outcome aggregated into scores.url Details.
+type urlScan struct {
+	URL          string  `json:"url"`
+	Normalized   string  `json:"normalized,omitempty"`
+	Score        int     `json:"score"`
+	Probability  float64 `json:"probability"`
+	Routed       bool    `json:"routed_to_enrichment"`
+	RouteReason  string  `json:"route_reason,omitempty"`
+	TIMatch      bool    `json:"ti_match"`
+	TIThreatType string  `json:"ti_threat_type,omitempty"`
+	TIRiskScore  int     `json:"ti_risk_score"`
+	Label        string  `json:"label"`
+}
+
 func handle(ctx context.Context, msg kafkaconsumer.Message, deps svckit.Deps) error {
 	var input contracts.AnalysisURLs
 	if err := json.Unmarshal(msg.Value, &input); err != nil {
@@ -72,29 +106,23 @@ func handle(ctx context.Context, msg kafkaconsumer.Message, deps svckit.Deps) er
 
 	log := zerolog.Ctx(ctx).With().Int64("email_id", input.Meta.EmailID).Logger()
 
+	scans := make([]urlScan, 0, len(input.URLs))
 	maxScore := 0
 	maxProb := 0.0
-	scoredURLs := 0
-	perURL := make([]map[string]any, 0, len(input.URLs))
+	maxTIRisk := 0
+	worstLabel := "legitimate"
 
-	for _, u := range input.URLs {
-		predCtx, cancel := context.WithTimeout(ctx, predictTimeout)
-		score, prob, err := urlModel.Predict(predCtx, u)
-		cancel()
-		if err != nil {
-			log.Warn().Err(err).Str("url", u).Msg("URL inference failed; skipping")
-			continue
+	for _, raw := range input.URLs {
+		s := scanOne(ctx, raw, log)
+		scans = append(scans, s)
+		if s.Score > maxScore {
+			maxScore = s.Score
+			maxProb = s.Probability
 		}
-		scoredURLs++
-		if score > maxScore {
-			maxScore = score
-			maxProb = prob
+		if s.TIRiskScore > maxTIRisk {
+			maxTIRisk = s.TIRiskScore
 		}
-		perURL = append(perURL, map[string]any{
-			"url":        u,
-			"score":      score,
-			"probability": prob,
-		})
+		worstLabel = worseLabel(worstLabel, s.Label)
 	}
 
 	out := contracts.ScoreEnvelope{
@@ -102,10 +130,11 @@ func handle(ctx context.Context, msg kafkaconsumer.Message, deps svckit.Deps) er
 		Component: contracts.ComponentURL,
 		Score:     float64(maxScore),
 		Details: map[string]interface{}{
-			"urls_scored":          scoredURLs,
-			"urls_total":           len(input.URLs),
+			"urls_total":               len(input.URLs),
 			"max_phishing_probability": maxProb,
-			"per_url":              perURL,
+			"max_ti_risk_score":        maxTIRisk,
+			"worst_label":              worstLabel,
+			"per_url":                  scans,
 		},
 	}
 
@@ -121,6 +150,83 @@ func handle(ctx context.Context, msg kafkaconsumer.Message, deps svckit.Deps) er
 		return fmt.Errorf("publish scores.url: %w", err)
 	}
 
-	log.Info().Int("max_score", maxScore).Int("urls_scored", scoredURLs).Msg("scored URLs")
+	log.Info().
+		Int("urls", len(input.URLs)).
+		Int("max_score", maxScore).
+		Int("max_ti_risk", maxTIRisk).
+		Str("worst_label", worstLabel).
+		Msg("scored URLs")
 	return nil
+}
+
+// scanOne mirrors the standalone /scan handler: normalise, run ML + TI in
+// parallel, classify into a label.
+func scanOne(ctx context.Context, raw string, log zerolog.Logger) urlScan {
+	out := urlScan{URL: raw, Label: "legitimate"}
+
+	normalized, err := normalization.NormalizeURL(raw)
+	if err != nil {
+		log.Warn().Err(err).Str("url", raw).Msg("URL normalisation failed; skipping")
+		return out
+	}
+	out.Normalized = normalized
+
+	predCtx, cancel := context.WithTimeout(ctx, predictTimeout)
+	defer cancel()
+
+	var (
+		mlScore int
+		mlProb  float64
+		routed  bool
+		reason  string
+		tiRes   url.TIResult
+		wg      sync.WaitGroup
+	)
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		mlScore, mlProb, routed, reason, _ = urlModel.PredictWithRoute(predCtx, normalized)
+	}()
+	go func() {
+		defer wg.Done()
+		tiRes, _ = tiChecker.Check(predCtx, normalized)
+	}()
+	wg.Wait()
+
+	out.Score = mlScore
+	out.Probability = mlProb
+	out.Routed = routed
+	out.RouteReason = reason
+	out.TIMatch = tiRes.Matched
+	out.TIThreatType = tiRes.ThreatType
+	out.TIRiskScore = tiRes.RiskScore
+	out.Label = classifyLabel(mlScore, tiRes, routed)
+	return out
+}
+
+// classifyLabel mirrors the rule set in cmd/url-analysis/main.go.
+func classifyLabel(mlScore int, ti url.TIResult, routed bool) string {
+	if ti.Matched && ti.RiskScore >= 80 {
+		return "phishing"
+	}
+	if routed {
+		return "suspicious"
+	}
+	switch {
+	case mlScore >= 70:
+		return "phishing"
+	case mlScore >= 40:
+		return "suspicious"
+	default:
+		return "legitimate"
+	}
+}
+
+// worseLabel returns the more severe of two label values.
+func worseLabel(a, b string) string {
+	rank := map[string]int{"legitimate": 0, "suspicious": 1, "phishing": 2}
+	if rank[b] > rank[a] {
+		return b
+	}
+	return a
 }
