@@ -15,6 +15,7 @@ package svckit
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os/signal"
@@ -101,15 +102,15 @@ func Run(spec Spec) error {
 	cfg, err := config.Load()
 	if err != nil {
 		bootstrapLog.Error().Err(err).Msg("config load failed")
-		return err
+		return fmt.Errorf("config load: %w", err)
 	}
 	if err := cfg.Validate(); err != nil {
 		bootstrapLog.Error().Err(err).Msg("config invalid")
-		return err
+		return fmt.Errorf("config validate: %w", err)
 	}
 	if err := cfg.Kafka.Validate(); err != nil {
 		bootstrapLog.Error().Err(err).Msg("kafka config invalid")
-		return err
+		return fmt.Errorf("kafka config validate: %w", err)
 	}
 
 	log := logger.New(cfg.Log.Level, cfg.Log.Pretty).With().Str("svc", spec.Name).Logger()
@@ -256,12 +257,13 @@ func Run(spec Spec) error {
 			})
 			if err != nil {
 				once.Do(func() { log.Error().Err(err).Msg("consumer loop ended with error") })
+				return fmt.Errorf("consumer run: %w", err)
 			}
-			return err
+			return nil
 		})
 	}
-	if err := g.Wait(); err != nil && err != context.Canceled {
-		return err
+	if err := g.Wait(); err != nil && !errors.Is(err, context.Canceled) {
+		return fmt.Errorf("consumer group wait: %w", err)
 	}
 
 	log.Info().Msg("shutdown complete")

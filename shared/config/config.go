@@ -611,4 +611,3 @@ func (h HeaderConfig) Validate() error {
 	}
 	return nil
 }
-

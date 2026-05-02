@@ -9,11 +9,11 @@
 package main
 
 import (
-	"strconv"
 	"context"
 	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -47,7 +47,11 @@ func main() {
 			pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 			defer cancel()
 			if ok, err := c.Health(pingCtx); err != nil || !ok {
-				return fmt.Errorf("NLP /healthz at %s failed: %w (start the FastAPI service via `make smoke` or `docker compose --profile nlp-inference up`)", base, err)
+				return fmt.Errorf(
+					"NLP /healthz at %s failed: %w "+
+						"(start the FastAPI service via `make smoke` "+
+						"or `docker compose --profile nlp-inference up`)",
+					base, err)
 			}
 			nlpClient = c
 			deps.Log.Info().Str("nlp_service_url", base).Msg("NLP client ready")

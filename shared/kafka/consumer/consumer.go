@@ -246,7 +246,10 @@ func (c *Consumer) Close() error {
 
 // Ping verifies broker reachability.
 func (c *Consumer) Ping(ctx context.Context) error {
-	return c.client.Ping(ctx)
+	if err := c.client.Ping(ctx); err != nil {
+		return fmt.Errorf("kafka consumer ping: %w", err)
+	}
+	return nil
 }
 
 func toHeaders(in []kgo.RecordHeader) []Header {

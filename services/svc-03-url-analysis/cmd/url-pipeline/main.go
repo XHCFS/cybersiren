@@ -60,7 +60,10 @@ func main() {
 				log.Error().Err(e).Msg(msg)
 			})
 			if err != nil {
-				return fmt.Errorf("load URL model from %s: %w (install xgboost/joblib/scikit-learn locally or set CYBERSIREN_ML__URL_MODEL_PATH)", scriptPath, err)
+				return fmt.Errorf(
+					"load URL model from %s: %w "+
+						"(install xgboost/joblib/scikit-learn locally or set CYBERSIREN_ML__URL_MODEL_PATH)",
+					scriptPath, err)
 			}
 			urlModel = m
 			log.Info().Str("script", scriptPath).Int("pool", poolSize).Msg("URL model ready")

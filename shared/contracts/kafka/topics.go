@@ -37,13 +37,13 @@ var AllTopics = []string{
 
 // Consumer-group names per architecture-spec §3 right column.
 const (
-	GroupParser              = "cg-parser"
-	GroupURLAnalysis         = "cg-url-analysis"
-	GroupHeaderAnalysis      = "cg-header-analysis"
-	GroupAttachmentAnalysis  = "cg-attachment-analysis"
-	GroupNLPAnalysis         = "cg-nlp-analysis"
-	GroupAggregator          = "cg-aggregator"
-	GroupDecisionEngine      = "cg-decision-engine"
-	GroupNotification        = "cg-notification"
-	GroupDashboard           = "cg-dashboard"
+	GroupParser             = "cg-parser"
+	GroupURLAnalysis        = "cg-url-analysis"
+	GroupHeaderAnalysis     = "cg-header-analysis"
+	GroupAttachmentAnalysis = "cg-attachment-analysis"
+	GroupNLPAnalysis        = "cg-nlp-analysis"
+	GroupAggregator         = "cg-aggregator"
+	GroupDecisionEngine     = "cg-decision-engine"
+	GroupNotification       = "cg-notification"
+	GroupDashboard          = "cg-dashboard"
 )

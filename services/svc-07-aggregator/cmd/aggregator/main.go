@@ -170,7 +170,7 @@ func decodeScore(topic string, raw []byte) (score float64, component string, err
 	}
 	var env contracts.ScoreEnvelope
 	if err := json.Unmarshal(raw, &env); err != nil {
-		return 0, "", err
+		return 0, "", fmt.Errorf("unmarshal score envelope for %s: %w", topic, err)
 	}
 	c := env.Component
 	if c == "" {

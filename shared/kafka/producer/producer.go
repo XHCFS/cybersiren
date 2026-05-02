@@ -176,7 +176,10 @@ func (p *Producer) Close() error {
 
 // Ping verifies broker reachability. Used by /healthz.
 func (p *Producer) Ping(ctx context.Context) error {
-	return p.client.Ping(ctx)
+	if err := p.client.Ping(ctx); err != nil {
+		return fmt.Errorf("kafka producer ping: %w", err)
+	}
+	return nil
 }
 
 func splitBrokers(brokers string) []string {

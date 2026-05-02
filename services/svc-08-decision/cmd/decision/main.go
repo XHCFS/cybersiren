@@ -4,11 +4,11 @@
 package main
 
 import (
-	"strconv"
 	"context"
 	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
 
 	"github.com/rs/zerolog"
 
@@ -57,7 +57,10 @@ func handle(ctx context.Context, msg kafkaconsumer.Message, deps svckit.Deps) er
 	if !ok {
 		return fmt.Errorf("svc-08: producer for %s not configured", contracts.TopicEmailsVerdict)
 	}
-	return prod.Publish(ctx, []byte(strconv.FormatInt(scored.Meta.EmailID, 10)), body, 1)
+	if err := prod.Publish(ctx, []byte(strconv.FormatInt(scored.Meta.EmailID, 10)), body, 1); err != nil {
+		return fmt.Errorf("publish emails.verdict: %w", err)
+	}
+	return nil
 }
 
 func averageScores(m map[string]float64) float64 {
