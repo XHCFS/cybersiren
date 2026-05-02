@@ -7,10 +7,8 @@ import (
 	"math/rand/v2"
 	"time"
 
-	"github.com/twmb/franz-go/pkg/kgo"
-
 	contracts "github.com/saif/cybersiren/shared/contracts/kafka"
-	kafkaproducer "github.com/saif/cybersiren/shared/kafka/producer"
+	kafkaconsumer "github.com/saif/cybersiren/shared/kafka/consumer"
 )
 
 // AnalyserHandler returns a Handler suitable for an analysis.* → scores.*
@@ -20,12 +18,12 @@ import (
 //
 // STUB: replace with real analyser logic.
 func AnalyserHandler(component, outTopic string) Handler {
-	return func(ctx context.Context, rec *kgo.Record, prod *kafkaproducer.Producer) error {
+	return func(ctx context.Context, msg kafkaconsumer.Message, deps Deps) error {
 		var env struct {
 			Meta contracts.MessageMeta `json:"meta"`
 		}
-		if err := json.Unmarshal(rec.Value, &env); err != nil {
-			return fmt.Errorf("decode meta from %s: %w", rec.Topic, err)
+		if err := json.Unmarshal(msg.Value, &env); err != nil {
+			return fmt.Errorf("decode meta from %s: %w", msg.Topic, err)
 		}
 
 		time.Sleep(time.Duration(rand.IntN(50)) * time.Millisecond) //nolint:gosec // not security-sensitive
@@ -36,7 +34,16 @@ func AnalyserHandler(component, outTopic string) Handler {
 			Score:     float64(rand.IntN(101)), //nolint:gosec
 		}
 
-		if err := prod.Publish(ctx, outTopic, env.Meta.EmailID, out); err != nil {
+		body, err := json.Marshal(out)
+		if err != nil {
+			return fmt.Errorf("marshal %s: %w", outTopic, err)
+		}
+
+		prod, ok := deps.Producers[outTopic]
+		if !ok {
+			return fmt.Errorf("svckit: producer for %s not configured (add to ProducerTopics)", outTopic)
+		}
+		if err := prod.Publish(ctx, []byte(env.Meta.EmailID), body, 1); err != nil {
 			return fmt.Errorf("publish %s: %w", outTopic, err)
 		}
 		return nil

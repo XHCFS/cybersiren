@@ -30,12 +30,12 @@ type ingestRequest struct {
 
 func main() {
 	if err := svckit.Run(svckit.Spec{
-		Name:          serviceName,
-		NeedsDB:       true,
-		NeedsProducer: true,
-		HTTPPort:      8081,
+		Name:           serviceName,
+		NeedsDB:        true,
+		ProducerTopics: []string{contracts.TopicEmailsRaw},
+		HTTPPort:       8081,
 		HTTPRoutes: func(mux *http.ServeMux, deps svckit.Deps) {
-			mux.HandleFunc("/ingest", ingestHandler(deps.Producer, deps.Log))
+			mux.HandleFunc("/ingest", ingestHandler(deps.Producers[contracts.TopicEmailsRaw], deps.Log))
 		},
 	}); err != nil {
 		l := zerolog.New(os.Stderr)
@@ -75,10 +75,16 @@ func ingestHandler(prod *kafkaproducer.Producer, log zerolog.Logger) http.Handle
 			Headers:       req.Headers,
 		}
 
+		body, err := json.Marshal(payload)
+		if err != nil {
+			http.Error(w, "marshal failed", http.StatusInternalServerError)
+			return
+		}
+
 		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 		defer cancel()
 
-		if err := prod.Publish(ctx, contracts.TopicEmailsRaw, req.EmailID, payload); err != nil {
+		if err := prod.Publish(ctx, []byte(req.EmailID), body, 3); err != nil {
 			log.Error().Err(err).Str("email_id", req.EmailID).Msg("publish emails.raw failed")
 			http.Error(w, "publish failed", http.StatusBadGateway)
 			return

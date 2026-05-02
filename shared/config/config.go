@@ -42,6 +42,57 @@ type Config struct {
 	Enrichment EnrichmentConfig `koanf:"enrichment"`
 	Storage    StorageConfig    `koanf:"storage"`
 	Embedding  EmbeddingConfig  `koanf:"embedding"`
+	Header     HeaderConfig     `koanf:"header"`
+}
+
+// HeaderConfig holds configuration for SVC-04 Header Analysis Service.
+//
+// Thresholds are PRELIMINARY heuristics — they are exposed as configuration
+// so they can be tuned without code changes. None of the values below have
+// been calibrated against a labeled corpus; do not interpret them as
+// validated detection thresholds. See ARCH-SPEC §1 step 3b.
+type HeaderConfig struct {
+	// RuleCacheTTLSeconds controls how long the in-process rule cache and
+	// the Valkey rules_cache:{org_id} entry remain valid (default 60s).
+	RuleCacheTTLSeconds int `koanf:"rule_cache_ttl_seconds"`
+
+	// HopCountThreshold flags Received-chain depth above which the
+	// "excessive_hop_count" structural signal fires (default 15).
+	HopCountThreshold int `koanf:"hop_count_threshold"`
+
+	// TimeDriftHoursThreshold flags absolute |sent_timestamp − latest
+	// Received timestamp| above which "time_drift" structural signal
+	// fires (default 24h). Stored as float to allow sub-hour tuning.
+	TimeDriftHoursThreshold float64 `koanf:"time_drift_hours_threshold"`
+
+	// TyposquatMaxDistance is the maximum Damerau-Levenshtein distance
+	// between sender_domain and an embedded brand list entry that still
+	// counts as a typosquat (default 2; distance 0 = exact match, ignored).
+	TyposquatMaxDistance int `koanf:"typosquat_max_distance"`
+
+	// ScoringBlend controls how sub-scores combine into the final score.
+	// One of: "max", "average", "weighted". Default: "max".
+	ScoringBlend string `koanf:"scoring_blend"`
+
+	// AuthWeight, ReputationWeight, StructuralWeight are used when
+	// ScoringBlend is "weighted". They are normalised internally.
+	AuthWeight       float64 `koanf:"auth_weight"`
+	ReputationWeight float64 `koanf:"reputation_weight"`
+	StructuralWeight float64 `koanf:"structural_weight"`
+
+	// ConsumeTopic / ProduceTopic / ConsumerGroup are exposed for tests
+	// and for compose overrides. Defaults match ARCH-SPEC §3.
+	ConsumeTopic  string `koanf:"consume_topic"`
+	ProduceTopic  string `koanf:"produce_topic"`
+	ConsumerGroup string `koanf:"consumer_group"`
+
+	// PublishRetryAttempts caps the exponential-backoff retry count when
+	// publishing scores.header (default 5).
+	PublishRetryAttempts int `koanf:"publish_retry_attempts"`
+
+	// DBWriteRetryAttempts caps the rule_hits transaction retry count
+	// before the consumer refuses to commit the offset (default 3).
+	DBWriteRetryAttempts int `koanf:"db_write_retry_attempts"`
 }
 
 type ServerConfig struct {
@@ -113,13 +164,25 @@ type ValkeyConfig struct {
 	Password string `koanf:"password"`
 }
 
-// KafkaConfig holds the Kafka/Redpanda client configuration. The infrastructure
-// spine v0 only uses Brokers + ClientID + ConsumerGroupPrefix; the rest are
-// scaffolding for forthcoming TLS/SASL work.
+// KafkaConfig holds the Kafka client connection settings shared across
+// services. Brokers is a comma- or whitespace-separated list of host:port
+// pairs; the Kafka client wrappers (shared/kafka/{producer,consumer}) parse
+// it. Locally we point this at the Redpanda broker (Kafka API-compatible);
+// in production it would point at an Apache Kafka cluster.
 type KafkaConfig struct {
-	Brokers             []string `koanf:"brokers"`
-	ClientID            string   `koanf:"client_id"`
-	ConsumerGroupPrefix string   `koanf:"consumer_group_prefix"`
+	Brokers             string `koanf:"brokers"`
+	ClientID            string `koanf:"client_id"`
+	ConsumerGroupPrefix string `koanf:"consumer_group_prefix"`
+}
+
+// Validate checks that the KafkaConfig has the minimum fields required by
+// the producer/consumer wrappers. svc-04 (and any later services that need
+// to fail fast on a misconfigured broker) call this from main().
+func (k KafkaConfig) Validate() error {
+	if strings.TrimSpace(k.Brokers) == "" {
+		return errors.New("kafka.brokers is required (CYBERSIREN_KAFKA__BROKERS)")
+	}
+	return nil
 }
 
 type WorkerConfig struct {
@@ -249,7 +312,7 @@ func Load() (*Config, error) {
 			DB:   0,
 		},
 		Kafka: KafkaConfig{
-			Brokers:             []string{"localhost:9092"},
+			Brokers:             "localhost:9092",
 			ClientID:            "cybersiren",
 			ConsumerGroupPrefix: "cybersiren",
 		},
@@ -302,6 +365,21 @@ func Load() (*Config, error) {
 			Model:     "text-embedding-3-small",
 			Dimension: 1536,
 			BaseURL:   "https://api.openai.com/v1",
+		},
+		Header: HeaderConfig{
+			RuleCacheTTLSeconds:     60,
+			HopCountThreshold:       15,
+			TimeDriftHoursThreshold: 24,
+			TyposquatMaxDistance:    2,
+			ScoringBlend:            "max",
+			AuthWeight:              1.0,
+			ReputationWeight:        1.0,
+			StructuralWeight:        1.0,
+			ConsumeTopic:            "analysis.headers",
+			ProduceTopic:            "scores.header",
+			ConsumerGroup:           "cg-header-analysis",
+			PublishRetryAttempts:    5,
+			DBWriteRetryAttempts:    3,
 		},
 	}
 
@@ -493,3 +571,44 @@ func (c *Config) Validate() error {
 func validate(cfg *Config) error {
 	return cfg.Validate()
 }
+
+// Validate sanity-checks SVC-04 Header Analysis configuration. It does NOT run
+// during the global Config.Validate() pass so that other services can keep
+// using the default zero values without surprise validation failures. SVC-04's
+// main.go is expected to call this explicitly during startup.
+func (h HeaderConfig) Validate() error {
+	if h.RuleCacheTTLSeconds <= 0 {
+		return fmt.Errorf("header.rule_cache_ttl_seconds must be > 0, got %d", h.RuleCacheTTLSeconds)
+	}
+	if h.HopCountThreshold < 1 {
+		return fmt.Errorf("header.hop_count_threshold must be >= 1, got %d", h.HopCountThreshold)
+	}
+	if h.TimeDriftHoursThreshold <= 0 {
+		return fmt.Errorf("header.time_drift_hours_threshold must be > 0, got %v", h.TimeDriftHoursThreshold)
+	}
+	if h.TyposquatMaxDistance < 0 {
+		return fmt.Errorf("header.typosquat_max_distance must be >= 0, got %d", h.TyposquatMaxDistance)
+	}
+	switch h.ScoringBlend {
+	case "max", "average", "weighted":
+	default:
+		return fmt.Errorf("header.scoring_blend must be one of: max, average, weighted; got %q", h.ScoringBlend)
+	}
+	if h.PublishRetryAttempts < 0 {
+		return fmt.Errorf("header.publish_retry_attempts must be >= 0, got %d", h.PublishRetryAttempts)
+	}
+	if h.DBWriteRetryAttempts < 0 {
+		return fmt.Errorf("header.db_write_retry_attempts must be >= 0, got %d", h.DBWriteRetryAttempts)
+	}
+	if strings.TrimSpace(h.ConsumeTopic) == "" {
+		return errors.New("header.consume_topic is required")
+	}
+	if strings.TrimSpace(h.ProduceTopic) == "" {
+		return errors.New("header.produce_topic is required")
+	}
+	if strings.TrimSpace(h.ConsumerGroup) == "" {
+		return errors.New("header.consumer_group is required")
+	}
+	return nil
+}
+

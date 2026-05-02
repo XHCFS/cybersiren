@@ -334,7 +334,7 @@
   <code>{ email_id, org_id, urls: [{ url: string, visible_text: string, position: "body"|"header", html_context: "href"|"src"|"action"|"plain_text" }] }</code><br/><br/>
 
   <strong><code>analysis.headers</code></strong> (6 partitions · 24h · Key: email_id):<br/>
-  <code>{ email_id, org_id, sender_email, sender_domain, sender_name, reply_to_email, return_path, originating_ip, x_originating_ip, auth_spf: "pass"|"fail"|"softfail"|"none", auth_dkim: "pass"|"fail"|"none", auth_dmarc: "pass"|"fail"|"none", auth_arc, mailer_agent, in_reply_to, references_list: string[], sent_timestamp: int64, content_charset, precedence, list_id, hop_count: int, received_chain: [{from, by, timestamp}], vendor_security_tags: json, headers_json: json }</code><br/><br/>
+  <code>{ email_id, internal_id, fetched_at, org_id, sender_email, sender_domain, sender_name, reply_to_email, return_path, originating_ip, x_originating_ip, auth_spf: "pass"|"fail"|"softfail"|"none", auth_dkim: "pass"|"fail"|"none", auth_dmarc: "pass"|"fail"|"none", auth_arc, mailer_agent, in_reply_to, references_list: string[], sent_timestamp: int64, content_charset, precedence, list_id, hop_count: int, received_chain: [{from, by, timestamp}], vendor_security_tags: json, headers_json: json }</code><br/><br/>
 
   <strong><code>analysis.attachments</code></strong> (3 partitions · 24h · Key: email_id):<br/>
   <code>{ email_id, org_id, attachments: [{ sha256, md5, sha1, filename, content_type, content_id, disposition: "inline"|"attachment", size_bytes: int64, entropy: float64, detected_type: string (magic-byte) }] }</code><br/><br/>

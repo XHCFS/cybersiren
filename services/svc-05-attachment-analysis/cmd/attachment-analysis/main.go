@@ -14,12 +14,12 @@ const serviceName = "svc-05-attachment-analysis"
 
 func main() {
 	if err := svckit.Run(svckit.Spec{
-		Name:          serviceName,
-		NeedsDB:       true,
-		NeedsProducer: true,
-		Inputs:        []string{contracts.TopicAnalysisAttachments},
-		GroupID:       contracts.GroupAttachmentAnalysis,
-		Handler:       svckit.AnalyserHandler(contracts.ComponentAttachment, contracts.TopicScoresAttachment),
+		Name:           serviceName,
+		NeedsDB:        true,
+		ProducerTopics: []string{contracts.TopicScoresAttachment},
+		ConsumerTopics: []string{contracts.TopicAnalysisAttachments},
+		GroupID:        contracts.GroupAttachmentAnalysis,
+		Handler:        svckit.AnalyserHandler(contracts.ComponentAttachment, contracts.TopicScoresAttachment),
 	}); err != nil {
 		l := zerolog.New(os.Stderr)
 		l.Error().Err(err).Send()

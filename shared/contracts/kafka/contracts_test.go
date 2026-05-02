@@ -1,4 +1,4 @@
-package kafkacontracts_test
+package kafka_test
 
 import (
 	"encoding/json"

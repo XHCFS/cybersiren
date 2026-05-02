@@ -1,4 +1,4 @@
-package kafkacontracts
+package kafka
 
 // ScoreEnvelope is the shared shape for every scores.* topic: a 0..100 risk
 // score plus optional analyser-specific details. Concrete topic types embed

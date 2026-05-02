@@ -11,10 +11,9 @@ import (
 	"sync"
 
 	"github.com/rs/zerolog"
-	"github.com/twmb/franz-go/pkg/kgo"
 
 	contracts "github.com/saif/cybersiren/shared/contracts/kafka"
-	kafkaproducer "github.com/saif/cybersiren/shared/kafka/producer"
+	kafkaconsumer "github.com/saif/cybersiren/shared/kafka/consumer"
 	"github.com/saif/cybersiren/shared/svckit"
 )
 
@@ -30,11 +29,11 @@ var (
 
 func main() {
 	if err := svckit.Run(svckit.Spec{
-		Name:    serviceName,
-		NeedsDB: true,
-		Inputs:  []string{contracts.TopicEmailsVerdict},
-		GroupID: contracts.GroupDashboard,
-		Handler: handle,
+		Name:           serviceName,
+		NeedsDB:        true,
+		ConsumerTopics: []string{contracts.TopicEmailsVerdict},
+		GroupID:        contracts.GroupDashboard,
+		Handler:        handle,
 	}); err != nil {
 		l := zerolog.New(os.Stderr)
 		l.Error().Err(err).Send()
@@ -42,9 +41,9 @@ func main() {
 	}
 }
 
-func handle(ctx context.Context, rec *kgo.Record, _ *kafkaproducer.Producer) error {
+func handle(ctx context.Context, msg kafkaconsumer.Message, _ svckit.Deps) error {
 	var v contracts.EmailsVerdict
-	if err := json.Unmarshal(rec.Value, &v); err != nil {
+	if err := json.Unmarshal(msg.Value, &v); err != nil {
 		return fmt.Errorf("decode verdict: %w", err)
 	}
 

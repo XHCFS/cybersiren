@@ -16,12 +16,12 @@ const serviceName = "svc-06-nlp"
 
 func main() {
 	if err := svckit.Run(svckit.Spec{
-		Name:          serviceName,
-		NeedsDB:       true,
-		NeedsProducer: true,
-		Inputs:        []string{contracts.TopicAnalysisText},
-		GroupID:       contracts.GroupNLPAnalysis,
-		Handler:       svckit.AnalyserHandler(contracts.ComponentNLP, contracts.TopicScoresNLP),
+		Name:           serviceName,
+		NeedsDB:        true,
+		ProducerTopics: []string{contracts.TopicScoresNLP},
+		ConsumerTopics: []string{contracts.TopicAnalysisText},
+		GroupID:        contracts.GroupNLPAnalysis,
+		Handler:        svckit.AnalyserHandler(contracts.ComponentNLP, contracts.TopicScoresNLP),
 	}); err != nil {
 		l := zerolog.New(os.Stderr)
 		l.Error().Err(err).Send()

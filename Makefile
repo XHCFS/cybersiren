@@ -310,7 +310,7 @@ check-nlp-model:
 demo: check-docker check-compose-env
 	@[ "$(svc)" ] || (echo "Usage: make demo svc=<service-name>"; exit 1)
 	@if [ "$(call svc-short-profile,$(svc))" = "svc-06" ]; then $(MAKE) check-nlp-model; fi
-	$(DOCKER_COMPOSE) --profile postgres --profile valkey \
+	$(DOCKER_COMPOSE) --profile postgres --profile valkey --profile kafka \
 	    --profile monitoring --profile observability \
 	    --profile $(call svc-short-profile,$(svc)) up -d --wait
 	@echo ""
@@ -326,7 +326,7 @@ demo: check-docker check-compose-env
 demo-build: check-docker check-compose-env
 	@[ "$(svc)" ] || (echo "Usage: make demo-build svc=<service-name>"; exit 1)
 	@if [ "$(call svc-short-profile,$(svc))" = "svc-06" ]; then $(MAKE) check-nlp-model; fi
-	$(DOCKER_COMPOSE) --profile postgres --profile valkey \
+	$(DOCKER_COMPOSE) --profile postgres --profile valkey --profile kafka \
 	    --profile monitoring --profile observability \
 	    --profile $(call svc-short-profile,$(svc)) up -d --wait --build
 	@echo ""

@@ -10,23 +10,30 @@ import (
 	"os"
 
 	"github.com/rs/zerolog"
-	"github.com/twmb/franz-go/pkg/kgo"
 
 	contracts "github.com/saif/cybersiren/shared/contracts/kafka"
-	kafkaproducer "github.com/saif/cybersiren/shared/kafka/producer"
+	kafkaconsumer "github.com/saif/cybersiren/shared/kafka/consumer"
 	"github.com/saif/cybersiren/shared/svckit"
 )
 
 const serviceName = "svc-02-parser"
 
 func main() {
+	outputs := []string{
+		contracts.TopicAnalysisURLs,
+		contracts.TopicAnalysisHeaders,
+		contracts.TopicAnalysisAttachments,
+		contracts.TopicAnalysisText,
+		contracts.TopicAnalysisPlans,
+	}
+
 	if err := svckit.Run(svckit.Spec{
-		Name:          serviceName,
-		NeedsDB:       true,
-		NeedsProducer: true,
-		Inputs:        []string{contracts.TopicEmailsRaw},
-		GroupID:       contracts.GroupParser,
-		Handler:       handle,
+		Name:           serviceName,
+		NeedsDB:        true,
+		ProducerTopics: outputs,
+		ConsumerTopics: []string{contracts.TopicEmailsRaw},
+		GroupID:        contracts.GroupParser,
+		Handler:        handle,
 	}); err != nil {
 		l := zerolog.New(os.Stderr)
 		l.Error().Err(err).Send()
@@ -34,14 +41,14 @@ func main() {
 	}
 }
 
-func handle(ctx context.Context, rec *kgo.Record, prod *kafkaproducer.Producer) error {
+func handle(ctx context.Context, msg kafkaconsumer.Message, deps svckit.Deps) error {
 	var raw contracts.EmailsRaw
-	if err := json.Unmarshal(rec.Value, &raw); err != nil {
+	if err := json.Unmarshal(msg.Value, &raw); err != nil {
 		return fmt.Errorf("decode emails.raw: %w", err)
 	}
 
 	meta := contracts.NewMeta(raw.Meta.EmailID, raw.Meta.OrgID)
-	key := raw.Meta.EmailID
+	key := []byte(raw.Meta.EmailID)
 
 	out := []struct {
 		topic   string
@@ -63,7 +70,15 @@ func handle(ctx context.Context, rec *kgo.Record, prod *kafkaproducer.Producer) 
 	}
 
 	for _, o := range out {
-		if err := prod.Publish(ctx, o.topic, key, o.payload); err != nil {
+		body, err := json.Marshal(o.payload)
+		if err != nil {
+			return fmt.Errorf("marshal %s: %w", o.topic, err)
+		}
+		prod, ok := deps.Producers[o.topic]
+		if !ok {
+			return fmt.Errorf("svc-02: producer %s not configured", o.topic)
+		}
+		if err := prod.Publish(ctx, key, body, 1); err != nil {
 			return fmt.Errorf("publish %s: %w", o.topic, err)
 		}
 	}

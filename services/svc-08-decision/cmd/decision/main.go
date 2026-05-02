@@ -10,10 +10,9 @@ import (
 	"os"
 
 	"github.com/rs/zerolog"
-	"github.com/twmb/franz-go/pkg/kgo"
 
 	contracts "github.com/saif/cybersiren/shared/contracts/kafka"
-	kafkaproducer "github.com/saif/cybersiren/shared/kafka/producer"
+	kafkaconsumer "github.com/saif/cybersiren/shared/kafka/consumer"
 	"github.com/saif/cybersiren/shared/svckit"
 )
 
@@ -21,12 +20,12 @@ const serviceName = "svc-08-decision"
 
 func main() {
 	if err := svckit.Run(svckit.Spec{
-		Name:          serviceName,
-		NeedsDB:       true,
-		NeedsProducer: true,
-		Inputs:        []string{contracts.TopicEmailsScored},
-		GroupID:       contracts.GroupDecisionEngine,
-		Handler:       handle,
+		Name:           serviceName,
+		NeedsDB:        true,
+		ProducerTopics: []string{contracts.TopicEmailsVerdict},
+		ConsumerTopics: []string{contracts.TopicEmailsScored},
+		GroupID:        contracts.GroupDecisionEngine,
+		Handler:        handle,
 	}); err != nil {
 		l := zerolog.New(os.Stderr)
 		l.Error().Err(err).Send()
@@ -34,9 +33,9 @@ func main() {
 	}
 }
 
-func handle(ctx context.Context, rec *kgo.Record, prod *kafkaproducer.Producer) error {
+func handle(ctx context.Context, msg kafkaconsumer.Message, deps svckit.Deps) error {
 	var scored contracts.EmailsScored
-	if err := json.Unmarshal(rec.Value, &scored); err != nil {
+	if err := json.Unmarshal(msg.Value, &scored); err != nil {
 		return fmt.Errorf("decode emails.scored: %w", err)
 	}
 
@@ -49,7 +48,15 @@ func handle(ctx context.Context, rec *kgo.Record, prod *kafkaproducer.Producer) 
 		VerdictLabel: labelFor(risk),
 	}
 
-	return prod.Publish(ctx, contracts.TopicEmailsVerdict, scored.Meta.EmailID, verdict)
+	body, err := json.Marshal(verdict)
+	if err != nil {
+		return fmt.Errorf("marshal verdict: %w", err)
+	}
+	prod, ok := deps.Producers[contracts.TopicEmailsVerdict]
+	if !ok {
+		return fmt.Errorf("svc-08: producer for %s not configured", contracts.TopicEmailsVerdict)
+	}
+	return prod.Publish(ctx, []byte(scored.Meta.EmailID), body, 1)
 }
 
 func averageScores(m map[string]float64) float64 {

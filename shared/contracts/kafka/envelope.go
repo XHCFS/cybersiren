@@ -1,4 +1,4 @@
-package kafkacontracts
+package kafka
 
 import "time"
 

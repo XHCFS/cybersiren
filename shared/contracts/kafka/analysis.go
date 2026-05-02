@@ -1,4 +1,4 @@
-package kafkacontracts
+package kafka
 
 // AnalysisURLs is published by svc-02-parser to analysis.urls — the list of
 // URLs extracted from the email body for downstream URL scoring.

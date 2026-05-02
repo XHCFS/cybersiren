@@ -17,12 +17,12 @@ const serviceName = "svc-03-url-analysis"
 
 func main() {
 	if err := svckit.Run(svckit.Spec{
-		Name:          serviceName,
-		NeedsDB:       true,
-		NeedsProducer: true,
-		Inputs:        []string{contracts.TopicAnalysisURLs},
-		GroupID:       contracts.GroupURLAnalysis,
-		Handler:       svckit.AnalyserHandler(contracts.ComponentURL, contracts.TopicScoresURL),
+		Name:           serviceName,
+		NeedsDB:        true,
+		ProducerTopics: []string{contracts.TopicScoresURL},
+		ConsumerTopics: []string{contracts.TopicAnalysisURLs},
+		GroupID:        contracts.GroupURLAnalysis,
+		Handler:        svckit.AnalyserHandler(contracts.ComponentURL, contracts.TopicScoresURL),
 	}); err != nil {
 		l := zerolog.New(os.Stderr)
 		l.Error().Err(err).Send()

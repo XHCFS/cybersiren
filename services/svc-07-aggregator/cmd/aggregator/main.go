@@ -14,11 +14,10 @@ import (
 	"time"
 
 	"github.com/rs/zerolog"
-	"github.com/twmb/franz-go/pkg/kgo"
 	valkeygo "github.com/valkey-io/valkey-go"
 
 	contracts "github.com/saif/cybersiren/shared/contracts/kafka"
-	kafkaproducer "github.com/saif/cybersiren/shared/kafka/producer"
+	kafkaconsumer "github.com/saif/cybersiren/shared/kafka/consumer"
 	"github.com/saif/cybersiren/shared/svckit"
 )
 
@@ -33,10 +32,10 @@ var rdb valkeygo.Client
 
 func main() {
 	if err := svckit.Run(svckit.Spec{
-		Name:          serviceName,
-		NeedsValkey:   true,
-		NeedsProducer: true,
-		Inputs: []string{
+		Name:           serviceName,
+		NeedsValkey:    true,
+		ProducerTopics: []string{contracts.TopicEmailsScored},
+		ConsumerTopics: []string{
 			contracts.TopicAnalysisPlans,
 			contracts.TopicScoresURL,
 			contracts.TopicScoresHeader,
@@ -56,11 +55,11 @@ func main() {
 	}
 }
 
-func handle(ctx context.Context, rec *kgo.Record, prod *kafkaproducer.Producer) error {
+func handle(ctx context.Context, msg kafkaconsumer.Message, deps svckit.Deps) error {
 	var meta struct {
 		Meta contracts.MessageMeta `json:"meta"`
 	}
-	if err := json.Unmarshal(rec.Value, &meta); err != nil {
+	if err := json.Unmarshal(msg.Value, &meta); err != nil {
 		return fmt.Errorf("decode meta: %w", err)
 	}
 	emailID := meta.Meta.EmailID
@@ -70,12 +69,12 @@ func handle(ctx context.Context, rec *kgo.Record, prod *kafkaproducer.Producer) 
 
 	key := aggKeyPrefix + emailID
 
-	field := rec.Topic
-	if rec.Topic == contracts.TopicAnalysisPlans {
+	field := msg.Topic
+	if msg.Topic == contracts.TopicAnalysisPlans {
 		field = planField
 	}
 
-	if err := rdb.Do(ctx, rdb.B().Hset().Key(key).FieldValue().FieldValue(field, string(rec.Value)).Build()).Error(); err != nil {
+	if err := rdb.Do(ctx, rdb.B().Hset().Key(key).FieldValue().FieldValue(field, string(msg.Value)).Build()).Error(); err != nil {
 		return fmt.Errorf("hset: %w", err)
 	}
 	if err := rdb.Do(ctx, rdb.B().Expire().Key(key).Seconds(aggHashTTLSeconds).Build()).Error(); err != nil {
@@ -125,7 +124,15 @@ func handle(ctx context.Context, rec *kgo.Record, prod *kafkaproducer.Producer) 
 		ComponentScores: componentScores,
 	}
 
-	if err := prod.Publish(ctx, contracts.TopicEmailsScored, emailID, out); err != nil {
+	body, err := json.Marshal(out)
+	if err != nil {
+		return fmt.Errorf("marshal emails.scored: %w", err)
+	}
+	prod, ok := deps.Producers[contracts.TopicEmailsScored]
+	if !ok {
+		return fmt.Errorf("svc-07: producer for %s not configured", contracts.TopicEmailsScored)
+	}
+	if err := prod.Publish(ctx, []byte(emailID), body, 1); err != nil {
 		return fmt.Errorf("publish emails.scored: %w", err)
 	}
 

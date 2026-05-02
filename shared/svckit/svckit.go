@@ -1,11 +1,16 @@
 // Package svckit is the common bootstrap used by every Infrastructure Spine v0
 // pipeline stub. It is a thin convenience layer over shared/{config,logger,
-// observability,kafka,postgres,valkey} — every step is something a stub would
+// observability,kafka,postgres,valkey}. Each step is something a stub would
 // otherwise repeat verbatim in main().
 //
+// Each Producer and Consumer is single-topic-per-instance (matching the
+// shared/kafka API used by real services like svc-04). Stubs that fan out
+// to multiple topics (svc-02) declare every output topic; stubs that fan
+// in from multiple topics (svc-07) declare every input topic — svckit
+// spawns one Producer / Consumer per topic.
+//
 // Stubs construct a Spec, call Run, and return. Run blocks on SIGINT/SIGTERM,
-// pumps the consumer (if Inputs is non-empty), and tears resources down in
-// reverse order on shutdown.
+// pumps the consumers, and tears resources down in reverse order on shutdown.
 package svckit
 
 import (
@@ -13,13 +18,14 @@ import (
 	"fmt"
 	"net/http"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/rs/zerolog"
-	"github.com/twmb/franz-go/pkg/kgo"
 	valkeygo "github.com/valkey-io/valkey-go"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/saif/cybersiren/shared/config"
 	kafkaconsumer "github.com/saif/cybersiren/shared/kafka/consumer"
@@ -31,32 +37,35 @@ import (
 	sharedvalkey "github.com/saif/cybersiren/shared/valkey"
 )
 
-// Handler processes one Kafka record. The producer is shared with the
-// service's main and may be nil if Spec.NeedsProducer is false.
-type Handler func(ctx context.Context, rec *kgo.Record, p *kafkaproducer.Producer) error
+// Handler processes one Kafka message. The deps argument exposes shared
+// resources (producers keyed by topic, optional Postgres pool, optional
+// Valkey client). Return non-nil to skip committing the offset.
+type Handler func(ctx context.Context, msg kafkaconsumer.Message, deps Deps) error
 
 // Spec describes one pipeline stub.
 type Spec struct {
 	Name string // "svc-04-header-analysis"
 
-	// Inputs is the list of topics to consume; empty disables the consumer.
-	Inputs []string
-	// GroupID is the consumer group; required when Inputs is non-empty.
+	// ConsumerTopics is the list of topics to consume; each gets a
+	// consumer in the same GroupID. Empty disables consumption.
+	ConsumerTopics []string
+	// GroupID is the consumer group; required when ConsumerTopics is non-empty.
 	GroupID string
 
-	// NeedsProducer wires up a Kafka producer reachable inside Handler.
-	NeedsProducer bool
+	// ProducerTopics is the list of topics this stub publishes to. For
+	// each one a Producer is created and accessible from Handler via
+	// Deps.Producers keyed by topic name.
+	ProducerTopics []string
 
-	// NeedsDB causes Run to open a pool and Ping it. Healthcheck only — no
-	// queries are issued by Run itself. Per spine v0 scope, stubs do not
-	// touch business tables.
+	// NeedsDB causes Run to open a pool and Ping it. Healthcheck only —
+	// no queries are issued by Run itself.
 	NeedsDB bool
 
-	// NeedsValkey opens a Valkey client. Required by svc-07-aggregator only;
-	// for everyone else this stays false.
+	// NeedsValkey opens a Valkey client.
 	NeedsValkey bool
 
-	// Handler runs on every consumed record. Ignored when Inputs is empty.
+	// Handler runs on every consumed record. Ignored when ConsumerTopics
+	// is empty.
 	Handler Handler
 
 	// HTTPRoutes is a hook for stubs that need an HTTP endpoint (svc-01
@@ -64,20 +73,18 @@ type Spec struct {
 	HTTPRoutes func(mux *http.ServeMux, deps Deps)
 	HTTPPort   int
 
-	// OnReady runs after all clients are wired but before the consumer pump
-	// starts. Stubs use it for one-shot startup work.
+	// OnReady runs after all clients are wired but before the consumer
+	// loop starts. Stubs use it for one-shot startup work.
 	OnReady func(ctx context.Context, deps Deps) error
 }
 
-// Deps is the bag of resources that long-lived stub callbacks (HTTPRoutes,
-// OnReady) need access to. Fields are nil when the corresponding NeedsXxx
-// flag was false.
+// Deps is the bag of resources passed to handlers, HTTP routes, and OnReady.
 type Deps struct {
-	Cfg      *config.Config
-	Log      zerolog.Logger
-	Producer *kafkaproducer.Producer
-	Pool     *pgxpool.Pool
-	Valkey   valkeygo.Client
+	Cfg       *config.Config
+	Log       zerolog.Logger
+	Pool      *pgxpool.Pool
+	Valkey    valkeygo.Client
+	Producers map[string]*kafkaproducer.Producer
 }
 
 // Run wires up the stub and blocks until SIGINT/SIGTERM. Returns nil on
@@ -96,6 +103,10 @@ func Run(spec Spec) error {
 	}
 	if err := cfg.Validate(); err != nil {
 		bootstrapLog.Error().Err(err).Msg("config invalid")
+		return err
+	}
+	if err := cfg.Kafka.Validate(); err != nil {
+		bootstrapLog.Error().Err(err).Msg("kafka config invalid")
 		return err
 	}
 
@@ -122,7 +133,7 @@ func Run(spec Spec) error {
 	}
 	defer func() { _ = metricsShutdown(context.Background()) }()
 
-	deps := Deps{Cfg: cfg, Log: log}
+	deps := Deps{Cfg: cfg, Log: log, Producers: map[string]*kafkaproducer.Producer{}}
 
 	if spec.NeedsDB {
 		opts := pool.PoolOptions{
@@ -153,21 +164,18 @@ func Run(spec Spec) error {
 		deps.Valkey = v
 	}
 
-	if spec.NeedsProducer {
+	for _, topic := range spec.ProducerTopics {
 		prod, err := kafkaproducer.New(kafkaproducer.Config{
 			Brokers:  cfg.Kafka.Brokers,
+			Topic:    topic,
 			ClientID: clientIDFor(cfg.Kafka.ClientID, spec.Name),
-			Service:  spec.Name,
-		}, reg, log)
+		}, log, reg)
 		if err != nil {
-			return fmt.Errorf("kafka producer: %w", err)
+			return fmt.Errorf("kafka producer for %s: %w", topic, err)
 		}
-		defer func() {
-			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			_ = prod.Close(shutdownCtx)
-		}()
-		deps.Producer = prod
+		topic := topic
+		defer func() { _ = prod.Close() }()
+		deps.Producers[topic] = prod
 	}
 
 	if spec.HTTPRoutes != nil {
@@ -201,35 +209,57 @@ func Run(spec Spec) error {
 		}
 	}
 
-	if len(spec.Inputs) > 0 {
-		if spec.Handler == nil {
-			return fmt.Errorf("svckit: Handler required when Inputs is set")
-		}
-		if spec.GroupID == "" {
-			return fmt.Errorf("svckit: GroupID required when Inputs is set")
-		}
-		cons, err := kafkaconsumer.New(kafkaconsumer.Config{
-			Brokers:  cfg.Kafka.Brokers,
-			ClientID: clientIDFor(cfg.Kafka.ClientID, spec.Name),
-			GroupID:  groupIDFor(cfg.Kafka.ConsumerGroupPrefix, spec.GroupID),
-			Topics:   spec.Inputs,
-			Service:  spec.Name,
-		}, reg, log)
-		if err != nil {
-			return fmt.Errorf("kafka consumer: %w", err)
-		}
-		defer cons.Close()
-
-		log.Info().Strs("inputs", spec.Inputs).Str("group", spec.GroupID).Msg("starting consumer")
-		err = cons.Run(ctx, func(ctx context.Context, rec *kgo.Record) error {
-			return spec.Handler(ctx, rec, deps.Producer)
-		})
-		if err != nil {
-			return err
-		}
-	} else {
+	if len(spec.ConsumerTopics) == 0 {
 		log.Info().Msg("no Kafka inputs; idling until signal")
 		<-ctx.Done()
+		log.Info().Msg("shutdown complete")
+		return nil
+	}
+
+	if spec.Handler == nil {
+		return fmt.Errorf("svckit: Handler required when ConsumerTopics is set")
+	}
+	if spec.GroupID == "" {
+		return fmt.Errorf("svckit: GroupID required when ConsumerTopics is set")
+	}
+
+	consumers := make([]*kafkaconsumer.Consumer, 0, len(spec.ConsumerTopics))
+	for _, topic := range spec.ConsumerTopics {
+		c, err := kafkaconsumer.New(kafkaconsumer.Config{
+			Brokers:  cfg.Kafka.Brokers,
+			Topic:    topic,
+			GroupID:  spec.GroupID,
+			ClientID: clientIDFor(cfg.Kafka.ClientID, spec.Name),
+		}, log, reg)
+		if err != nil {
+			return fmt.Errorf("kafka consumer for %s: %w", topic, err)
+		}
+		consumers = append(consumers, c)
+	}
+	defer func() {
+		for _, c := range consumers {
+			_ = c.Close()
+		}
+	}()
+
+	log.Info().Strs("inputs", spec.ConsumerTopics).Str("group", spec.GroupID).Msg("starting consumers")
+
+	g, gctx := errgroup.WithContext(ctx)
+	var once sync.Once
+	for _, c := range consumers {
+		c := c
+		g.Go(func() error {
+			err := c.Run(gctx, func(ctx context.Context, msg kafkaconsumer.Message) error {
+				return spec.Handler(ctx, msg, deps)
+			})
+			if err != nil {
+				once.Do(func() { log.Error().Err(err).Msg("consumer loop ended with error") })
+			}
+			return err
+		})
+	}
+	if err := g.Wait(); err != nil && err != context.Canceled {
+		return err
 	}
 
 	log.Info().Msg("shutdown complete")
@@ -241,11 +271,4 @@ func clientIDFor(prefix, svcName string) string {
 		return svcName
 	}
 	return prefix + "-" + svcName
-}
-
-func groupIDFor(prefix, group string) string {
-	if prefix == "" {
-		return group
-	}
-	return prefix + "." + group
 }

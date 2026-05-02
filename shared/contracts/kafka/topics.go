@@ -1,7 +1,7 @@
-// Package kafkacontracts defines the on-the-wire Kafka message contracts
+// Package kafka defines the on-the-wire Kafka message contracts
 // that flow through the CyberSiren pipeline (per architecture-spec §1, §3).
 // Wire format is JSON; every payload embeds a MessageMeta envelope.
-package kafkacontracts
+package kafka
 
 const (
 	TopicEmailsRaw           = "emails.raw"
