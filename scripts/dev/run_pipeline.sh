@@ -22,7 +22,9 @@ PIDDIR=".smoke-logs/pids"
 mkdir -p "$LOGDIR" "$PIDDIR"
 
 # Common env: every stub needs at minimum the same DB/auth values to satisfy
-# config validation. They are *not* used at runtime beyond pool.Ping().
+# config validation. The ML.* values point svc-03 at the real URL inference
+# script and svc-06 at the FastAPI nlp-inference container (started by the
+# `make smoke` target via the smoke compose profile).
 COMMON_ENV=(
   CYBERSIREN_ENV=development
   CYBERSIREN_LOG__LEVEL=info
@@ -37,6 +39,17 @@ COMMON_ENV=(
   CYBERSIREN_AUTH__JWT_SECRET=demo-secret-not-for-production-use!!
   CYBERSIREN_KAFKA__BROKERS=localhost:9092
   CYBERSIREN_JAEGER_ENDPOINT=http://localhost:4318
+  # Real-model wiring (used by svc-03 url-pipeline and svc-06 nlp-pipeline).
+  CYBERSIREN_ML__URL_MODEL_PATH=services/svc-03-url-analysis/ml/inference_script.py
+  CYBERSIREN_ML__URL_MODEL_POOL_SIZE=2
+  CYBERSIREN_ML__NLP_SERVICE_URL=http://localhost:8001
+)
+
+# Per-service overrides (svc-04 header analyser needs its own block).
+SVC_04_ENV=(
+  CYBERSIREN_HEADER__CONSUME_TOPIC=analysis.headers
+  CYBERSIREN_HEADER__PRODUCE_TOPIC=scores.header
+  CYBERSIREN_HEADER__CONSUMER_GROUP=cg-header-analysis
 )
 
 # Service spec rows: name | go-package | metrics_port | http_port (0 = none)
@@ -53,7 +66,48 @@ SERVICES=(
   "svc-10-api-dashboard|./services/svc-10-api-dashboard/cmd/api|9110|0"
 )
 
+preflight() {
+  # svc-03 url-pipeline spawns python3 inference_script.py — verify the
+  # required wheels are importable before we start it. The error message
+  # is what the smoke target surfaces if any are missing.
+  echo "==> Preflight: Python deps for URL inference"
+  if ! command -v python3 >/dev/null 2>&1; then
+    echo "  python3 not on PATH — install Python 3.10+ and retry" >&2
+    return 1
+  fi
+  local missing=""
+  for mod in joblib numpy xgboost sklearn tldextract; do
+    if ! python3 -c "import ${mod}" >/dev/null 2>&1; then
+      missing="${missing} ${mod}"
+    fi
+  done
+  if [[ -n "$missing" ]]; then
+    echo "  Missing Python packages:${missing}" >&2
+    echo "  Install locally with:  pip install --user joblib numpy xgboost scikit-learn tldextract" >&2
+    return 1
+  fi
+  echo "  OK"
+
+  # svc-06 nlp-pipeline expects the FastAPI nlp-inference container on :8001.
+  echo "==> Preflight: NLP inference service on http://localhost:8001"
+  for i in $(seq 1 60); do
+    if curl -fsS http://localhost:8001/healthz >/dev/null 2>&1; then
+      ready=$(curl -fsS http://localhost:8001/healthz | python3 -c "import sys,json; print(json.load(sys.stdin).get('model_ready'))" 2>/dev/null || echo "false")
+      if [[ "$ready" == "True" || "$ready" == "true" ]]; then
+        echo "  OK (model_ready=true)"
+        return 0
+      fi
+    fi
+    sleep 2
+  done
+  echo "  NLP inference not ready after 120s. Start it with:" >&2
+  echo "  docker compose -f deploy/compose/docker-compose.yml --env-file deploy/compose/.env --profile nlp-inference up -d --wait" >&2
+  return 1
+}
+
 start() {
+  preflight
+
   echo "==> Building binaries"
   go build -o "$LOGDIR/bin/" ./services/svc-01-ingestion/cmd/ingestion \
                               ./services/svc-02-parser/cmd/parser \
@@ -82,6 +136,9 @@ start() {
     env_args=("${COMMON_ENV[@]}" "CYBERSIREN_METRICS_PORT=$mport")
     if [[ "$hport" != "0" ]]; then
       env_args+=("CYBERSIREN_SERVER__PORT=$hport")
+    fi
+    if [[ "$name" == "svc-04-header-analysis" ]]; then
+      env_args+=("${SVC_04_ENV[@]}")
     fi
 
     echo "  $name (metrics=$mport http=$hport) → $log"

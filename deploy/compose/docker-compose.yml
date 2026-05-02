@@ -145,7 +145,7 @@ services:
   # Runs automatically when any service profile is activated.
   demo-seed:
     image: postgres:15-alpine
-    profiles: ["demo", "svc-03", "svc-04", "svc-06", "svc-11"]
+    profiles: ["demo", "svc-03", "svc-04", "svc-06", "svc-11", "smoke"]
     depends_on:
       postgres:
         condition: service_healthy
@@ -294,6 +294,34 @@ services:
       CYBERSIREN_JAEGER_ENDPOINT: http://jaeger:4318
     networks:
       - cybersiren
+    restart: unless-stopped
+
+  # ── nlp-inference (FastAPI only) ──────────────────────────────────────────
+  # Headless DistilBERT inference service used by the Spine v0 smoke test
+  # (svc-06-nlp/cmd/nlp-pipeline). Reuses the svc-06-nlp image but bypasses
+  # entrypoint.sh so only the Python FastAPI runs (no Go HTTP wrapper).
+  # Exposes port 8001 to the host so the natively-run pipeline binary can
+  # reach it via CYBERSIREN_ML__NLP_SERVICE_URL=http://localhost:8001.
+  nlp-inference:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.nlp
+    profiles: ["nlp-inference", "smoke"]
+    container_name: cybersiren-nlp-inference
+    working_dir: /app/nlp
+    entrypoint: ["python", "app.py"]
+    environment:
+      PORT: "8001"
+    ports:
+      - "8001:8001"
+    networks:
+      - cybersiren
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; urllib.request.urlopen('http://localhost:8001/healthz', timeout=2); sys.exit(0)\" || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
     restart: unless-stopped
 
   # ── svc-11-ti-sync ──────────────────────────────────────────────────────

@@ -296,16 +296,25 @@ demo-port-svc-06 = 8086
 svc-demo-port = $(or $(demo-port-$(call svc-short-profile,$(1))),8083)
 
 NLP_MODEL := services/svc-06-nlp/nlp/onnx/model_int8.onnx
+NLP_MODEL_SRC := python/svc-06-nlp/onnx/model_int8.onnx
 
-## check-nlp-model: Ensure the NLP ONNX model is present; pulls via Git LFS if missing.
+## check-nlp-model: Ensure the NLP ONNX model is present at the path the
+## FastAPI service expects. Pulls via Git LFS if the source copy is also a
+## stub, then copies the source into place.
 check-nlp-model:
 	@size=$$(wc -c < "$(NLP_MODEL)" 2>/dev/null || echo 0); \
-	if [ "$$size" -lt 1000000 ]; then \
+	if [ "$$size" -ge 1000000 ]; then \
+	    echo "  [svc-06] ONNX model present at $(NLP_MODEL) ($$(du -sh $(NLP_MODEL) | cut -f1))"; \
+	    exit 0; \
+	fi; \
+	src_size=$$(wc -c < "$(NLP_MODEL_SRC)" 2>/dev/null || echo 0); \
+	if [ "$$src_size" -lt 1000000 ]; then \
 	    echo "  [svc-06] ONNX model missing — pulling via Git LFS (this downloads ~64 MB)..."; \
-	    git lfs pull --include="$(NLP_MODEL)"; \
-	else \
-	    echo "  [svc-06] ONNX model present ($$(du -sh $(NLP_MODEL) | cut -f1))"; \
-	fi
+	    git lfs pull --include="$(NLP_MODEL_SRC)"; \
+	fi; \
+	echo "  [svc-06] copying $(NLP_MODEL_SRC) → $(NLP_MODEL)"; \
+	cp "$(NLP_MODEL_SRC)" "$(NLP_MODEL)"; \
+	echo "  [svc-06] ONNX model ready ($$(du -sh $(NLP_MODEL) | cut -f1))"
 
 demo: check-docker check-compose-env
 	@[ "$(svc)" ] || (echo "Usage: make demo svc=<service-name>"; exit 1)
@@ -384,13 +393,17 @@ jaeger: check-docker
 # =============================================================================
 
 ## smoke: End-to-end Infrastructure Spine v0 smoke test.
-##        Boots infra (Postgres, Valkey, Redpanda + topic-init, Jaeger),
-##        builds and starts the 10 pipeline stubs, posts a fake email to
-##        svc-01 /ingest, and waits for emails.verdict to receive a record
-##        with the same email_id. Tears stubs down on exit.
-smoke: check-docker check-compose-env
+##        Boots infra (Postgres+rules-seed, Valkey, Redpanda + topic-init,
+##        Jaeger, NLP FastAPI inference) and starts the 10 pipeline binaries
+##        natively. svc-03 runs the real URL XGBoost model, svc-04 runs the
+##        real header analyser against rule_hits + ti_indicators, svc-06
+##        calls the FastAPI DistilBERT service. Posts a phishing-flavoured
+##        sample email to svc-01 /ingest and waits for emails.verdict to
+##        receive a record with the same email_id. Tears stubs down on exit.
+smoke: check-docker check-compose-env check-nlp-model
 	$(DOCKER_COMPOSE) --profile postgres --profile valkey \
-	    --profile kafka --profile observability up -d --wait
+	    --profile kafka --profile observability \
+	    --profile nlp-inference --profile smoke up -d --wait
 	@./scripts/dev/run_pipeline.sh start
 	@bash -c 'trap "./scripts/dev/run_pipeline.sh stop" EXIT; ./scripts/dev/inject_fake_email.sh'
 
