@@ -89,11 +89,14 @@ echo "    $resp"
 
 echo "==> Waiting up to ${TIMEOUT}s for emails.verdict for $EMAIL_ID"
 # rpk topic consume has no per-call deadline flag, so each poll runs under
-# `timeout`. The outer loop bounds the total wait.
+# `timeout`. We use `docker exec` (not `docker compose exec`) to skip the
+# compose-CLI startup cost (~300 ms per call) and a 200 ms cadence so we
+# don't sit on the verdict for an extra second.
+RPK_CONTAINER="${RPK_CONTAINER:-cybersiren-redpanda}"
 deadline=$(( $(date +%s) + TIMEOUT ))
 match=""
 while [[ $(date +%s) -lt $deadline ]]; do
-  out="$(timeout 2s $COMPOSE exec -T kafka rpk topic consume emails.verdict \
+  out="$(timeout 0.5s docker exec "$RPK_CONTAINER" rpk topic consume emails.verdict \
     -X brokers=localhost:9092 \
     --offset start --num 100 \
     --format '%v\n' 2>/dev/null || true)"
@@ -101,7 +104,7 @@ while [[ $(date +%s) -lt $deadline ]]; do
     match="$(grep "\"email_id\":${EMAIL_ID}\b" <<<"$out" | head -1)"
     break
   fi
-  sleep 1
+  sleep 0.2
 done
 
 if [[ -z "$match" ]]; then
