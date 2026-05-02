@@ -1,5 +1,10 @@
 // STUB: replace with real implementation. Accepts a synthetic ingest request
 // over HTTP and emits emails.raw. NO Gmail/Outlook/IMAP adapters.
+//
+// In v0 the email_id and org_id are int64 BIGINT values (matching
+// emails.internal_id / orgs.id), generated from the request when not
+// supplied — once the real ingestion path lands they will come from the
+// INSERT into emails.
 package main
 
 import (
@@ -7,9 +12,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"os"
+	"strconv"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/rs/zerolog"
 
 	contracts "github.com/saif/cybersiren/shared/contracts/kafka"
@@ -20,13 +25,15 @@ import (
 const serviceName = "svc-01-ingestion"
 
 type ingestRequest struct {
-	EmailID       string            `json:"email_id,omitempty"`
-	OrgID         string            `json:"org_id,omitempty"`
+	EmailID       int64             `json:"email_id,omitempty"`
+	OrgID         int64             `json:"org_id,omitempty"`
 	MessageID     string            `json:"message_id,omitempty"`
 	SourceAdapter string            `json:"source_adapter,omitempty"`
 	RawMessageB64 string            `json:"raw_message_b64,omitempty"`
 	Headers       map[string]string `json:"headers,omitempty"`
 }
+
+const stubOrgID int64 = 1
 
 func main() {
 	if err := svckit.Run(svckit.Spec{
@@ -57,11 +64,15 @@ func ingestHandler(prod *kafkaproducer.Producer, log zerolog.Logger) http.Handle
 			return
 		}
 
-		if req.EmailID == "" {
-			req.EmailID = uuid.NewString()
+		now := time.Now().UTC()
+		if req.EmailID == 0 {
+			// time.Now().UnixNano() / 1000 ⇒ collision-resistant int64 that
+			// fits comfortably in BIGINT and stays roughly monotonic for
+			// log-grep scanning. Real ingestion will use BIGSERIAL.
+			req.EmailID = now.UnixNano() / 1000
 		}
-		if req.OrgID == "" {
-			req.OrgID = "org-stub"
+		if req.OrgID == 0 {
+			req.OrgID = stubOrgID
 		}
 		if req.SourceAdapter == "" {
 			req.SourceAdapter = "http-stub"
@@ -69,6 +80,7 @@ func ingestHandler(prod *kafkaproducer.Producer, log zerolog.Logger) http.Handle
 
 		payload := contracts.EmailsRaw{
 			Meta:          contracts.NewMeta(req.EmailID, req.OrgID),
+			FetchedAt:     now,
 			SourceAdapter: req.SourceAdapter,
 			MessageID:     req.MessageID,
 			RawMessageB64: req.RawMessageB64,
@@ -84,16 +96,17 @@ func ingestHandler(prod *kafkaproducer.Producer, log zerolog.Logger) http.Handle
 		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 		defer cancel()
 
-		if err := prod.Publish(ctx, []byte(req.EmailID), body, 3); err != nil {
-			log.Error().Err(err).Str("email_id", req.EmailID).Msg("publish emails.raw failed")
+		key := []byte(strconv.FormatInt(req.EmailID, 10))
+		if err := prod.Publish(ctx, key, body, 3); err != nil {
+			log.Error().Err(err).Int64("email_id", req.EmailID).Msg("publish emails.raw failed")
 			http.Error(w, "publish failed", http.StatusBadGateway)
 			return
 		}
 
-		log.Info().Str("email_id", req.EmailID).Msg("ingested fake email")
+		log.Info().Int64("email_id", req.EmailID).Msg("ingested fake email")
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusAccepted)
-		_ = json.NewEncoder(w).Encode(map[string]string{
+		_ = json.NewEncoder(w).Encode(map[string]any{
 			"status":   "accepted",
 			"email_id": req.EmailID,
 		})

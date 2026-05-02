@@ -14,8 +14,8 @@ import (
 func TestRoundTrip_AllPayloads(t *testing.T) {
 	now := time.Date(2026, 5, 2, 12, 0, 0, 0, time.UTC)
 	meta := contracts.MessageMeta{
-		EmailID:       "email-001",
-		OrgID:         "org-001",
+		EmailID:       1001,
+		OrgID:         42,
 		Timestamp:     now,
 		TraceID:       "00000000000000000000000000000001",
 		SpanID:        "0000000000000001",
@@ -80,7 +80,7 @@ func TestRoundTrip_AllPayloads(t *testing.T) {
 			name: "EmailsScored",
 			payload: contracts.EmailsScored{
 				Meta:            meta,
-				InternalID:      "fake-internal-id",
+				InternalID:      1001,
 				FetchedAt:       now,
 				ComponentScores: map[string]float64{"url": 50, "nlp": 60},
 			},
@@ -89,7 +89,7 @@ func TestRoundTrip_AllPayloads(t *testing.T) {
 		{
 			name: "EmailsVerdict",
 			payload: contracts.EmailsVerdict{
-				Meta: meta, InternalID: "fake", FetchedAt: now,
+				Meta: meta, InternalID: 1001, FetchedAt: now,
 				RiskScore: 55, VerdictLabel: "suspicious",
 			},
 			fresh: func() any { return &contracts.EmailsVerdict{} },
@@ -116,9 +116,9 @@ func TestAllTopicsCount(t *testing.T) {
 }
 
 func TestNewMetaSchemaVersion(t *testing.T) {
-	m := contracts.NewMeta("e", "o")
+	m := contracts.NewMeta(7, 8)
 	assert.Equal(t, contracts.SchemaVersion, m.SchemaVersion)
-	assert.Equal(t, "e", m.EmailID)
-	assert.Equal(t, "o", m.OrgID)
+	assert.Equal(t, int64(7), m.EmailID)
+	assert.Equal(t, int64(8), m.OrgID)
 	assert.False(t, m.Timestamp.IsZero())
 }

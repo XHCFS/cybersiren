@@ -408,13 +408,14 @@ services:
   # ── Prometheus (metrics scraper) ──────────────────────────────────────────
   # Scrapes /metrics from all CyberSiren services every 10 s.
   # Unreachable targets are marked "down" — safe when only one service runs.
-  # UI at http://localhost:9092.
+  # UI at http://localhost:19090. (Host port chosen to leave 9092 for the
+  # Redpanda Kafka API — they used to collide.)
   prometheus:
     image: prom/prometheus:latest
     profiles: ["demo", "monitoring"]
     container_name: cybersiren-prometheus
     ports:
-      - "9092:9090"
+      - "${PROMETHEUS_PORT:-19090}:9090"
     volumes:
       - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
     networks:

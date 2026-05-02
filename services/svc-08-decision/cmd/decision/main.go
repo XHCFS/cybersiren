@@ -4,6 +4,7 @@
 package main
 
 import (
+	"strconv"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -56,7 +57,7 @@ func handle(ctx context.Context, msg kafkaconsumer.Message, deps svckit.Deps) er
 	if !ok {
 		return fmt.Errorf("svc-08: producer for %s not configured", contracts.TopicEmailsVerdict)
 	}
-	return prod.Publish(ctx, []byte(scored.Meta.EmailID), body, 1)
+	return prod.Publish(ctx, []byte(strconv.FormatInt(scored.Meta.EmailID, 10)), body, 1)
 }
 
 func averageScores(m map[string]float64) float64 {

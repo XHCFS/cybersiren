@@ -9,6 +9,7 @@
 package main
 
 import (
+	"strconv"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -42,10 +43,7 @@ func main() {
 			if base == "" {
 				return fmt.Errorf("ml.nlp_service_url is empty (set CYBERSIREN_ML__NLP_SERVICE_URL)")
 			}
-			// Reuse a fresh registry slice — the metrics server already
-			// registered the default collectors. The NLP client only adds
-			// its own counters which are safe to register here.
-			c := nlp.NewClient(base, nil, deps.Log)
+			c := nlp.NewClient(base, deps.Registry, deps.Log)
 			pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 			defer cancel()
 			if ok, err := c.Health(pingCtx); err != nil || !ok {
@@ -69,7 +67,7 @@ func handle(ctx context.Context, msg kafkaconsumer.Message, deps svckit.Deps) er
 		return fmt.Errorf("decode analysis.text: %w", err)
 	}
 
-	log := zerolog.Ctx(ctx).With().Str("email_id", input.Meta.EmailID).Logger()
+	log := zerolog.Ctx(ctx).With().Int64("email_id", input.Meta.EmailID).Logger()
 
 	predCtx, cancel := context.WithTimeout(ctx, predictTimeout)
 	resp, status, err := nlpClient.Predict(predCtx, nlp.PredictRequest{
@@ -103,7 +101,7 @@ func handle(ctx context.Context, msg kafkaconsumer.Message, deps svckit.Deps) er
 	if !ok {
 		return fmt.Errorf("svc-06: producer for %s not configured", contracts.TopicScoresNLP)
 	}
-	if err := prod.Publish(ctx, []byte(input.Meta.EmailID), body, 1); err != nil {
+	if err := prod.Publish(ctx, []byte(strconv.FormatInt(input.Meta.EmailID, 10)), body, 1); err != nil {
 		return fmt.Errorf("publish scores.nlp: %w", err)
 	}
 

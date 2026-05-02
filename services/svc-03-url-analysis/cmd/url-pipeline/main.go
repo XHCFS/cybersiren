@@ -10,6 +10,7 @@
 package main
 
 import (
+	"strconv"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -69,7 +70,7 @@ func handle(ctx context.Context, msg kafkaconsumer.Message, deps svckit.Deps) er
 		return fmt.Errorf("decode analysis.urls: %w", err)
 	}
 
-	log := zerolog.Ctx(ctx).With().Str("email_id", input.Meta.EmailID).Logger()
+	log := zerolog.Ctx(ctx).With().Int64("email_id", input.Meta.EmailID).Logger()
 
 	maxScore := 0
 	maxProb := 0.0
@@ -116,7 +117,7 @@ func handle(ctx context.Context, msg kafkaconsumer.Message, deps svckit.Deps) er
 	if !ok {
 		return fmt.Errorf("svc-03: producer for %s not configured", contracts.TopicScoresURL)
 	}
-	if err := prod.Publish(ctx, []byte(input.Meta.EmailID), body, 1); err != nil {
+	if err := prod.Publish(ctx, []byte(strconv.FormatInt(input.Meta.EmailID, 10)), body, 1); err != nil {
 		return fmt.Errorf("publish scores.url: %w", err)
 	}
 

@@ -130,7 +130,7 @@ Other services have no web UI — use Grafana, Prometheus, and Jaeger below.
 |------|---------|
 | 8083 | URL scanner (web UI + JSON API) |
 | 8086 | NLP email classifier (web UI + JSON API) |
-| 9092 | Prometheus |
+| 19090 | Prometheus |
 | 3001 | Grafana (admin / admin) |
 | 16686 | Jaeger traces |
 
@@ -178,7 +178,7 @@ make demo svc=svc-11-ti-sync
 | URL | Service | Credentials |
 |-----|---------|-------------|
 | http://localhost:3001 | Grafana | admin / admin |
-| http://localhost:9092 | Prometheus | — |
+| http://localhost:19090 | Prometheus | — |
 | http://localhost:16686 | Jaeger | — |
 
 ### Makefile targets

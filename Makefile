@@ -326,7 +326,7 @@ demo: check-docker check-compose-env
 	@echo "  Service:     $(svc)"
 	@echo "  Demo Dashboard:   http://localhost:$(call svc-demo-port,$(svc))"
 	@echo "  Grafana:     http://localhost:3001"
-	@echo "  Prometheus:  http://localhost:9092"
+	@echo "  Prometheus:  http://localhost:19090"
 	@echo "  Jaeger:      http://localhost:16686"
 	@echo ""
 
@@ -342,7 +342,7 @@ demo-build: check-docker check-compose-env
 	@echo "  Service:     $(svc)"
 	@echo "  Demo Dashboard:   http://localhost:$(call svc-demo-port,$(svc))"
 	@echo "  Grafana:     http://localhost:3001"
-	@echo "  Prometheus:  http://localhost:9092"
+	@echo "  Prometheus:  http://localhost:19090"
 	@echo "  Jaeger:      http://localhost:16686"
 	@echo ""
 
@@ -357,7 +357,7 @@ demo-all: check-docker check-compose-env check-nlp-model
 	@echo "  URL Demo:         http://localhost:8083"
 	@echo "  NLP Demo:         http://localhost:8086"
 	@echo "  Grafana:     http://localhost:3001"
-	@echo "  Prometheus:  http://localhost:9092"
+	@echo "  Prometheus:  http://localhost:19090"
 	@echo "  Jaeger:      http://localhost:16686"
 	@echo ""
 
@@ -372,7 +372,7 @@ demo-all-build: check-docker check-compose-env check-nlp-model
 	@echo "  URL Demo:         http://localhost:8083"
 	@echo "  NLP Demo:         http://localhost:8086"
 	@echo "  Grafana:     http://localhost:3001"
-	@echo "  Prometheus:  http://localhost:9092"
+	@echo "  Prometheus:  http://localhost:19090"
 	@echo "  Jaeger:      http://localhost:16686"
 	@echo ""
 
@@ -401,9 +401,12 @@ jaeger: check-docker
 ##        sample email to svc-01 /ingest and waits for emails.verdict to
 ##        receive a record with the same email_id. Tears stubs down on exit.
 smoke: check-docker check-compose-env check-nlp-model
+	# `up --wait` would error when the one-shot demo-seed / redpanda-init
+	# containers exit (cleanly) so we drop --wait. run_pipeline.sh's own
+	# preflight blocks until the broker, NLP service, and DB are reachable.
 	$(DOCKER_COMPOSE) --profile postgres --profile valkey \
 	    --profile kafka --profile observability \
-	    --profile nlp-inference --profile smoke up -d --wait
+	    --profile nlp-inference --profile smoke up -d
 	@./scripts/dev/run_pipeline.sh start
 	@bash -c 'trap "./scripts/dev/run_pipeline.sh stop" EXIT; ./scripts/dev/inject_fake_email.sh'
 
@@ -424,7 +427,7 @@ open-grafana:
 
 ## open-prometheus: Open Prometheus query UI
 open-prometheus:
-	@$(MAKE) _open-url url=http://localhost:9092
+	@$(MAKE) _open-url url=http://localhost:19090
 
 ## open-jaeger: Open Jaeger tracing UI
 open-jaeger:

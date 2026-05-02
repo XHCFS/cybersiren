@@ -2,11 +2,15 @@
 // spine. It pulls emails.raw, decodes the base64 RFC-822 source, extracts
 // URLs / headers / subject+body, and fans out to the 5 analysis.* topics.
 //
-// The MIME parsing is intentionally minimal — net/mail headers + a regex
-// URL sweep over the body. It is good enough to drive svc-04 (which uses
-// the headers verbatim) and the real svc-03 URL model and svc-06 NLP
-// inference (which only need URLs / subject / body text). When a richer
-// parser lands it should replace this binary, not extend it.
+// analysis.headers uses svc-04's authoritative AnalysisHeadersMessage
+// shape (int64 IDs, parsed structural fields). The other topics use the
+// generic kafka.MessageMeta envelope. svc-04's processor reads the
+// flat shape directly; svc-03 / svc-06 read the generic envelope.
+//
+// The MIME parsing here is intentionally minimal — net/mail headers + a
+// regex URL sweep. It is good enough to drive svc-04's auth/structural
+// signal extractors and the real svc-03 URL model and svc-06 NLP. When
+// a richer parser lands it should replace this binary, not extend it.
 package main
 
 import (
@@ -18,7 +22,9 @@ import (
 	"net/mail"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/rs/zerolog"
 
@@ -29,10 +35,9 @@ import (
 
 const serviceName = "svc-02-parser"
 
-// urlRE matches http(s):// URLs in plain text and HTML. Bounded so the
-// scanner doesn't get caught on pathological inputs (e.g. an entire
-// HTML page rendered without whitespace).
-var urlRE = regexp.MustCompile(`https?://[^\s<>"')]{2,2048}`)
+// urlRE matches http(s):// URLs in plain text and HTML. RE2 caps the
+// repetition counter, so we use `+` and trim ourselves later.
+var urlRE = regexp.MustCompile(`https?://[^\s<>"')]+`)
 
 func main() {
 	outputs := []string{
@@ -63,16 +68,22 @@ func handle(ctx context.Context, msg kafkaconsumer.Message, deps svckit.Deps) er
 		return fmt.Errorf("decode emails.raw: %w", err)
 	}
 
-	subject, body, headers, urls := parseRawEmail(raw)
+	parsedHeaders, subject, body, urls := parseRawEmail(raw)
 	meta := contracts.NewMeta(raw.Meta.EmailID, raw.Meta.OrgID)
-	key := []byte(raw.Meta.EmailID)
+	key := []byte(strconv.FormatInt(raw.Meta.EmailID, 10))
+	fetchedAt := raw.FetchedAt
+	if fetchedAt.IsZero() {
+		fetchedAt = time.Now().UTC()
+	}
+
+	headersMsg := buildAnalysisHeaders(raw.Meta.EmailID, raw.Meta.OrgID, fetchedAt, parsedHeaders)
 
 	out := []struct {
 		topic   string
 		payload any
 	}{
 		{contracts.TopicAnalysisURLs, contracts.AnalysisURLs{Meta: meta, URLs: urls}},
-		{contracts.TopicAnalysisHeaders, contracts.AnalysisHeaders{Meta: meta, Headers: headers}},
+		{contracts.TopicAnalysisHeaders, headersMsg},
 		{contracts.TopicAnalysisAttachments, contracts.AnalysisAttachments{Meta: meta, Attachments: nil}},
 		{contracts.TopicAnalysisText, contracts.AnalysisText{Meta: meta, Subject: subject, Body: body}},
 		{contracts.TopicAnalysisPlans, contracts.AnalysisPlan{
@@ -101,7 +112,7 @@ func handle(ctx context.Context, msg kafkaconsumer.Message, deps svckit.Deps) er
 	}
 
 	deps.Log.Info().
-		Str("email_id", raw.Meta.EmailID).
+		Int64("email_id", raw.Meta.EmailID).
 		Int("urls", len(urls)).
 		Int("subject_len", len(subject)).
 		Int("body_len", len(body)).
@@ -109,12 +120,9 @@ func handle(ctx context.Context, msg kafkaconsumer.Message, deps svckit.Deps) er
 	return nil
 }
 
-// parseRawEmail decodes the base64 RFC-822 source carried on emails.raw and
-// extracts the four pipeline-relevant projections: subject, body text, a
-// flat header map, and the de-duped list of http(s) URLs. The transport
-// envelope's own Headers map (filled by svc-01 ingestion adapters) is
-// merged in as a fallback when the raw RFC-822 source is absent or empty.
-func parseRawEmail(raw contracts.EmailsRaw) (subject, body string, headers map[string]string, urls []string) {
+// parseRawEmail decodes the base64 RFC-822 source and returns the flat
+// header map, subject, body, and a deduplicated URL list.
+func parseRawEmail(raw contracts.EmailsRaw) (headers map[string]string, subject, body string, urls []string) {
 	headers = map[string]string{}
 	for k, v := range raw.Headers {
 		headers[k] = v
@@ -142,8 +150,56 @@ func parseRawEmail(raw contracts.EmailsRaw) (subject, body string, headers map[s
 	}
 
 	urls = uniqueStrings(urlRE.FindAllString(body, -1))
-	return subject, body, headers, urls
+	return headers, subject, body, urls
 }
+
+// buildAnalysisHeaders projects the flat header map into svc-04's
+// AnalysisHeadersMessage. It does the minimum needed for svc-04's
+// auth / reputation / structural extractors to fire — sender_email,
+// sender_domain, auth_*, originating_ip, hop count, sent timestamp.
+func buildAnalysisHeaders(emailID, orgID int64, fetchedAt time.Time, h map[string]string) contracts.AnalysisHeadersMessage {
+	from := h["From"]
+	senderEmail, senderName := splitEmailAddress(from)
+	senderDomain := domainOf(senderEmail)
+
+	auth := parseAuthResults(h["Authentication-Results"])
+
+	hopCount := strings.Count(strings.Join(receivedLines(h), "\n"), "from ")
+
+	sentTS := int64(0)
+	if dateStr, ok := h["Date"]; ok && dateStr != "" {
+		if t, err := mail.ParseDate(dateStr); err == nil {
+			sentTS = t.Unix()
+		}
+	}
+
+	headersJSON, _ := json.Marshal(h)
+
+	return contracts.AnalysisHeadersMessage{
+		EmailID:        emailID,
+		OrgID:          orgID,
+		FetchedAt:      fetchedAt,
+		SenderEmail:    senderEmail,
+		SenderDomain:   senderDomain,
+		SenderName:     senderName,
+		ReplyToEmail:   addressOnly(h["Reply-To"]),
+		ReturnPath:     addressOnly(h["Return-Path"]),
+		MailerAgent:    h["X-Mailer"],
+		AuthSPF:        auth["spf"],
+		AuthDKIM:       auth["dkim"],
+		AuthDMARC:      auth["dmarc"],
+		AuthARC:        auth["arc"],
+		InReplyTo:      h["In-Reply-To"],
+		SentTimestamp:  sentTS,
+		ContentCharset: charsetFrom(h["Content-Type"]),
+		Precedence:     h["Precedence"],
+		ListID:         h["List-Id"],
+		HopCount:       hopCount,
+		HeadersJSON:    headersJSON,
+	}
+}
+
+// ── helpers ────────────────────────────────────────────────────────────────
 
 func uniqueStrings(in []string) []string {
 	if len(in) == 0 {
@@ -163,4 +219,76 @@ func uniqueStrings(in []string) []string {
 		out = append(out, s)
 	}
 	return out
+}
+
+func splitEmailAddress(raw string) (addr, name string) {
+	a, err := mail.ParseAddress(strings.TrimSpace(raw))
+	if err != nil {
+		return strings.TrimSpace(raw), ""
+	}
+	return a.Address, a.Name
+}
+
+func addressOnly(raw string) string {
+	a, err := mail.ParseAddress(strings.TrimSpace(raw))
+	if err != nil {
+		return strings.TrimSpace(raw)
+	}
+	return a.Address
+}
+
+func domainOf(addr string) string {
+	at := strings.LastIndex(addr, "@")
+	if at < 0 {
+		return ""
+	}
+	return strings.ToLower(addr[at+1:])
+}
+
+// parseAuthResults handles the common single-line shape:
+//
+//	"spf=pass smtp.mailfrom=…; dkim=fail; dmarc=fail"
+//
+// It does NOT parse the full RFC 8601 grammar — good enough for v0 smoke.
+func parseAuthResults(raw string) map[string]string {
+	out := map[string]string{}
+	if raw == "" {
+		return out
+	}
+	for _, segment := range strings.Split(raw, ";") {
+		segment = strings.TrimSpace(segment)
+		for _, k := range []string{"spf", "dkim", "dmarc", "arc"} {
+			prefix := k + "="
+			if i := strings.Index(strings.ToLower(segment), prefix); i >= 0 {
+				rest := segment[i+len(prefix):]
+				value := strings.SplitN(rest, " ", 2)[0]
+				value = strings.TrimSpace(value)
+				if value != "" && out[k] == "" {
+					out[k] = value
+				}
+			}
+		}
+	}
+	return out
+}
+
+func receivedLines(h map[string]string) []string {
+	out := []string{}
+	for k, v := range h {
+		if strings.EqualFold(k, "Received") {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+func charsetFrom(contentType string) string {
+	for _, part := range strings.Split(contentType, ";") {
+		part = strings.TrimSpace(part)
+		if strings.HasPrefix(strings.ToLower(part), "charset=") {
+			v := part[len("charset="):]
+			return strings.Trim(v, `"`)
+		}
+	}
+	return ""
 }

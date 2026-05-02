@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/rs/zerolog"
 	valkeygo "github.com/valkey-io/valkey-go"
 	"golang.org/x/sync/errgroup"
@@ -82,6 +83,7 @@ type Spec struct {
 type Deps struct {
 	Cfg       *config.Config
 	Log       zerolog.Logger
+	Registry  *prometheus.Registry
 	Pool      *pgxpool.Pool
 	Valkey    valkeygo.Client
 	Producers map[string]*kafkaproducer.Producer
@@ -133,7 +135,7 @@ func Run(spec Spec) error {
 	}
 	defer func() { _ = metricsShutdown(context.Background()) }()
 
-	deps := Deps{Cfg: cfg, Log: log, Producers: map[string]*kafkaproducer.Producer{}}
+	deps := Deps{Cfg: cfg, Log: log, Registry: reg, Producers: map[string]*kafkaproducer.Producer{}}
 
 	if spec.NeedsDB {
 		opts := pool.PoolOptions{

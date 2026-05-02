@@ -18,8 +18,8 @@ INGEST_URL="${INGEST_URL:-http://localhost:8081/ingest}"
 TIMEOUT="${TIMEOUT:-60}"
 COMPOSE="${COMPOSE:-docker compose -f deploy/compose/docker-compose.yml --env-file deploy/compose/.env}"
 
-EMAIL_ID="${EMAIL_ID:-smoke-$(date +%s)-$RANDOM}"
-ORG_ID="${ORG_ID:-org-smoke}"
+EMAIL_ID="${EMAIL_ID:-$(date +%s%N | head -c 16)}"
+ORG_ID="${ORG_ID:-1}"
 
 # Default sample EML. Crafted to trigger SPF/DKIM/DMARC mis-alignment
 # (svc-04), a suspicious URL (svc-03), and urgency / credential-prompt
@@ -66,7 +66,9 @@ EML_B64="$(printf '%s' "$EML" | base64 -w0)"
 # Build JSON safely with python3 (avoids escaping headaches).
 PAYLOAD=$(python3 - "$EMAIL_ID" "$ORG_ID" "$EML_B64" <<'PY'
 import json, sys
-email_id, org_id, eml_b64 = sys.argv[1:4]
+email_id = int(sys.argv[1])
+org_id = int(sys.argv[2])
+eml_b64 = sys.argv[3]
 print(json.dumps({
     "email_id": email_id,
     "org_id": org_id,
@@ -95,8 +97,8 @@ while [[ $(date +%s) -lt $deadline ]]; do
     -X brokers=localhost:9092 \
     --offset start --num 100 \
     --format '%v\n' 2>/dev/null || true)"
-  if grep -q "\"email_id\":\"$EMAIL_ID\"" <<<"$out"; then
-    match="$(grep "\"email_id\":\"$EMAIL_ID\"" <<<"$out" | head -1)"
+  if grep -q "\"email_id\":${EMAIL_ID}\b" <<<"$out"; then
+    match="$(grep "\"email_id\":${EMAIL_ID}\b" <<<"$out" | head -1)"
     break
   fi
   sleep 1

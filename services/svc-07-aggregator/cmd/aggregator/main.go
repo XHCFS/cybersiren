@@ -3,6 +3,12 @@
 // (TTL 120 s per spec §5), and emits emails.scored once every expected score
 // has arrived. NO 30-second timeout in v0 — completion is "all expected
 // scores present" only.
+//
+// Two on-the-wire score shapes coexist for now:
+//   - svc-04 (real) emits the flat ScoresHeaderMessage on scores.header
+//     (int64 email_id at the top level, integer Score, sub-scores).
+//   - svc-03 / svc-05 / svc-06 emit the generic ScoreEnvelope (Meta
+//     envelope, float Score). The aggregator handles both.
 package main
 
 import (
@@ -10,6 +16,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -55,19 +62,32 @@ func main() {
 	}
 }
 
-func handle(ctx context.Context, msg kafkaconsumer.Message, deps svckit.Deps) error {
-	var meta struct {
-		Meta contracts.MessageMeta `json:"meta"`
+// flexShape decodes the message just far enough to extract email_id and
+// org_id, no matter which contract shape is on the wire.
+type flexShape struct {
+	Meta    *contracts.MessageMeta `json:"meta,omitempty"`
+	EmailID int64                  `json:"email_id,omitempty"`
+	OrgID   int64                  `json:"org_id,omitempty"`
+}
+
+func (f flexShape) ids() (int64, int64) {
+	if f.Meta != nil && f.Meta.EmailID != 0 {
+		return f.Meta.EmailID, f.Meta.OrgID
 	}
-	if err := json.Unmarshal(msg.Value, &meta); err != nil {
+	return f.EmailID, f.OrgID
+}
+
+func handle(ctx context.Context, msg kafkaconsumer.Message, deps svckit.Deps) error {
+	var f flexShape
+	if err := json.Unmarshal(msg.Value, &f); err != nil {
 		return fmt.Errorf("decode meta: %w", err)
 	}
-	emailID := meta.Meta.EmailID
-	if emailID == "" {
+	emailID, orgID := f.ids()
+	if emailID == 0 {
 		return nil
 	}
 
-	key := aggKeyPrefix + emailID
+	key := aggKeyPrefix + strconv.FormatInt(emailID, 10)
 
 	field := msg.Topic
 	if msg.Topic == contracts.TopicAnalysisPlans {
@@ -103,24 +123,20 @@ func handle(ctx context.Context, msg kafkaconsumer.Message, deps svckit.Deps) er
 			missing = true
 			break
 		}
-		var env contracts.ScoreEnvelope
-		if err := json.Unmarshal([]byte(raw), &env); err != nil {
+		score, comp, err := decodeScore(expected, []byte(raw))
+		if err != nil {
 			return fmt.Errorf("decode score %s: %w", expected, err)
 		}
-		c := env.Component
-		if c == "" {
-			c = strings.TrimPrefix(expected, "scores.")
-		}
-		componentScores[c] = env.Score
+		componentScores[comp] = score
 	}
 	if missing {
 		return nil
 	}
 
 	out := contracts.EmailsScored{
-		Meta:            contracts.NewMeta(emailID, plan.Meta.OrgID),
-		InternalID:      "fake-internal-" + emailID, // v0 placeholder
-		FetchedAt:       time.Now().UTC(),           // v0 placeholder
+		Meta:            contracts.NewMeta(emailID, orgID),
+		InternalID:      emailID, // v0: same as logical id
+		FetchedAt:       time.Now().UTC(),
 		ComponentScores: componentScores,
 	}
 
@@ -132,7 +148,7 @@ func handle(ctx context.Context, msg kafkaconsumer.Message, deps svckit.Deps) er
 	if !ok {
 		return fmt.Errorf("svc-07: producer for %s not configured", contracts.TopicEmailsScored)
 	}
-	if err := prod.Publish(ctx, []byte(emailID), body, 1); err != nil {
+	if err := prod.Publish(ctx, []byte(strconv.FormatInt(emailID, 10)), body, 1); err != nil {
 		return fmt.Errorf("publish emails.scored: %w", err)
 	}
 
@@ -141,4 +157,24 @@ func handle(ctx context.Context, msg kafkaconsumer.Message, deps svckit.Deps) er
 	}
 
 	return nil
+}
+
+// decodeScore handles both the generic ScoreEnvelope (Meta + float Score)
+// and svc-04's flat ScoresHeaderMessage (top-level int Score).
+func decodeScore(topic string, raw []byte) (score float64, component string, err error) {
+	if topic == contracts.TopicScoresHeader {
+		var hd contracts.ScoresHeaderMessage
+		if err := json.Unmarshal(raw, &hd); err == nil && hd.EmailID != 0 {
+			return float64(hd.Score), "header", nil
+		}
+	}
+	var env contracts.ScoreEnvelope
+	if err := json.Unmarshal(raw, &env); err != nil {
+		return 0, "", err
+	}
+	c := env.Component
+	if c == "" {
+		c = strings.TrimPrefix(topic, "scores.")
+	}
+	return env.Score, c, nil
 }

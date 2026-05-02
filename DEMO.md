@@ -52,7 +52,7 @@ make demo-stop-all
 |---------|-------------|---------|
 | svc-03-url-analysis | http://localhost:8083 | http://localhost:9091/metrics |
 | svc-06-nlp | http://localhost:8086 | http://localhost:9096/metrics |
-| Prometheus | http://localhost:9092 | — |
+| Prometheus | http://localhost:19090 | — |
 | Grafana | http://localhost:3001 | — |
 | Jaeger | http://localhost:16686 | — |
 

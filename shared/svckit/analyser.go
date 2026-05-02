@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/rand/v2"
+	"strconv"
 	"time"
 
 	contracts "github.com/saif/cybersiren/shared/contracts/kafka"
@@ -43,7 +44,7 @@ func AnalyserHandler(component, outTopic string) Handler {
 		if !ok {
 			return fmt.Errorf("svckit: producer for %s not configured (add to ProducerTopics)", outTopic)
 		}
-		if err := prod.Publish(ctx, []byte(env.Meta.EmailID), body, 1); err != nil {
+		if err := prod.Publish(ctx, []byte(strconv.FormatInt(env.Meta.EmailID, 10)), body, 1); err != nil {
 			return fmt.Errorf("publish %s: %w", outTopic, err)
 		}
 		return nil
