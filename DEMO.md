@@ -12,6 +12,7 @@ needed.
 |---------|--------------|-------|
 | **svc-03-url-analysis** | URL phishing scanner — ML model (XGBoost) + Threat-Intelligence lookup | [DEMO-url.md](DEMO-url.md) |
 | **svc-06-nlp** | Email content classifier — DistilBERT (ONNX) phishing / spam / legitimate | [DEMO-nlp.md](DEMO-nlp.md) |
+| **Pipeline spine v0** | End-to-end Kafka pipeline smoke (10 stub services, fake email → verdict) | [demo-infra.md](demo-infra.md) |
 
 ---
 

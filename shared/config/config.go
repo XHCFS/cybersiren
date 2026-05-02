@@ -35,6 +35,7 @@ type Config struct {
 	TIHashCacheTTLSeconds   int    `koanf:"ti_hash_cache_ttl_seconds"`
 
 	Valkey     ValkeyConfig     `koanf:"valkey"`
+	Kafka      KafkaConfig      `koanf:"kafka"`
 	Worker     WorkerConfig     `koanf:"worker"`
 	CORS       CORSConfig       `koanf:"cors"`
 	ML         MLConfig         `koanf:"ml"`
@@ -110,6 +111,15 @@ type ValkeyConfig struct {
 	Addr     string `koanf:"addr"`
 	DB       int    `koanf:"db"`
 	Password string `koanf:"password"`
+}
+
+// KafkaConfig holds the Kafka/Redpanda client configuration. The infrastructure
+// spine v0 only uses Brokers + ClientID + ConsumerGroupPrefix; the rest are
+// scaffolding for forthcoming TLS/SASL work.
+type KafkaConfig struct {
+	Brokers             []string `koanf:"brokers"`
+	ClientID            string   `koanf:"client_id"`
+	ConsumerGroupPrefix string   `koanf:"consumer_group_prefix"`
 }
 
 type WorkerConfig struct {
@@ -237,6 +247,11 @@ func Load() (*Config, error) {
 		Valkey: ValkeyConfig{
 			Addr: "localhost:6379",
 			DB:   0,
+		},
+		Kafka: KafkaConfig{
+			Brokers:             []string{"localhost:9092"},
+			ClientID:            "cybersiren",
+			ConsumerGroupPrefix: "cybersiren",
 		},
 		Worker: WorkerConfig{
 			Concurrency: 10,

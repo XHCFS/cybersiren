@@ -16,7 +16,7 @@
 # Profiles:
 #   postgres      — PostgreSQL 15
 #   valkey        — Valkey cache
-#   kafka         — Kafka + Zookeeper + topic init
+#   kafka         — Redpanda broker + topic init + Redpanda Console (Kafka API on :9092)
 #   observability — Jaeger tracing UI
 #   monitoring    — Prometheus + Grafana (metrics dashboards)
 #   svc-03        — svc-03-url-analysis container
@@ -34,6 +34,7 @@ networks:
 volumes:
   pgdata:
   valkeydata:
+  redpandadata:
 
 services:
 
@@ -79,73 +80,62 @@ services:
       retries: 10
     restart: unless-stopped
 
-  # ── Zookeeper ──────────────────────────────────────────────────────────────
-  # Required by Kafka for broker coordination.
-  zookeeper:
-    image: confluentinc/cp-zookeeper:7.5.0
-    profiles: ["kafka"]
-    container_name: cybersiren-zookeeper
-    environment:
-      ZOOKEEPER_CLIENT_PORT: 2181
-      ZOOKEEPER_TICK_TIME: 2000
-      # Enable 'ruok' 4-letter-word command for healthcheck
-      KAFKA_OPTS: "-Dzookeeper.4lw.commands.whitelist=ruok,srvr"
-    networks:
-      - cybersiren
-    healthcheck:
-      test: ["CMD-SHELL", "echo srvr | nc localhost 2181 | grep Zookeeper"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-      start_period: 10s
-    restart: unless-stopped
-
-  # ── Kafka ──────────────────────────────────────────────────────────────────
-  # Message broker for the analysis pipeline.
-  # Port 9092 is for host access, 29092 for inter-container communication.
-  # Auto-create is disabled — topics are created by kafka-init.
+  # ── Redpanda (Kafka-API broker) ────────────────────────────────────────────
+  # Single-binary KRaft-mode broker. Listens on 9092 (Kafka API to host),
+  # 29092 (Kafka API on the cybersiren network), 9644 (admin API), 8081 (schema
+  # registry, unused in v0). Container hostname is "kafka" so the existing
+  # Makefile/profile name "kafka" stays meaningful.
   kafka:
-    image: confluentinc/cp-kafka:7.5.0
+    image: redpandadata/redpanda:v24.2.7
     profiles: ["kafka"]
-    container_name: cybersiren-kafka
-    depends_on:
-      zookeeper:
-        condition: service_healthy
-    environment:
-      KAFKA_BROKER_ID: 1
-      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
-      # Listeners: PLAINTEXT for inter-container, HOST for localhost access
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,HOST:PLAINTEXT
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,HOST://localhost:9092
-      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
-      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
-      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
-      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+    container_name: cybersiren-redpanda
+    hostname: kafka
+    command:
+      - redpanda
+      - start
+      - --overprovisioned
+      - --smp=1
+      - --memory=512M
+      - --reserve-memory=0M
+      - --node-id=0
+      - --check=false
+      - --kafka-addr=PLAINTEXT://0.0.0.0:29092,HOST://0.0.0.0:9092
+      - --advertise-kafka-addr=PLAINTEXT://kafka:29092,HOST://localhost:9092
+      - --pandaproxy-addr=0.0.0.0:8082
+      - --advertise-pandaproxy-addr=localhost:8082
+      - --rpc-addr=0.0.0.0:33145
+      - --advertise-rpc-addr=kafka:33145
+      - --mode=dev-container
     ports:
       - "${KAFKA_PORT:-9092}:9092"
+      - "9644:9644"
+    volumes:
+      - redpandadata:/var/lib/redpanda/data
     networks:
       - cybersiren
     healthcheck:
-      test: ["CMD-SHELL", "kafka-broker-api-versions --bootstrap-server localhost:9092"]
+      test: ["CMD-SHELL", "rpk cluster info -X brokers=localhost:9092 >/dev/null 2>&1"]
       interval: 5s
-      timeout: 10s
-      retries: 15
-      start_period: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
     restart: unless-stopped
 
-  # ── Kafka topic initializer ────────────────────────────────────────────────
-  # One-shot container that creates all 12 pipeline topics then exits.
-  # Idempotent — safe to run multiple times.
+  # ── Redpanda topic initializer ─────────────────────────────────────────────
+  # One-shot container that creates the 12 pipeline topics with per-topic
+  # retention/cleanup/compression then exits. Idempotent.
   kafka-init:
-    image: confluentinc/cp-kafka:7.5.0
+    image: redpandadata/redpanda:v24.2.7
     profiles: ["kafka"]
-    container_name: cybersiren-kafka-init
+    container_name: cybersiren-redpanda-init
     depends_on:
       kafka:
         condition: service_healthy
     volumes:
       - ./kafka-init.sh:/kafka-init.sh:ro
     entrypoint: ["/bin/bash", "/kafka-init.sh"]
+    environment:
+      BOOTSTRAP_SERVER: "kafka:29092"
     networks:
       - cybersiren
     restart: "no"
@@ -376,17 +366,18 @@ services:
       - cybersiren
     restart: unless-stopped
 
-  # ── Kafka UI ───────────────────────────────────────────────────────────────
-  # Web UI for browsing topics, consumer groups, and messages.
+  # ── Redpanda Console ───────────────────────────────────────────────────────
+  # Web UI for browsing topics, consumer groups, and messages. Replaces
+  # provectuslabs/kafka-ui from the Kafka era.
   kafka-ui:
-    image: provectuslabs/kafka-ui:latest
+    image: redpandadata/console:v2.7.2
     profiles: ["kafka"]
-    container_name: cybersiren-kafka-ui
+    container_name: cybersiren-redpanda-console
     ports:
       - "${KAFKA_UI_PORT:-8080}:8080"
     environment:
-      KAFKA_CLUSTERS_0_NAME: local
-      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+      KAFKA_BROKERS: "kafka:29092"
+      CONFIG_FILEPATH: ""
     depends_on:
       kafka:
         condition: service_healthy

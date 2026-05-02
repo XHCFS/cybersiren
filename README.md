@@ -89,7 +89,7 @@ cybersiren/
 |   `-- k8s/                         Kubernetes manifests
 |
 |-- docs/
-|   |-- decisions/DECISIONS.MD       architecture decision log
+|   |-- architecture/                full architecture spec (HTML, source of truth)
 |   |-- screenshots/                 demo screenshots
 |   `-- ...
 |
@@ -206,8 +206,9 @@ Full documentation is published at **https://xhcfs.github.io/cybersiren/**
 
 | Reference | Location |
 |-----------|----------|
-| Architecture decisions | [docs/decisions/DECISIONS.MD](docs/decisions/DECISIONS.MD) |
-| Demo guides index | [DEMO.md](DEMO.md) — URL scanner · NLP classifier |
+| Architecture spec (source of truth) | [docs/architecture/architecture-spec-detail.html](docs/architecture/architecture-spec-detail.html) — §16 Changelog records implementation deltas |
+| Demo guides index | [DEMO.md](DEMO.md) — URL scanner · NLP classifier · pipeline spine |
+| Pipeline spine v0 smoke test | [demo-infra.md](demo-infra.md) |
 | URL analysis improvements | [docs/URL_ANALYSIS_IMPROVEMENTS.md](docs/URL_ANALYSIS_IMPROVEMENTS.md) |
 | API reference | https://xhcfs.github.io/cybersiren/api |
 | Runbooks | https://xhcfs.github.io/cybersiren/runbooks |

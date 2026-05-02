@@ -266,10 +266,10 @@ valkey-cli:
 		$(DOCKER_COMPOSE) --profile valkey exec valkey valkey-cli; \
 	fi
 
-## kafka-topics: List all topics on local Kafka
+## kafka-topics: List all topics on the local Redpanda broker
 kafka-topics:
 	$(DOCKER_COMPOSE) --profile kafka exec kafka \
-		kafka-topics --bootstrap-server localhost:9092 --list
+		rpk topic list -X brokers=localhost:9092
 
 ## check-tools: Verify all required development tools are installed
 check-tools:
@@ -378,6 +378,25 @@ demo-stop-all: check-docker
 jaeger: check-docker
 	$(DOCKER_COMPOSE) --profile observability up -d --wait
 	@echo "Jaeger UI: http://localhost:16686"
+
+# =============================================================================
+# ── Spine v0 smoke ───────────────────────────────────────────────────────────
+# =============================================================================
+
+## smoke: End-to-end Infrastructure Spine v0 smoke test.
+##        Boots infra (Postgres, Valkey, Redpanda + topic-init, Jaeger),
+##        builds and starts the 10 pipeline stubs, posts a fake email to
+##        svc-01 /ingest, and waits for emails.verdict to receive a record
+##        with the same email_id. Tears stubs down on exit.
+smoke: check-docker check-compose-env
+	$(DOCKER_COMPOSE) --profile postgres --profile valkey \
+	    --profile kafka --profile observability up -d --wait
+	@./scripts/dev/run_pipeline.sh start
+	@bash -c 'trap "./scripts/dev/run_pipeline.sh stop" EXIT; ./scripts/dev/inject_fake_email.sh'
+
+## smoke-stop: Stop the native pipeline stubs started by `make smoke`.
+smoke-stop:
+	@./scripts/dev/run_pipeline.sh stop
 
 ## open: Open all available web UIs in the default browser
 open:
