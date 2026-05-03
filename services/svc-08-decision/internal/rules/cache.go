@@ -253,6 +253,9 @@ func (c *Cache) fromValkey(ctx context.Context, orgID int64) ([]CachedRule, bool
 	key := valkeyKey(orgID)
 	cmd := c.valkey.Do(ctx, c.valkey.B().Get().Key(key).Build())
 	if err := cmd.Error(); err != nil {
+		if !valkeygo.IsValkeyNil(err) {
+			c.log.Debug().Err(err).Str("key", key).Msg("decision rules cache valkey get failed")
+		}
 		return nil, false
 	}
 	body, err := cmd.AsBytes()

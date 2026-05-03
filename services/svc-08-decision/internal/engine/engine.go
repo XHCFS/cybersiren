@@ -62,14 +62,24 @@ type decisionWriter interface {
 	GetCampaignHistory(ctx context.Context, orgID int64, fingerprint string) (*persist.CampaignHistory, error)
 }
 
+type ruleGetter interface {
+	Get(ctx context.Context, orgID int64) ([]rules.CachedRule, error)
+}
+
+type simhashComputer interface {
+	Compute(text string) (uint64, bool)
+	Lookup(ctx context.Context, orgID int64, hash uint64) (campaign.Match, bool, error)
+	Store(ctx context.Context, orgID, campaignID int64, hash uint64, fingerprint string) error
+}
+
 // Engine is the SVC-08 orchestrator. One instance is shared by every
 // consumer goroutine; methods are safe for concurrent use.
 type Engine struct {
 	cfg       Config
 	blender   Blender
-	rules     *rules.Cache
+	rules     ruleGetter
 	evaluator *rules.Evaluator
-	simhash   *campaign.Computer
+	simhash   simhashComputer
 	writer    decisionWriter
 	publisher Publisher
 	metrics   *metrics.Metrics
@@ -80,8 +90,8 @@ type Engine struct {
 // New constructs an Engine.
 func New(
 	cfg Config,
-	rulesCache *rules.Cache,
-	simhash *campaign.Computer,
+	rulesCache ruleGetter,
+	simhash simhashComputer,
 	writer decisionWriter,
 	publisher Publisher,
 	m *metrics.Metrics,
@@ -190,6 +200,13 @@ func (e *Engine) Handle(ctx context.Context, msg kafkaconsumer.Message) error {
 
 	// 4. Load rules and evaluate. Failure → degraded mode (publish a
 	// rule-source verdict using just the nudged blend).
+	if e.rules == nil {
+		logCtx.Error().Msg("decision rules cache unavailable; degrading to blend-only verdict")
+		return e.publishDegraded(
+			ctx, scored, components, blendOut, nudgedScore, fingerprint, history,
+			simMatch, simHit, hasHash, bodyHash, time.Since(startedAt),
+		)
+	}
 	rs, err := e.rules.Get(ctx, scored.Meta.OrgID)
 	if err != nil {
 		logCtx.Error().Err(err).Msg("decision rules cache load failed; degrading to blend-only verdict")
@@ -490,10 +507,6 @@ func decodeScored(b []byte) (contracts.EmailsScored, error) {
 	}
 	if out.InternalID <= 0 {
 		return out, fmt.Errorf("emails.scored: internal_id must be > 0, got %d", out.InternalID)
-	}
-	if out.InternalID != out.Meta.EmailID {
-		return out, fmt.Errorf("emails.scored: internal_id %d must match meta.email_id %d",
-			out.InternalID, out.Meta.EmailID)
 	}
 	if out.FetchedAt.IsZero() {
 		return out, errors.New("emails.scored: fetched_at is required (emails partition key)")

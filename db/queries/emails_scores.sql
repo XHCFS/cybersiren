@@ -8,8 +8,7 @@
 
 -- name: UpdateEmailScores :exec
 -- Sets the final risk scores and campaign linkage for a fully-scored email.
--- analysis_metadata is JSONB; pass NULL to keep the existing value untouched
--- (sqlc maps []byte/nil to NULL).
+-- analysis_metadata is JSONB; NULL keeps the existing value unchanged.
 UPDATE emails
 SET risk_score            = $3,
     header_risk_score     = $4,
@@ -17,5 +16,5 @@ SET risk_score            = $3,
     url_risk_score        = $6,
     attachment_risk_score = $7,
     campaign_id           = $8,
-    analysis_metadata     = $9
+    analysis_metadata     = COALESCE($9::jsonb, emails.analysis_metadata)
 WHERE internal_id = $1 AND fetched_at = $2;
