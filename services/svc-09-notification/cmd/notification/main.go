@@ -40,7 +40,7 @@ func handle(ctx context.Context, msg kafkaconsumer.Message, _ svckit.Deps) error
 	zerolog.Ctx(ctx).Info().
 		Int64("email_id", v.Meta.EmailID).
 		Str("verdict", v.VerdictLabel).
-		Float64("risk_score", v.RiskScore).
+		Int("risk_score", v.RiskScore).
 		Msg("would-notify")
 	return nil
 }
