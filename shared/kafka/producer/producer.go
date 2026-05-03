@@ -1,8 +1,10 @@
 // Package producer is a thin synchronous Kafka writer wrapper used by
 // services that publish to a single topic per writer.
 //
-// SCOPE: identical philosophy to shared/kafka/consumer — keep the surface
-// area small until a second consumer of this package shows up.
+// Internally this uses github.com/twmb/franz-go (with the kotel plugin for
+// W3C trace-context propagation through Kafka headers), but the exported
+// API matches the historical kafka-go-based wrapper so callers can swap
+// the broker library without code churn.
 package producer
 
 import (
@@ -14,38 +16,41 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/rs/zerolog"
-	kafkago "github.com/segmentio/kafka-go"
+	"github.com/twmb/franz-go/pkg/kgo"
+	"github.com/twmb/franz-go/plugin/kotel"
 	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/codes"
-	"go.opentelemetry.io/otel/propagation"
-	"go.opentelemetry.io/otel/trace"
 
-	"github.com/saif/cybersiren/shared/observability/tracing"
+	sharedkafka "github.com/saif/cybersiren/shared/kafka"
 )
 
 // Config holds the parameters needed to create a Producer.
 type Config struct {
-	Brokers      string
-	Topic        string
-	ClientID     string
+	// Brokers is a comma- or whitespace-separated list of host:port pairs.
+	Brokers string
+	// Topic is the single Kafka topic this producer writes to.
+	Topic string
+	// ClientID identifies this instance to the broker.
+	ClientID string
+	// BatchTimeout caps how long records are buffered before a send.
 	BatchTimeout time.Duration
+	// WriteTimeout caps a single ProduceSync call.
 	WriteTimeout time.Duration
 	// Retries caps the number of attempts WriteMessages will make per
-	// publish (in addition to kafka-go's internal retries). When 0, a
-	// single best-effort attempt is made.
+	// publish. When 0, a single best-effort attempt is made.
 	Retries int
 }
 
 // Producer publishes JSON-serialised messages to a fixed Kafka topic.
 type Producer struct {
-	writer *kafkago.Writer
+	client *kgo.Client
+	topic  string
 	log    zerolog.Logger
-	tracer trace.Tracer
 
 	publishedTotal *prometheus.CounterVec
 	errorsTotal    *prometheus.CounterVec
 	publishLatency *prometheus.HistogramVec
+
+	writeTimeout time.Duration
 }
 
 // New constructs a Producer.
@@ -56,226 +61,171 @@ func New(cfg Config, log zerolog.Logger, reg *prometheus.Registry) (*Producer, e
 	if strings.TrimSpace(cfg.Topic) == "" {
 		return nil, errors.New("kafka producer: topic is required")
 	}
-
-	if cfg.BatchTimeout == 0 {
-		cfg.BatchTimeout = 50 * time.Millisecond
-	}
 	if cfg.WriteTimeout == 0 {
 		cfg.WriteTimeout = 10 * time.Second
 	}
 
-	writer := &kafkago.Writer{
-		Addr:                   kafkago.TCP(splitBrokers(cfg.Brokers)...),
-		Topic:                  cfg.Topic,
-		Balancer:               &kafkago.Hash{},
-		BatchTimeout:           cfg.BatchTimeout,
-		WriteTimeout:           cfg.WriteTimeout,
-		AllowAutoTopicCreation: false,
-		RequiredAcks:           kafkago.RequireAll,
-		Async:                  false,
+	sharedkafka.RegisterMetrics(reg)
+
+	tracer := kotel.NewTracer(
+		kotel.TracerProvider(otel.GetTracerProvider()),
+		kotel.TracerPropagator(otel.GetTextMapPropagator()),
+		kotel.ClientID(cfg.ClientID),
+	)
+	k := kotel.NewKotel(kotel.WithTracer(tracer))
+
+	cli, err := kgo.NewClient(
+		kgo.SeedBrokers(splitBrokers(cfg.Brokers)...),
+		kgo.ClientID(cfg.ClientID),
+		kgo.DefaultProduceTopic(cfg.Topic),
+		kgo.ProducerBatchCompression(kgo.ZstdCompression()),
+		kgo.RequiredAcks(kgo.AllISRAcks()),
+		kgo.WithHooks(k.Hooks()...),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("kafka producer: %w", err)
 	}
 
 	p := &Producer{
-		writer: writer,
-		log:    log,
-		tracer: tracing.Tracer("shared/kafka/producer"),
+		client:       cli,
+		topic:        cfg.Topic,
+		log:          log.With().Str("component", "kafka-producer").Str("topic", cfg.Topic).Logger(),
+		writeTimeout: cfg.WriteTimeout,
 	}
 
-	if reg != nil {
-		p.publishedTotal = registerCounterVec(reg, prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Name: "kafka_producer_messages_total",
-				Help: "Total Kafka messages published, partitioned by result (ok|error).",
-			},
-			[]string{"topic", "result"},
-		))
-		p.errorsTotal = registerCounterVec(reg, prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Name: "kafka_producer_errors_total",
-				Help: "Total Kafka producer errors.",
-			},
-			[]string{"topic"},
-		))
-		p.publishLatency = registerHistogramVec(reg, prometheus.NewHistogramVec(
-			prometheus.HistogramOpts{
-				Name:    "kafka_producer_publish_duration_seconds",
-				Help:    "Time spent publishing a single Kafka message.",
-				Buckets: prometheus.DefBuckets,
-			},
-			[]string{"topic"},
-		))
-	}
+	p.publishedTotal = registerCounterVec(reg, prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "cybersiren",
+		Subsystem: "kafka_producer",
+		Name:      "published_total",
+		Help:      "Records produced, labelled by topic and result.",
+	}, []string{"topic", "result"}))
+
+	p.errorsTotal = registerCounterVec(reg, prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "cybersiren",
+		Subsystem: "kafka_producer",
+		Name:      "errors_total",
+		Help:      "Producer errors, labelled by topic.",
+	}, []string{"topic"}))
+
+	p.publishLatency = registerHistogramVec(reg, prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		Namespace: "cybersiren",
+		Subsystem: "kafka_producer",
+		Name:      "publish_seconds",
+		Help:      "Wall-clock time per publish, labelled by topic.",
+		Buckets:   prometheus.DefBuckets,
+	}, []string{"topic"}))
 
 	return p, nil
 }
 
-// Publish writes a single message to Kafka. Trace context from ctx is
-// injected as Kafka headers so downstream consumers can resume the span.
-//
-// retries controls the exponential-backoff retry budget IN ADDITION to
-// any retry handling kafka-go performs internally. retries=0 = single
-// attempt. The caller's ctx cancellation always wins.
+// Publish sends one record. The active OTel span on ctx is propagated into
+// Kafka headers via kotel. retries caps the in-process retry attempts on
+// transient errors (0 = single best-effort attempt).
 func (p *Producer) Publish(ctx context.Context, key, value []byte, retries int) error {
-	if p == nil || p.writer == nil {
+	if p == nil || p.client == nil {
 		return errors.New("kafka producer: not initialised")
 	}
 
-	topic := p.writer.Topic
-
-	ctx, span := p.tracer.Start(
-		ctx,
-		"kafka.publish",
-		trace.WithSpanKind(trace.SpanKindProducer),
-		trace.WithAttributes(
-			attribute.String("messaging.system", "kafka"),
-			attribute.String("messaging.destination", topic),
-		),
-	)
-	defer span.End()
-
-	headers := injectTraceContext(ctx)
-
+	start := time.Now()
 	var lastErr error
-	startedAt := time.Now()
 
-	attempts := retries + 1
+	attempts := retries
 	if attempts < 1 {
 		attempts = 1
 	}
 
 	for attempt := 0; attempt < attempts; attempt++ {
-		if err := ctx.Err(); err != nil {
-			lastErr = err
-			break
-		}
+		ctxAttempt, cancel := context.WithTimeout(ctx, p.writeTimeout)
+		rec := &kgo.Record{Topic: p.topic, Key: key, Value: value}
+		err := p.client.ProduceSync(ctxAttempt, rec).FirstErr()
+		cancel()
 
-		err := p.writer.WriteMessages(ctx, kafkago.Message{
-			Key:     key,
-			Value:   value,
-			Headers: headers,
-		})
 		if err == nil {
-			lastErr = nil
-			break
+			p.observePublishCount(p.topic, "ok")
+			p.observePublishLatency(p.topic, time.Since(start))
+			sharedkafka.IncProduced(p.topic, p.topic)
+			return nil
 		}
+
 		lastErr = err
+		p.log.Warn().Err(err).Int("attempt", attempt+1).Int("of", attempts).Msg("publish attempt failed")
 
-		// Don't burn the rest of the budget if the context died.
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			break
-		}
-
-		backoff := backoffDuration(attempt)
-		p.log.Warn().
-			Err(err).
-			Int("attempt", attempt+1).
-			Int("max_attempts", attempts).
-			Dur("backoff", backoff).
-			Str("topic", topic).
-			Msg("kafka publish failed, retrying")
-
-		select {
-		case <-ctx.Done():
-			lastErr = ctx.Err()
-			attempt = attempts // exit loop
-		case <-time.After(backoff):
+		if attempt+1 < attempts {
+			time.Sleep(backoffDuration(attempt))
 		}
 	}
 
-	p.observePublishLatency(topic, time.Since(startedAt))
-
-	if lastErr != nil {
-		p.observePublishCount(topic, "error")
-		p.observeError(topic)
-		span.RecordError(lastErr)
-		span.SetStatus(codes.Error, lastErr.Error())
-		return lastErr
-	}
-
-	p.observePublishCount(topic, "ok")
-	span.SetStatus(codes.Ok, "")
-	return nil
+	p.observePublishCount(p.topic, "error")
+	p.observeError(p.topic)
+	return fmt.Errorf("kafka publish to %s failed after %d attempts: %w", p.topic, attempts, lastErr)
 }
 
-// Close flushes pending messages and closes the underlying writer.
+// Close flushes pending records and shuts down the underlying client.
 func (p *Producer) Close() error {
-	if p == nil || p.writer == nil {
+	if p == nil || p.client == nil {
 		return nil
 	}
-	if err := p.writer.Close(); err != nil {
-		return fmt.Errorf("kafka writer close: %w", err)
+	flushCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := p.client.Flush(flushCtx); err != nil {
+		p.log.Warn().Err(err).Msg("flush on close")
 	}
+	p.client.Close()
 	return nil
 }
 
-func injectTraceContext(ctx context.Context) []kafkago.Header {
-	carrier := propagation.MapCarrier{}
-	otel.GetTextMapPropagator().Inject(ctx, carrier)
-	if len(carrier) == 0 {
-		return nil
+// Ping verifies broker reachability. Used by /healthz.
+func (p *Producer) Ping(ctx context.Context) error {
+	if err := p.client.Ping(ctx); err != nil {
+		return fmt.Errorf("kafka producer ping: %w", err)
 	}
-	headers := make([]kafkago.Header, 0, len(carrier))
-	for k, v := range carrier {
-		headers = append(headers, kafkago.Header{Key: k, Value: []byte(v)})
-	}
-	return headers
-}
-
-func backoffDuration(attempt int) time.Duration {
-	if attempt < 0 {
-		attempt = 0
-	}
-	d := 100 * time.Millisecond
-	for i := 0; i < attempt; i++ {
-		d *= 2
-		if d > 5*time.Second {
-			d = 5 * time.Second
-			break
-		}
-	}
-	return d
+	return nil
 }
 
 func splitBrokers(brokers string) []string {
-	out := make([]string, 0, 4)
-	for _, part := range strings.FieldsFunc(brokers, func(r rune) bool {
-		return r == ',' || r == ' '
-	}) {
+	out := []string{}
+	for _, part := range strings.FieldsFunc(brokers, func(r rune) bool { return r == ',' || r == ' ' || r == '\t' }) {
 		s := strings.TrimSpace(part)
-		if s == "" {
-			continue
+		if s != "" {
+			out = append(out, s)
 		}
-		out = append(out, s)
 	}
 	return out
 }
 
-func (p *Producer) observePublishCount(topic, result string) {
-	if p == nil || p.publishedTotal == nil {
-		return
+func backoffDuration(attempt int) time.Duration {
+	d := time.Duration(1<<attempt) * 100 * time.Millisecond
+	if d > 5*time.Second {
+		return 5 * time.Second
 	}
-	p.publishedTotal.WithLabelValues(topic, result).Inc()
+	return d
+}
+
+func (p *Producer) observePublishCount(topic, result string) {
+	if p.publishedTotal != nil {
+		p.publishedTotal.WithLabelValues(topic, result).Inc()
+	}
 }
 
 func (p *Producer) observeError(topic string) {
-	if p == nil || p.errorsTotal == nil {
-		return
+	if p.errorsTotal != nil {
+		p.errorsTotal.WithLabelValues(topic).Inc()
 	}
-	p.errorsTotal.WithLabelValues(topic).Inc()
 }
 
 func (p *Producer) observePublishLatency(topic string, d time.Duration) {
-	if p == nil || p.publishLatency == nil {
-		return
+	if p.publishLatency != nil {
+		p.publishLatency.WithLabelValues(topic).Observe(d.Seconds())
 	}
-	p.publishLatency.WithLabelValues(topic).Observe(d.Seconds())
 }
 
 func registerCounterVec(reg *prometheus.Registry, c *prometheus.CounterVec) *prometheus.CounterVec {
+	if reg == nil {
+		return c
+	}
 	if err := reg.Register(c); err != nil {
-		var already prometheus.AlreadyRegisteredError
-		if errors.As(err, &already) {
-			if existing, ok := already.ExistingCollector.(*prometheus.CounterVec); ok {
+		if are, ok := err.(prometheus.AlreadyRegisteredError); ok {
+			if existing, ok := are.ExistingCollector.(*prometheus.CounterVec); ok {
 				return existing
 			}
 		}
@@ -284,10 +234,12 @@ func registerCounterVec(reg *prometheus.Registry, c *prometheus.CounterVec) *pro
 }
 
 func registerHistogramVec(reg *prometheus.Registry, h *prometheus.HistogramVec) *prometheus.HistogramVec {
+	if reg == nil {
+		return h
+	}
 	if err := reg.Register(h); err != nil {
-		var already prometheus.AlreadyRegisteredError
-		if errors.As(err, &already) {
-			if existing, ok := already.ExistingCollector.(*prometheus.HistogramVec); ok {
+		if are, ok := err.(prometheus.AlreadyRegisteredError); ok {
+			if existing, ok := are.ExistingCollector.(*prometheus.HistogramVec); ok {
 				return existing
 			}
 		}

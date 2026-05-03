@@ -165,6 +165,58 @@
   }
   .legend-item { display: flex; align-items: center; gap: 5px; }
   .legend-swatch { width: 14px; height: 14px; border: 1px solid #333; }
+
+  /* ── Spine v0 implementation deltas ───────────────────────────────────
+     Callouts and inline tags that flag where the v0 implementation
+     diverges from this baseline spec. The spec text itself is unchanged
+     so it remains the production target; the highlights and the
+     changelog at the end of the document explain why & where. */
+  .v0-delta-banner {
+    border: 2px solid #b58900;
+    background: #fff8dc;
+    padding: 8px 12px;
+    margin: 10px 0 18px 0;
+    font-size: 10.5px;
+    line-height: 1.55;
+  }
+  .v0-delta-banner strong { color: #8a6d00; }
+  .v0-delta-banner a { color: #5a3a00; }
+
+  .delta-tag {
+    display: inline-block;
+    background: #fff8dc;
+    border: 1px solid #b58900;
+    color: #8a6d00;
+    padding: 0 5px;
+    margin-left: 5px;
+    font-size: 9.5px;
+    font-weight: 700;
+    letter-spacing: 0.3px;
+    text-transform: uppercase;
+    vertical-align: middle;
+    border-radius: 2px;
+  }
+
+  .changelog {
+    border: 2px solid #333;
+    background: #fcfcfc;
+    padding: 14px 18px;
+    margin-top: 24px;
+  }
+  .changelog h3 { margin-top: 14px; }
+  .changelog .changelog-entry {
+    border-left: 3px solid #b58900;
+    background: #fff8dc;
+    padding: 8px 12px;
+    margin: 8px 0;
+  }
+  .changelog .changelog-entry .ver {
+    font-weight: 700;
+    color: #8a6d00;
+    font-size: 11px;
+  }
+  .changelog .changelog-entry .date { color: #555; font-size: 10px; margin-left: 8px; }
+  .changelog table th { background: #fff3b0; }
 </style>
 </head>
 <body>
@@ -175,6 +227,14 @@
   <span><strong>Date:</strong> 2026-03-15</span>
   <span><strong>Status:</strong> Implementation Baseline — Approved Architecture with Tracked Deltas</span>
   <span><strong>Classification:</strong> Internal / Graduation Project</span>
+</div>
+
+<div class="v0-delta-banner">
+  <strong>⚑ Spine v0 implementation deltas</strong> — This spec is the production target. The first delivered milestone (Infrastructure Spine v0, 2026-05-02) ships a local-development implementation that diverges in a few well-bounded places. Where it does, you'll see a <span class="delta-tag">v0&nbsp;delta</span> tag inline. Every delta is a local-dev choice that preserves the production wire contract; nothing in §1–§15 has been re-architected.
+  <br/>
+  Highlights: local broker is <strong>Redpanda</strong> (Kafka-API drop-in for "Apache Kafka" in §10), retention is enforced at topic-create time per §3, all stub services emit random scores, and DB access is healthcheck-only.
+  <br/>
+  Full rationale: see <a href="#changelog"><strong>§16 Changelog</strong></a> at the end of this document.
 </div>
 
 <div class="legend">
@@ -201,7 +261,7 @@
   <strong>Data Role Taxonomy:</strong>
   <strong>PostgreSQL</strong> = source of record (authoritative state).
   <strong>Redis</strong> = ephemeral coordination/cache (lossy, rebuildable from DB).
-  <strong>Kafka</strong> = transport/replay (bounded retention 24h–7d).
+  <strong>Kafka</strong> <span class="delta-tag">v0&nbsp;delta</span> = transport/replay (bounded retention 24h–7d). <em>Locally provided by Redpanda (Kafka API-compatible); see §16.</em>
   <strong>Materialized Views</strong> = read optimization (never the source of truth).
   <strong>Object Storage (S3/MinIO)</strong> = binary retention (attachment files, 90-day TTL).
 </div>
@@ -624,7 +684,8 @@
 </div>
 
 <!-- ============================================================ -->
-<h2>3. Kafka Topic Registry</h2>
+<h2>3. Kafka Topic Registry <span class="delta-tag">v0&nbsp;delta</span></h2>
+<p style="font-size:10px; color:#555; margin:-4px 0 8px 0;">v0 note: per-topic <code>retention.ms</code>, <code>cleanup.policy=delete</code>, and <code>compression.type=zstd</code> are now applied at topic-create time by <code>deploy/compose/kafka-init.sh</code>. Partition counts and topic names below are unchanged. See §16 Changelog.</p>
 
 <table>
   <tr>
@@ -986,7 +1047,7 @@ INPUT: email plain_text body
     </ul>
   </div>
   <div class="svc-block">
-    <h3>Apache Kafka</h3>
+    <h3>Apache Kafka <span class="delta-tag">v0&nbsp;delta</span></h3>
     <ul class="field-list">
       <li>12 topics (see §3 for full registry)</li>
       <li>Minimum 3 brokers (production)</li>
@@ -996,6 +1057,9 @@ INPUT: email plain_text body
       <li>Exactly-once semantics (idempotent producers + transactional consumers)</li>
       <li>Recommended: 2 vCPU, 8 GB RAM per broker</li>
       <li>ZooKeeper or KRaft mode (KRaft preferred)</li>
+      <li style="background:#fff8dc; padding:2px 4px; margin-top:4px;">
+        <strong>v0 local dev:</strong> single-node <strong>Redpanda</strong> (KRaft, dev-container) on the Kafka API. Replication factor 1, idempotent producer, transactional consumer deferred. Production target above is unchanged. See §16.
+      </li>
     </ul>
   </div>
   <div class="svc-block">
@@ -1633,10 +1697,109 @@ INPUT: email plain_text body
   </tr>
 </table>
 
+<!-- ============================================================ -->
+<h2 id="changelog">16. Changelog — Implementation Deltas</h2>
+
+<p style="margin-bottom:8px;">This section records, in reverse-chronological order, every place where a delivered milestone diverged from the baseline spec above. Each entry names the spec section it amends, the change, and the rationale. The baseline text in §1–§15 is intentionally left unchanged so the production target remains visible alongside the local-dev reality.</p>
+
+<div class="changelog">
+
+  <h3 style="margin-top:0;">Infrastructure Spine v0</h3>
+  <div class="changelog-entry">
+    <span class="ver">spine-v0</span><span class="date">2026-05-02</span>
+    — First end-to-end backbone: a fake email flows <code>emails.raw → emails.verdict</code> through 10 stub services with traces, metrics, and logs.
+  </div>
+
+  <table>
+    <tr>
+      <th>Δ</th>
+      <th>Affects</th>
+      <th>Baseline (spec)</th>
+      <th>v0 implementation</th>
+      <th>Rationale</th>
+    </tr>
+    <tr>
+      <td><strong>D1</strong></td>
+      <td>§10 Apache Kafka</td>
+      <td>Apache Kafka, 3 brokers, RF 3, ISR min 2, ZK or KRaft.</td>
+      <td>Single-node <strong>Redpanda</strong> (KRaft, dev-container) on the same Kafka API; RF 1.</td>
+      <td>Local dev. Redpanda is wire-compatible with Apache Kafka, so the Go client (<code>github.com/twmb/franz-go</code>), topic registry (§3), partition strategy, consumer groups (§3 right column), and trace-header propagation (§12) are unchanged. Single binary boots in ~3 s vs. ~25–40 s for ZK + Kafka, idles at ~200 MB instead of ~1.6 GB, and removes the ZK container entirely. Production deployment can swap the broker image back to Apache Kafka without touching application code.</td>
+    </tr>
+    <tr>
+      <td><strong>D2</strong></td>
+      <td>§3 Kafka Topic Registry</td>
+      <td>Per-topic retention "documented" but not enforced at create time.</td>
+      <td>Retention applied at <code>topic create</code> via <code>rpk topic create --topic-config retention.ms=…</code>. <code>emails.raw</code>=48 h, <code>analysis.*</code> &amp; <code>scores.*</code>=24 h, <code>emails.scored</code>=48 h, <code>emails.verdict</code>=7 d. <code>cleanup.policy=delete</code>, <code>compression.type=zstd</code>.</td>
+      <td>Topic registry numbers are now load-bearing rather than informational. zstd halves on-disk footprint with negligible CPU cost on the dev box.</td>
+    </tr>
+    <tr>
+      <td><strong>D3</strong></td>
+      <td>§10 Exactly-once</td>
+      <td>Exactly-once semantics: idempotent producers + transactional consumers.</td>
+      <td>Idempotent producer enabled (<code>kgo.AllISRAcks()</code>, <code>kgo.RequiredAcks</code>); transactional consumer <strong>deferred</strong>. Manual commit on handler success.</td>
+      <td>Spine v0's smoke test does not exercise multi-record transactions, so the simpler at-least-once + dedup approach is sufficient for the milestone. Transactional consumer will be added when the first real (non-stub) writer service is implemented.</td>
+    </tr>
+    <tr>
+      <td><strong>D4</strong></td>
+      <td>§1, §3 Wire format</td>
+      <td>Spec lists fields per topic but doesn't pin a serialisation.</td>
+      <td><strong>JSON</strong> with Go structs in <code>shared/contracts/kafka/</code>; envelope carries <code>email_id</code>, <code>org_id</code>, <code>timestamp</code>, <code>trace_id</code>, <code>schema_version</code>.</td>
+      <td>JSON is debuggable from the CLI (<code>rpk topic consume --format '%v'</code>) and matches the field-by-field shape of the spec. <code>schema_version</code> on the envelope leaves room to introduce a Schema Registry later without breaking existing consumers.</td>
+    </tr>
+    <tr>
+      <td><strong>D5</strong></td>
+      <td>§4 Per-service stubbing</td>
+      <td>11 services with full business logic.</td>
+      <td>8 services run as <strong>stubs</strong>: parser fans out a copy of the meta envelope; analysers (svc-03 url-pipeline, svc-04, svc-05, svc-06 nlp-pipeline) emit <code>score = rand(0,100)</code>; aggregator gathers in Valkey hash <code>aggregator:{email_id}</code>; decision averages and threshold-maps; svc-09/10 are sinks. Existing real svc-03 <code>/scan</code>, svc-06 <code>/predict</code>, and svc-11 TI-sync demos are untouched.</td>
+      <td>v0's goal is to prove the backbone, not the analysers. Random scores still exercise the threshold mapping in §1 step 5 (verdict can land in any of benign / suspicious / phishing / malware). Pipeline-side binaries are new (<code>cmd/url-pipeline</code>, <code>cmd/nlp-pipeline</code>) so the existing HTTP demos under <code>cmd/url-analysis</code> and <code>cmd/nlp</code> remain runnable in parallel via <code>make demo</code>.</td>
+    </tr>
+    <tr>
+      <td><strong>D6</strong></td>
+      <td>§13 Database access patterns</td>
+      <td>Every service reads/writes its assigned tables (see §13).</td>
+      <td><strong>Healthcheck-only.</strong> Each stub does <code>pool.Ping()</code> at boot and never INSERT/UPDATE/SELECT. <code>internal_id</code> and <code>fetched_at</code> on <code>emails.scored</code> / <code>emails.verdict</code> are placeholders (<code>"fake-internal-{email_id}"</code>, <code>time.Now()</code>).</td>
+      <td>Aligning logical <code>email_id</code> to physical <code>(internal_id, fetched_at)</code> requires SVC-01 to write the <code>emails</code> row, which is out of scope for v0. The placeholder values flow through the contract types unmodified, so when SVC-01 starts writing for real the downstream services need no changes.</td>
+    </tr>
+    <tr>
+      <td><strong>D7</strong></td>
+      <td>§5 Redis aggregator key</td>
+      <td><code>aggregator:{email_id}</code> hash, TTL 120 s; emit on completeness <em>or</em> 30 s timeout.</td>
+      <td>Hash + TTL implemented. Timeout-driven emit is <strong>deferred</strong>; v0 emits only on "all expected scores arrived".</td>
+      <td>The smoke test always produces every expected score (4 random analysers always emit), so the timeout path is never reached in v0. Adding it now would be untested code; defer to the milestone that produces real intermittent score topics.</td>
+    </tr>
+    <tr>
+      <td><strong>D8</strong></td>
+      <td>§12 Observability</td>
+      <td>OpenTelemetry, Kafka header trace propagation (<code>traceparent</code>), <code>email_id</code> on every span, Prometheus per service.</td>
+      <td>Implemented as specified, via the <code>kotel</code> plugin for franz-go. Three new pipeline-wide counters live in <code>shared/kafka/metrics.go</code>: <code>cybersiren_kafka_messages_consumed_total</code>, <code>…produced_total</code>, <code>cybersiren_pipeline_processing_seconds</code>. Verified by Jaeger showing one trace ID with spans across all 10 services.</td>
+      <td>This is the spine v0 acceptance evidence — see <a href="../../demo-infra.md">demo-infra.md</a>.</td>
+    </tr>
+    <tr>
+      <td><strong>D9</strong></td>
+      <td>§2 Service skeletons</td>
+      <td>(implicit) — every service has its own bootstrap.</td>
+      <td>New shared package <code>shared/svckit/</code> wraps config + logger + tracing + metrics/healthz + Postgres ping + Valkey + Kafka producer/consumer + graceful shutdown. Each stub <code>main.go</code> is ~30 lines.</td>
+      <td>Reduces duplicated bootstrap code and ensures every service initialises observability the same way. Real services can opt out of any field (e.g. svc-09 has no producer).</td>
+    </tr>
+    <tr>
+      <td><strong>D10</strong></td>
+      <td>§14 Deployment</td>
+      <td>(production-style) Compose profiles for kafka, postgres, valkey, observability.</td>
+      <td>The <code>kafka</code> compose profile name is preserved; behind it: <code>redpanda</code> + <code>redpanda-console</code> + <code>kafka-init</code> (renamed mentally to "topic-init" but the file is still <code>kafka-init.sh</code>). Existing <code>make</code> targets (<code>make up</code>, <code>make down</code>, <code>make kafka-topics</code>) work unchanged.</td>
+      <td>Keeps the developer's mental model and muscle memory intact while swapping the implementation underneath.</td>
+    </tr>
+  </table>
+
+  <p style="font-size:10px; color:#555; margin-top:10px;">
+    <strong>Validation evidence:</strong> see <code>demo-infra.md</code> at the repo root for the operator's view (smoke run, trace verification, Prometheus counters showing 1:1 conservation across the DAG).
+  </p>
+
+</div>
+
 <hr/>
 <div style="text-align:center; font-size:10px; color:#666; margin-top:12px;">
-  <strong>END OF DOCUMENT</strong> — ARCH-SPEC-v2.2 — CyberSiren System Architecture Specification — 2026-03-15<br/>
-  This document is the authoritative reference for implementation. All service boundaries, message schemas, database access patterns, column-level data flows, and migration references defined herein constitute the approved architecture baseline. Items in the Schema Gap section (§15) are tracked implementation deltas.
+  <strong>END OF DOCUMENT</strong> — ARCH-SPEC-v2.2 — CyberSiren System Architecture Specification — 2026-03-15 (changelog updated 2026-05-02)<br/>
+  This document is the authoritative reference for implementation. All service boundaries, message schemas, database access patterns, column-level data flows, and migration references defined herein constitute the approved architecture baseline. Items in the Schema Gap section (§15) are tracked implementation deltas; items in the Changelog (§16) are <em>delivered</em> deltas where the v0 implementation diverged from the baseline.
 </div>
 
 </body>

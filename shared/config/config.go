@@ -35,22 +35,14 @@ type Config struct {
 	TIHashCacheTTLSeconds   int    `koanf:"ti_hash_cache_ttl_seconds"`
 
 	Valkey     ValkeyConfig     `koanf:"valkey"`
+	Kafka      KafkaConfig      `koanf:"kafka"`
 	Worker     WorkerConfig     `koanf:"worker"`
 	CORS       CORSConfig       `koanf:"cors"`
 	ML         MLConfig         `koanf:"ml"`
 	Enrichment EnrichmentConfig `koanf:"enrichment"`
 	Storage    StorageConfig    `koanf:"storage"`
 	Embedding  EmbeddingConfig  `koanf:"embedding"`
-	Kafka      KafkaConfig      `koanf:"kafka"`
 	Header     HeaderConfig     `koanf:"header"`
-}
-
-// KafkaConfig holds Kafka client connection settings shared across services.
-type KafkaConfig struct {
-	// Brokers is a comma-separated list of bootstrap servers (host:port).
-	Brokers string `koanf:"brokers"`
-	// ClientID identifies this instance to the broker.
-	ClientID string `koanf:"client_id"`
 }
 
 // HeaderConfig holds configuration for SVC-04 Header Analysis Service.
@@ -170,6 +162,27 @@ type ValkeyConfig struct {
 	Addr     string `koanf:"addr"`
 	DB       int    `koanf:"db"`
 	Password string `koanf:"password"`
+}
+
+// KafkaConfig holds the Kafka client connection settings shared across
+// services. Brokers is a comma- or whitespace-separated list of host:port
+// pairs; the Kafka client wrappers (shared/kafka/{producer,consumer}) parse
+// it. Locally we point this at the Redpanda broker (Kafka API-compatible);
+// in production it would point at an Apache Kafka cluster.
+type KafkaConfig struct {
+	Brokers             string `koanf:"brokers"`
+	ClientID            string `koanf:"client_id"`
+	ConsumerGroupPrefix string `koanf:"consumer_group_prefix"`
+}
+
+// Validate checks that the KafkaConfig has the minimum fields required by
+// the producer/consumer wrappers. svc-04 (and any later services that need
+// to fail fast on a misconfigured broker) call this from main().
+func (k KafkaConfig) Validate() error {
+	if strings.TrimSpace(k.Brokers) == "" {
+		return errors.New("kafka.brokers is required (CYBERSIREN_KAFKA__BROKERS)")
+	}
+	return nil
 }
 
 type WorkerConfig struct {
@@ -298,6 +311,11 @@ func Load() (*Config, error) {
 			Addr: "localhost:6379",
 			DB:   0,
 		},
+		Kafka: KafkaConfig{
+			Brokers:             "localhost:9092",
+			ClientID:            "cybersiren",
+			ConsumerGroupPrefix: "cybersiren",
+		},
 		Worker: WorkerConfig{
 			Concurrency: 10,
 			Queue:       "default",
@@ -347,10 +365,6 @@ func Load() (*Config, error) {
 			Model:     "text-embedding-3-small",
 			Dimension: 1536,
 			BaseURL:   "https://api.openai.com/v1",
-		},
-		Kafka: KafkaConfig{
-			Brokers:  "localhost:9092",
-			ClientID: "cybersiren",
 		},
 		Header: HeaderConfig{
 			RuleCacheTTLSeconds:     60,
@@ -594,14 +608,6 @@ func (h HeaderConfig) Validate() error {
 	}
 	if strings.TrimSpace(h.ConsumerGroup) == "" {
 		return errors.New("header.consumer_group is required")
-	}
-	return nil
-}
-
-// Validate ensures Kafka client settings are usable.
-func (k KafkaConfig) Validate() error {
-	if strings.TrimSpace(k.Brokers) == "" {
-		return errors.New("kafka.brokers is required (CYBERSIREN_KAFKA__BROKERS)")
 	}
 	return nil
 }

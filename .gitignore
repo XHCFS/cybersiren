@@ -12,6 +12,9 @@ bin/
 # Test binary, built with `go test -c`
 *.test
 
+# Spine-v0 smoke artefacts (binaries + per-service logs)
+.smoke-logs/
+
 # Output of the go coverage tool
 *.out
 coverage.html

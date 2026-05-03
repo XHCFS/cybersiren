@@ -12,6 +12,7 @@ needed.
 |---------|--------------|-------|
 | **svc-03-url-analysis** | URL phishing scanner — ML model (XGBoost) + Threat-Intelligence lookup | [DEMO-url.md](DEMO-url.md) |
 | **svc-06-nlp** | Email content classifier — DistilBERT (ONNX) phishing / spam / legitimate | [DEMO-nlp.md](DEMO-nlp.md) |
+| **Pipeline spine v0** | End-to-end Kafka pipeline smoke (10 stub services, fake email → verdict) | [demo-infra.md](demo-infra.md) |
 
 ---
 
@@ -51,7 +52,7 @@ make demo-stop-all
 |---------|-------------|---------|
 | svc-03-url-analysis | http://localhost:8083 | http://localhost:9091/metrics |
 | svc-06-nlp | http://localhost:8086 | http://localhost:9096/metrics |
-| Prometheus | http://localhost:9092 | — |
+| Prometheus | http://localhost:19090 | — |
 | Grafana | http://localhost:3001 | — |
 | Jaeger | http://localhost:16686 | — |
 
