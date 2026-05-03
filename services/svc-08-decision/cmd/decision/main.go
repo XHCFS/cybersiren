@@ -1,88 +1,108 @@
-// STUB: replace with real implementation. Consumes emails.scored, computes
-// risk_score = avg(component scores), maps to a verdict label per spec §1
-// Step 5 thresholds, and emits emails.verdict.
+// Command decision is the SVC-08 Decision Engine binary. It consumes
+// emails.scored from svc-07-aggregator, computes the final risk score,
+// applies the rule engine, manages campaigns, persists everything in
+// one Postgres transaction, and emits emails.verdict.
+//
+// All bootstrap (config, logger, Kafka clients, Postgres pool, Valkey
+// client, Prometheus, OpenTelemetry, graceful shutdown) is handled by
+// shared/svckit. This file's job is to wire the engine to that
+// scaffolding and start the rules-cache refresh loop.
 package main
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
+	"errors"
 	"os"
-	"strconv"
 
 	"github.com/rs/zerolog"
 
+	"github.com/saif/cybersiren/services/svc-08-decision/internal/campaign"
+	"github.com/saif/cybersiren/services/svc-08-decision/internal/engine"
+	"github.com/saif/cybersiren/services/svc-08-decision/internal/metrics"
+	"github.com/saif/cybersiren/services/svc-08-decision/internal/persist"
+	rulespkg "github.com/saif/cybersiren/services/svc-08-decision/internal/rules"
 	contracts "github.com/saif/cybersiren/shared/contracts/kafka"
 	kafkaconsumer "github.com/saif/cybersiren/shared/kafka/consumer"
 	"github.com/saif/cybersiren/shared/svckit"
 )
 
-const serviceName = "svc-08-decision"
+const (
+	serviceName         = "svc-08-decision"
+	defaultDBRetries    = 3
+	defaultPubRetries   = 3
+	defaultModelVersion = "decision-v1"
+)
+
+var (
+	errNotReady          = errors.New("svc-08: engine not yet initialised")
+	errProducerMissing   = errors.New("svc-08: producer for emails.verdict missing")
+	errInvalidPipelineDB = errors.New("svc-08: postgres pool unavailable")
+)
 
 func main() {
+	var eng *engine.Engine
+
 	if err := svckit.Run(svckit.Spec{
-		Name:           serviceName,
-		NeedsDB:        true,
+		Name:        serviceName,
+		NeedsDB:     true,
+		NeedsValkey: true,
 		ProducerTopics: []string{contracts.TopicEmailsVerdict},
 		ConsumerTopics: []string{contracts.TopicEmailsScored},
 		GroupID:        contracts.GroupDecisionEngine,
-		Handler:        handle,
+		OnReady: func(ctx context.Context, deps svckit.Deps) error {
+			if deps.Pool == nil {
+				return errInvalidPipelineDB
+			}
+			producer, ok := deps.Producers[contracts.TopicEmailsVerdict]
+			if !ok {
+				return errProducerMissing
+			}
+
+			m := metrics.New(deps.Registry)
+
+			cache := rulespkg.NewCache(
+				deps.Pool,
+				deps.Valkey,
+				rulespkg.CacheConfig{},
+				deps.Log,
+				deps.Registry,
+			)
+			go cache.StartRefreshLoop(ctx)
+
+			simhash := campaign.NewComputer(deps.Valkey, campaign.SimHashThreshold, deps.Log)
+			writer := persist.NewWriter(deps.Pool, defaultDBRetries, deps.Log)
+
+			eng = engine.New(
+				engine.Config{
+					BlendWeights:         engine.DefaultWeights(),
+					Shrinkage:            campaign.DefaultShrinkage(),
+					SimHashThreshold:     campaign.SimHashThreshold,
+					PublishRetryAttempts: defaultPubRetries,
+					DefaultModelVersion:  defaultModelVersion,
+				},
+				cache,
+				simhash,
+				writer,
+				producer,
+				m,
+				deps.Log,
+			)
+
+			deps.Log.Info().
+				Str("model_version", defaultModelVersion).
+				Int("simhash_threshold", campaign.SimHashThreshold).
+				Msg("decision engine ready")
+			return nil
+		},
+		Handler: func(ctx context.Context, msg kafkaconsumer.Message, _ svckit.Deps) error {
+			if eng == nil {
+				return errNotReady
+			}
+			return eng.Handle(ctx, msg)
+		},
 	}); err != nil {
 		l := zerolog.New(os.Stderr)
 		l.Error().Err(err).Send()
 		os.Exit(1)
-	}
-}
-
-func handle(ctx context.Context, msg kafkaconsumer.Message, deps svckit.Deps) error {
-	var scored contracts.EmailsScored
-	if err := json.Unmarshal(msg.Value, &scored); err != nil {
-		return fmt.Errorf("decode emails.scored: %w", err)
-	}
-
-	risk := averageScores(scored.ComponentScores)
-	verdict := contracts.EmailsVerdict{
-		Meta:         contracts.NewMeta(scored.Meta.EmailID, scored.Meta.OrgID),
-		InternalID:   scored.InternalID,
-		FetchedAt:    scored.FetchedAt,
-		RiskScore:    risk,
-		VerdictLabel: labelFor(risk),
-	}
-
-	body, err := json.Marshal(verdict)
-	if err != nil {
-		return fmt.Errorf("marshal verdict: %w", err)
-	}
-	prod, ok := deps.Producers[contracts.TopicEmailsVerdict]
-	if !ok {
-		return fmt.Errorf("svc-08: producer for %s not configured", contracts.TopicEmailsVerdict)
-	}
-	if err := prod.Publish(ctx, []byte(strconv.FormatInt(scored.Meta.EmailID, 10)), body, 1); err != nil {
-		return fmt.Errorf("publish emails.verdict: %w", err)
-	}
-	return nil
-}
-
-func averageScores(m map[string]float64) float64 {
-	if len(m) == 0 {
-		return 0
-	}
-	var sum float64
-	for _, v := range m {
-		sum += v
-	}
-	return sum / float64(len(m))
-}
-
-func labelFor(score float64) string {
-	switch {
-	case score <= 25:
-		return "benign"
-	case score <= 50:
-		return "suspicious"
-	case score <= 75:
-		return "phishing"
-	default:
-		return "malware"
 	}
 }
