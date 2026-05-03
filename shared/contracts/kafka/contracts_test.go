@@ -78,20 +78,63 @@ func TestRoundTrip_AllPayloads(t *testing.T) {
 		},
 		{
 			name: "EmailsScored",
+			payload: func() any {
+				url, hdr, nlp := 72, 85, 60
+				return contracts.EmailsScored{
+					Meta:                 meta,
+					InternalID:           1001,
+					FetchedAt:            now,
+					URLScore:             &url,
+					HeaderScore:          &hdr,
+					NLPScore:             &nlp,
+					PartialAnalysis:      false,
+					AggregationLatencyMS: 312,
+					ComponentDetails: contracts.ComponentDetails{
+						URL:    json.RawMessage(`{"meta":{},"score":72}`),
+						Header: json.RawMessage(`{"email_id":1001,"score":85}`),
+						NLP:    json.RawMessage(`{"meta":{},"score":60}`),
+					},
+				}
+			}(),
+			fresh: func() any { return &contracts.EmailsScored{} },
+		},
+		{
+			name: "EmailsScored_Partial",
 			payload: contracts.EmailsScored{
-				Meta:            meta,
-				InternalID:      1001,
-				FetchedAt:       now,
-				ComponentScores: map[string]float64{"url": 50, "nlp": 60},
+				Meta:              meta,
+				InternalID:        1001,
+				FetchedAt:         now,
+				PartialAnalysis:   true,
+				MissingComponents: []string{contracts.TopicScoresAttachment, contracts.TopicScoresNLP},
+				TimeoutTriggered:  true,
+				ComponentDetails:  contracts.ComponentDetails{},
 			},
 			fresh: func() any { return &contracts.EmailsScored{} },
 		},
 		{
 			name: "EmailsVerdict",
-			payload: contracts.EmailsVerdict{
-				Meta: meta, InternalID: 1001, FetchedAt: now,
-				RiskScore: 55, VerdictLabel: "suspicious",
-			},
+			payload: func() any {
+				camp := int64(17)
+				hdr, content, urlR := 85, 60, 72
+				return contracts.EmailsVerdict{
+					Meta: meta, InternalID: 1001, FetchedAt: now,
+					RiskScore:           78,
+					VerdictLabel:        "phishing",
+					Confidence:          0.82,
+					HeaderRiskScore:     &hdr,
+					ContentRiskScore:    &content,
+					URLRiskScore:        &urlR,
+					CampaignID:          &camp,
+					CampaignFingerprint: "a3f8",
+					IsNewCampaign:       false,
+					FiredRules: []contracts.VerdictFiredRule{
+						{RuleID: 42, RuleName: "spf-fail-high-entropy-subject", ScoreImpact: 15},
+					},
+					VerdictSource:         "model",
+					ModelVersion:          "xgb-v1.2+distilbert-v1.0",
+					ProcessingTimeTotalMS: 45,
+				}
+			}(),
 			fresh: func() any { return &contracts.EmailsVerdict{} },
 		},
 	}
