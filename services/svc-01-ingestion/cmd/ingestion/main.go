@@ -97,6 +97,7 @@ func ingestHandler(prod *kafkaproducer.Producer, log zerolog.Logger) http.Handle
 		defer cancel()
 
 		key := []byte(strconv.FormatInt(req.EmailID, 10))
+		// Publish last arg: extra kafka retries after first attempt (see kafka/producer).
 		if err := prod.Publish(ctx, key, body, 3); err != nil {
 			log.Error().Err(err).Int64("email_id", req.EmailID).Msg("publish emails.raw failed")
 			http.Error(w, "publish failed", http.StatusBadGateway)

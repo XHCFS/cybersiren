@@ -414,18 +414,15 @@ All of the following happen inside **one** `pgx.TxOptions{}` transaction. Any fa
 
 **Transaction ordering:** Campaign UPSERT must run before emails UPDATE (need the campaign ID). Rule_hits can run after emails UPDATE.
 
-### 3.11 Missing sqlc Queries
+### 3.11 sqlc Queries
 
-The following queries **do not yet exist** in `db/queries/` and need to be added:
-- `UpdateEmailScores` — UPDATE emails with risk scores and campaign_id
-- `InsertVerdict` — INSERT INTO verdicts RETURNING id  
-- `UpsertCampaign` — INSERT ... ON CONFLICT (fingerprint) DO UPDATE ... RETURNING id, is_new
-
-After adding `.sql` files, run `sqlc generate` to produce Go code in `db/sqlc/`.
+The pipeline write SQL for SVC-08 lives in `db/queries/{campaigns,verdicts,emails_scores}.sql`.
+`services/svc-08-decision/internal/persist/queries.go` mirrors those statements as raw `pgx`
+until generated `db/sqlc` code is wired in; keep the two in sync when changing SQL.
 
 ### 3.12 Required Prometheus Metrics
 
-- `decision_messages_total{status}` — processed/error
+- `decision_messages_total{status}` — `ok` | `error` (one increment per `emails.scored` message)
 - `decision_risk_score` — histogram of final risk scores (buckets: 0,25,50,75,100)
 - `decision_verdict_total{label}` — per-label verdict counts
 - `decision_campaign_total{type}` — new/existing campaign

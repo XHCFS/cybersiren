@@ -18,26 +18,28 @@ import (
 // Publisher is the subset of *kafkaproducer.Producer the aggregator
 // uses. Defining it as an interface lets tests substitute a recorder.
 type Publisher interface {
+	// Publish sends emails.scored; retries = extra attempts after the first.
 	Publish(ctx context.Context, key, value []byte, retries int) error
 }
 
 // Config holds the runtime knobs; populated from shared/config.
 type Config struct {
-	HashTTLSecs            int           // Valkey hash TTL on every write (default 120 s)
-	TimeoutSecs            int           // Threshold for partial emit (default 30 s)
-	SweepInterval          time.Duration // How often the sweeper polls (default 5 s)
-	PublishRetries         int           // Inner-loop publish retry budget (default 1)
+	HashTTLSecs        int           // Valkey hash TTL on every write (default 120 s)
+	TimeoutSecs        int           // Threshold for partial emit (default 30 s)
+	SweepInterval      time.Duration // How often the sweeper polls (default 5 s)
+	PublishRetries     int           // Inner-loop publish retry budget (default 1)
+	PublishLockTTLSecs int           // Valkey NX lock TTL for emissions (default 180 s)
 }
 
 // Aggregator is the per-message orchestrator. One instance is shared by
 // every consumer goroutine in svckit; methods are safe for concurrent use.
 type Aggregator struct {
-	cfg        Config
-	store      StateStore
-	publisher  Publisher
-	metrics    *metrics.Metrics
-	log        zerolog.Logger
-	now        func() time.Time // injectable for tests
+	cfg       Config
+	store     StateStore
+	publisher Publisher
+	metrics   *metrics.Metrics
+	log       zerolog.Logger
+	now       func() time.Time // injectable for tests
 }
 
 // New constructs an Aggregator. publisher must be the producer for the
@@ -60,6 +62,10 @@ func New(
 	}
 	if cfg.PublishRetries < 0 {
 		cfg.PublishRetries = 0
+	}
+	if cfg.PublishLockTTLSecs <= 0 {
+		// Longer than default producer stall window (writes + retries + backoff).
+		cfg.PublishLockTTLSecs = 180
 	}
 	return &Aggregator{
 		cfg:       cfg,
@@ -92,7 +98,7 @@ func (a *Aggregator) Handle(ctx context.Context, msg kafkaconsumer.Message) erro
 		return nil
 	}
 
-	key := keyForEmailID(emailID)
+	key := keyForOrgEmail(orgID, emailID)
 	field := msg.Topic
 	if msg.Topic == contracts.TopicAnalysisPlans {
 		field = fieldPlan
@@ -117,6 +123,11 @@ func (a *Aggregator) Handle(ctx context.Context, msg kafkaconsumer.Message) erro
 		a.bumpPublishError("hset")
 		return fmt.Errorf("hset %s: %w", key, err)
 	}
+	if err := mergePartitionFetchedAt(ctx, a.store, key, msg.Topic, msg.Value); err != nil {
+		a.observeMessage(msg.Topic, "error")
+		a.bumpPublishError("partition_fetched_at")
+		return fmt.Errorf("partition fetched_at: %w", err)
+	}
 	if err := a.store.Expire(ctx, key, a.cfg.HashTTLSecs); err != nil {
 		// TTL refresh failure is not fatal — the existing TTL still
 		// protects the bucket. Log and continue.
@@ -140,15 +151,15 @@ func (a *Aggregator) Handle(ctx context.Context, msg kafkaconsumer.Message) erro
 		return nil
 	}
 
-	// Acquire the publish lock so two instances racing on the same email
-	// do not double-emit. A lost race returns nil — the winning instance
-	// will publish, and the at-least-once semantics of Kafka mean this
-	// score message has already been recorded in the hash.
-	got, err := a.store.HSetIfAbsent(ctx, key, fieldPublishing, "1")
+	// Separate Valkey key with short TTL — not a hash field — so a crash
+	// after publish cannot leave a permanent lock that blocks retry while
+	// the consumer commits.
+	lockKey := publishLockKey(orgID, emailID)
+	got, err := a.store.SetNXEX(ctx, lockKey, a.cfg.PublishLockTTLSecs, "1")
 	if err != nil {
 		a.observeMessage(msg.Topic, "error")
-		a.bumpPublishError("hsetnx")
-		return fmt.Errorf("hsetnx __publishing: %w", err)
+		a.bumpPublishError("setnx")
+		return fmt.Errorf("publish lock setnx: %w", err)
 	}
 	if !got {
 		a.observeMessage(msg.Topic, "wait")
@@ -156,28 +167,27 @@ func (a *Aggregator) Handle(ctx context.Context, msg kafkaconsumer.Message) erro
 	}
 
 	startedAt := parseStartedAt(state[fieldStartedAt])
-	if pubErr := a.publishAndCleanup(ctx, emailID, orgID, state, startedAt, false /*timeout*/); pubErr != nil {
-		// Release the publish lock so the redelivered message can retry.
-		_ = a.store.HDel(ctx, key, fieldPublishing)
+	if pubErr := a.publishAndCleanup(ctx, orgID, emailID, state, startedAt, false /*timeout*/); pubErr != nil {
+		_ = a.store.Del(ctx, lockKey)
 		a.observeMessage(msg.Topic, "error")
 		a.bumpPublishError("publish")
 		return pubErr
 	}
 
 	a.observeMessage(msg.Topic, "complete")
-	if !startedAt.IsZero() {
+	if a.metrics != nil && !startedAt.IsZero() {
 		a.metrics.CompletionLatencyMS.Observe(float64(time.Since(startedAt).Milliseconds()))
 	}
 	return nil
 }
 
 // publishAndCleanup serialises the EmailsScored message, publishes to
-// Kafka, and (best-effort) deletes the Valkey key. A delete failure is
-// non-fatal: the at-least-once delivery is already protected by
-// __publishing remaining set; the Valkey TTL will reap the key.
+// Kafka, and (best-effort) deletes the aggregation hash and the publish
+// lock key. A delete failure is non-fatal: the hash TTL and lock TTL
+// eventually reap stale keys.
 func (a *Aggregator) publishAndCleanup(
 	ctx context.Context,
-	emailID, orgID int64,
+	orgID, emailID int64,
 	state map[string]string,
 	startedAt time.Time,
 	timeoutTriggered bool,
@@ -192,11 +202,15 @@ func (a *Aggregator) publishAndCleanup(
 		return fmt.Errorf("marshal emails.scored: %w", err)
 	}
 
-	if err := a.publisher.Publish(ctx, []byte(strconv.FormatInt(emailID, 10)), body, a.cfg.PublishRetries); err != nil {
+	// PublishRetries = extra kafka attempts after the first ProduceSync.
+	key := []byte(strconv.FormatInt(emailID, 10))
+	if err := a.publisher.Publish(ctx, key, body, a.cfg.PublishRetries); err != nil {
 		return fmt.Errorf("publish emails.scored: %w", err)
 	}
 
-	if err := a.store.Del(ctx, keyForEmailID(emailID)); err != nil {
+	_ = a.store.Del(ctx, publishLockKey(orgID, emailID))
+
+	if err := a.store.Del(ctx, keyForOrgEmail(orgID, emailID)); err != nil {
 		// Don't fail the handler — the bucket will TTL out. We just
 		// won't accept any further scores for this email_id, which is
 		// correct.
@@ -204,7 +218,7 @@ func (a *Aggregator) publishAndCleanup(
 		a.bumpPublishError("del")
 	}
 
-	if timeoutTriggered {
+	if timeoutTriggered && a.metrics != nil {
 		a.metrics.PartialCompletions.Inc()
 	}
 	return nil
@@ -247,7 +261,10 @@ var marshalEmailsScored = func(v contracts.EmailsScored) ([]byte, error) {
 //
 // This indirection keeps the cmd/aggregator/main.go free of any direct
 // reliance on the svckit package, which mostly helps tests.
-func HandlerFor(producers map[string]*kafkaproducer.Producer, agg *Aggregator) (func(ctx context.Context, msg kafkaconsumer.Message) error, error) {
+func HandlerFor(
+	producers map[string]*kafkaproducer.Producer,
+	agg *Aggregator,
+) (func(ctx context.Context, msg kafkaconsumer.Message) error, error) {
 	prod, ok := producers[contracts.TopicEmailsScored]
 	if !ok {
 		return nil, errors.New("aggregator: producer for emails.scored not configured")

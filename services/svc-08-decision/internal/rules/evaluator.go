@@ -25,9 +25,9 @@ func NewEvaluator(log zerolog.Logger) *Evaluator {
 
 // Evaluate iterates ruleset against snapshot and returns:
 //   - fired:       in source order, the rules that matched (with their
-//                  match detail attached for rule_hits persistence).
+//     match detail attached for rule_hits persistence).
 //   - totalImpact: Σ rule.score_impact over fires (NOT clamped — the
-//                  engine clamps the final blended+nudge+impact total).
+//     engine clamps the final blended+nudge+impact total).
 //
 // Malformed rule blobs are logged and skipped (ARCH-SPEC §6).
 func (e *Evaluator) Evaluate(ruleset []CachedRule, snapshot SignalSnapshot) (fired []FiredRule, totalImpact int) {

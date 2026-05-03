@@ -5,7 +5,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"os"
 
 	"github.com/rs/zerolog"
@@ -31,10 +30,13 @@ func main() {
 	}
 }
 
-func handle(ctx context.Context, msg kafkaconsumer.Message, _ svckit.Deps) error {
+func handle(ctx context.Context, msg kafkaconsumer.Message, deps svckit.Deps) error {
 	var v contracts.EmailsVerdict
 	if err := json.Unmarshal(msg.Value, &v); err != nil {
-		return fmt.Errorf("decode verdict: %w", err)
+		deps.Log.Error().Err(err).
+			Int("partition", msg.Partition).Int64("offset", msg.Offset).
+			Msg("malformed emails.verdict; skipping (offset will commit)")
+		return nil
 	}
 
 	zerolog.Ctx(ctx).Info().

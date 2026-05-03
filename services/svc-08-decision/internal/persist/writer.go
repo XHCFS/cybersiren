@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/rs/zerolog"
@@ -42,6 +43,19 @@ type Input struct {
 	Fired []rulespkg.FiredRule
 
 	AnalysisMetadata []byte // JSONB blob; pass nil to leave the column NULL
+
+	// VerdictWireBuilder, if non-nil, runs inside the same transaction after
+	// INSERT verdict + rule_hits; the returned JSON is stored as
+	// verdicts.kafka_verdict_wire for byte-accurate Kafka republish on replay.
+	VerdictWireBuilder func(VerdictWireContext) ([]byte, error)
+}
+
+// VerdictWireContext is passed to Input.VerdictWireBuilder.
+type VerdictWireContext struct {
+	VerdictID  int64
+	CampaignID int64
+	IsNew      bool
+	EmailCount int
 }
 
 // Output is what the engine needs from the writer to publish the
@@ -51,6 +65,12 @@ type Output struct {
 	IsNew      bool
 	EmailCount int
 	VerdictID  int64
+	// DedupeSkip is true when a verdict row already existed for this email
+	// partition (Kafka redelivery or unique-race retry).
+	DedupeSkip bool
+	// KafkaVerdictWire is the DB-stored emails.verdict JSON when present
+	// (preferred over recomputation for republish).
+	KafkaVerdictWire []byte
 }
 
 // Writer runs the single-tx database write. Retries with backoff on
@@ -112,7 +132,27 @@ func (w *Writer) Write(ctx context.Context, in Input) (Output, error) {
 	return Output{}, fmt.Errorf("decision tx exhausted retries: %w", lastErr)
 }
 
+func (in Input) validate() error {
+	if in.OrgID <= 0 {
+		return fmt.Errorf("decision input: org_id must be > 0")
+	}
+	if in.InternalID <= 0 {
+		return fmt.Errorf("decision input: internal_id must be > 0")
+	}
+	if in.FetchedAt.IsZero() {
+		return fmt.Errorf("decision input: fetched_at required")
+	}
+	if in.Fingerprint == "" {
+		return fmt.Errorf("decision input: fingerprint required")
+	}
+	return nil
+}
+
 func (w *Writer) runOnce(ctx context.Context, in Input) (Output, error) {
+	if err := in.validate(); err != nil {
+		return Output{}, err
+	}
+
 	tx, err := w.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return Output{}, fmt.Errorf("begin decision tx: %w", err)
@@ -120,6 +160,42 @@ func (w *Writer) runOnce(ctx context.Context, in Input) (Output, error) {
 	defer func() {
 		_ = tx.Rollback(ctx)
 	}()
+
+	var existingVerdict int64
+	var wireText pgtype.Text
+	err = tx.QueryRow(ctx, queryFindExistingVerdict,
+		string(dbsqlc.EntityTypeEnumEmail),
+		in.InternalID,
+		fetchedAtParam(in.FetchedAt),
+	).Scan(&existingVerdict, &wireText)
+	var storedWire []byte
+	if wireText.Valid && wireText.String != "" {
+		storedWire = []byte(wireText.String)
+	}
+	if err == nil {
+		var campID int64
+		var emailCount int32
+		if err := tx.QueryRow(ctx, queryEmailCampaignSnapshot,
+			in.InternalID,
+			fetchedAtParam(in.FetchedAt),
+		).Scan(&campID, &emailCount); err != nil {
+			return Output{}, fmt.Errorf("idempotent replay: load email campaign row: %w", err)
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return Output{}, fmt.Errorf("commit idempotent decision tx: %w", err)
+		}
+		return Output{
+			CampaignID:       campID,
+			IsNew:            false,
+			EmailCount:       int(emailCount),
+			VerdictID:        existingVerdict,
+			DedupeSkip:       true,
+			KafkaVerdictWire: storedWire,
+		}, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return Output{}, fmt.Errorf("probe existing verdict: %w", err)
+	}
 
 	// 1. UPSERT campaign — needed first so we have the campaign_id to
 	// record on the emails row.
@@ -129,7 +205,7 @@ func (w *Writer) runOnce(ctx context.Context, in Input) (Output, error) {
 		emailCount int32
 	)
 	err = tx.QueryRow(ctx, queryUpsertCampaign,
-		nullableInt8(in.OrgID),
+		requiredOrgID(in.OrgID),
 		in.Fingerprint,
 		nullableString(in.CampaignName),
 		nullableString(in.ThreatType),
@@ -142,9 +218,9 @@ func (w *Writer) runOnce(ctx context.Context, in Input) (Output, error) {
 	}
 
 	// 2. UPDATE emails row with final scores + campaign linkage.
-	if _, err := tx.Exec(ctx, queryUpdateEmailScores,
+	tag, err := tx.Exec(ctx, queryUpdateEmailScores,
 		in.InternalID,
-		pgtype.Timestamptz{Time: in.FetchedAt, Valid: !in.FetchedAt.IsZero()},
+		fetchedAtParam(in.FetchedAt),
 		clampInt32(in.RiskScore, 0, 100),
 		nullableInt32Ptr(in.HeaderRiskScore),
 		nullableInt32Ptr(in.ContentRiskScore),
@@ -152,8 +228,15 @@ func (w *Writer) runOnce(ctx context.Context, in Input) (Output, error) {
 		nullableInt32Ptr(in.AttachmentRiskScore),
 		pgtype.Int8{Int64: campID, Valid: true},
 		nullableJSONB(in.AnalysisMetadata),
-	); err != nil {
+	)
+	if err != nil {
 		return Output{}, fmt.Errorf("update emails: %w", err)
+	}
+	if tag.RowsAffected() != 1 {
+		return Output{}, fmt.Errorf(
+			"update emails: expected exactly 1 row updated for (internal_id,fetched_at)=(%d,%v), got %d",
+			in.InternalID, in.FetchedAt.UTC(), tag.RowsAffected(),
+		)
 	}
 
 	// 3. INSERT verdict (append-only).
@@ -161,13 +244,17 @@ func (w *Writer) runOnce(ctx context.Context, in Input) (Output, error) {
 	if err := tx.QueryRow(ctx, queryInsertVerdict,
 		string(dbsqlc.EntityTypeEnumEmail),
 		in.InternalID,
-		pgtype.Timestamptz{Time: in.FetchedAt, Valid: !in.FetchedAt.IsZero()},
+		fetchedAtParam(in.FetchedAt),
 		in.Label,
 		pgtype.Float8{Float64: in.Confidence, Valid: true},
 		in.VerdictSource,
 		nullableString(in.ModelVersion),
-		nullableInt8(in.OrgID),
+		requiredOrgID(in.OrgID),
 	).Scan(&verdictID); err != nil {
+		var pe *pgconn.PgError
+		if errors.As(err, &pe) && pe.Code == "23505" {
+			return Output{}, fmt.Errorf("insert verdict: pipeline unique conflict (retry should dedupe): %w", err)
+		}
 		return Output{}, fmt.Errorf("insert verdict: %w", err)
 	}
 
@@ -176,18 +263,32 @@ func (w *Writer) runOnce(ctx context.Context, in Input) (Output, error) {
 	q := dbsqlc.New(tx)
 	for _, fr := range in.Fired {
 		if _, err := q.InsertRuleHit(ctx, dbsqlc.InsertRuleHitParams{
-			RuleID:      pgtype.Int8{Int64: fr.Rule.ID, Valid: true},
-			RuleVersion: fr.Rule.Version,
-			EntityType:  dbsqlc.EntityTypeEnumEmail,
-			EntityID:    in.InternalID,
-			EmailFetchedAt: pgtype.Timestamptz{
-				Time:  in.FetchedAt,
-				Valid: !in.FetchedAt.IsZero(),
-			},
-			ScoreImpact: int32(fr.Rule.ScoreImpact),
-			MatchDetail: fr.MatchDetail,
+			RuleID:         pgtype.Int8{Int64: fr.Rule.ID, Valid: true},
+			RuleVersion:    fr.Rule.Version,
+			EntityType:     dbsqlc.EntityTypeEnumEmail,
+			EntityID:       in.InternalID,
+			EmailFetchedAt: fetchedAtParam(in.FetchedAt),
+			ScoreImpact:    int32(fr.Rule.ScoreImpact),
+			MatchDetail:    fr.MatchDetail,
 		}); err != nil {
 			return Output{}, fmt.Errorf("insert rule_hit (rule_id=%d): %w", fr.Rule.ID, err)
+		}
+	}
+
+	if in.VerdictWireBuilder != nil {
+		wire, werr := in.VerdictWireBuilder(VerdictWireContext{
+			VerdictID:  verdictID,
+			CampaignID: campID,
+			IsNew:      isNew,
+			EmailCount: int(emailCount),
+		})
+		if werr != nil {
+			return Output{}, fmt.Errorf("verdict wire builder: %w", werr)
+		}
+		if len(wire) > 0 {
+			if _, err := tx.Exec(ctx, queryUpdateVerdictKafkaWire, wire, verdictID); err != nil {
+				return Output{}, fmt.Errorf("persist kafka_verdict_wire: %w", err)
+			}
 		}
 	}
 
@@ -268,6 +369,14 @@ func nullableString(s string) pgtype.Text {
 
 func nullableInt8(v int64) pgtype.Int8 {
 	return pgtype.Int8{Int64: v, Valid: v != 0}
+}
+
+func requiredOrgID(v int64) pgtype.Int8 {
+	return pgtype.Int8{Int64: v, Valid: true}
+}
+
+func fetchedAtParam(t time.Time) pgtype.Timestamptz {
+	return pgtype.Timestamptz{Time: t.UTC(), Valid: true}
 }
 
 func nullableInt32Ptr(v *int) pgtype.Int4 {

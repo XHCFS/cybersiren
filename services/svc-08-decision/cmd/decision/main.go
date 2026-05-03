@@ -43,9 +43,9 @@ func main() {
 	var eng *engine.Engine
 
 	if err := svckit.Run(svckit.Spec{
-		Name:        serviceName,
-		NeedsDB:     true,
-		NeedsValkey: true,
+		Name:           serviceName,
+		NeedsDB:        true,
+		NeedsValkey:    true,
 		ProducerTopics: []string{contracts.TopicEmailsVerdict},
 		ConsumerTopics: []string{contracts.TopicEmailsScored},
 		GroupID:        contracts.GroupDecisionEngine,
@@ -69,7 +69,7 @@ func main() {
 			)
 			go cache.StartRefreshLoop(ctx)
 
-			simhash := campaign.NewComputer(deps.Valkey, campaign.SimHashThreshold, deps.Log)
+			simhash := campaign.NewComputer(deps.Valkey, campaign.SimHashThreshold, deps.Log, m.SimhashLookupIndex)
 			writer := persist.NewWriter(deps.Pool, defaultDBRetries, deps.Log)
 
 			eng = engine.New(

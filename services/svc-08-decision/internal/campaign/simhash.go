@@ -7,6 +7,7 @@ import (
 	"strconv"
 
 	"github.com/mfonda/simhash"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/rs/zerolog"
 	valkeygo "github.com/valkey-io/valkey-go"
 )
@@ -42,19 +43,21 @@ type Match struct {
 // candidate index used by the engine to detect near-duplicate emails
 // across slightly-different fingerprints (e.g. URL typosquatting).
 type Computer struct {
-	client    valkeygo.Client
-	threshold int
-	log       zerolog.Logger
+	client            valkeygo.Client
+	threshold         int
+	log               zerolog.Logger
+	lookupIndexSample prometheus.Observer // optional: SMEMBERS cardinality per Lookup
 }
 
 // NewComputer constructs a Computer. client may be nil — the Compute /
 // Lookup / Store methods all become no-ops when no Valkey is wired,
-// preserving the engine's degraded-mode contract.
-func NewComputer(client valkeygo.Client, threshold int, log zerolog.Logger) *Computer {
+// preserving the engine's degraded-mode contract. lookupIndexSample
+// records len(SMEMBERS simhash:idx:{org}) each Lookup when non-nil.
+func NewComputer(client valkeygo.Client, threshold int, log zerolog.Logger, lookupIndexSample prometheus.Observer) *Computer {
 	if threshold <= 0 {
 		threshold = SimHashThreshold
 	}
-	return &Computer{client: client, threshold: threshold, log: log}
+	return &Computer{client: client, threshold: threshold, log: log, lookupIndexSample: lookupIndexSample}
 }
 
 // Compute returns the 64-bit SimHash of the input text. An empty input
@@ -85,6 +88,9 @@ func (c *Computer) Lookup(ctx context.Context, orgID int64, hash uint64) (Match,
 			return Match{}, false, nil
 		}
 		return Match{}, false, fmt.Errorf("smembers %s: %w", idxKey, err)
+	}
+	if c.lookupIndexSample != nil {
+		c.lookupIndexSample.Observe(float64(len(members)))
 	}
 	for _, m := range members {
 		cid, perr := strconv.ParseInt(m, 10, 64)
@@ -158,7 +164,7 @@ func (c *Computer) fetchMeta(ctx context.Context, orgID, campaignID int64) (uint
 		if valkeygo.IsValkeyNil(err) {
 			return 0, "", false, nil
 		}
-		return 0, "", false, err
+		return 0, "", false, fmt.Errorf("simhash hmget to array: %w", err)
 	}
 	if len(arr) != 2 {
 		return 0, "", false, errors.New("simhash hmget: unexpected reply length")

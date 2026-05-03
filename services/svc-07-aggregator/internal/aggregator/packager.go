@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
+	"strings"
 	"time"
 
 	contracts "github.com/saif/cybersiren/shared/contracts/kafka"
@@ -14,14 +16,13 @@ import (
 // dynamic per-topic field names (which all start with "scores." or
 // "analysis.").
 const (
-	fieldPlan       = "__plan"
-	fieldStartedAt  = "__started_at"
-	fieldOrgID      = "__org_id"
-	fieldPublishing = "__publishing"
+	fieldPlan      = "__plan"
+	fieldStartedAt = "__started_at"
+	fieldOrgID     = "__org_id"
 
-	keyPrefix    = "aggregator:"
-	hashTTLSecs  = 120
-	timeoutSecs  = 30
+	keyPrefix     = "aggregator:"
+	hashTTLSecs   = 120
+	timeoutSecs   = 30
 	startedLayout = time.RFC3339Nano
 )
 
@@ -55,10 +56,18 @@ func packageState(
 		return contracts.EmailsScored{}, fmt.Errorf("decode plan: %w", err)
 	}
 
+	internalID, fetchedAt, err := resolvePartitionKeys(emailID, state)
+	if err != nil {
+		return contracts.EmailsScored{}, err
+	}
+
+	meta := contracts.NewMeta(emailID, orgID)
+	meta.FetchedAt = fetchedAt
+
 	out := contracts.EmailsScored{
-		Meta:             contracts.NewMeta(emailID, orgID),
-		InternalID:       emailID, // v0: same as logical id (will be replaced by SVC-01 ingest)
-		FetchedAt:        firstFetchedAt(state),
+		Meta:             meta,
+		InternalID:       internalID,
+		FetchedAt:        fetchedAt,
 		ComponentDetails: contracts.ComponentDetails{},
 		TimeoutTriggered: timeoutTriggered,
 	}
@@ -127,21 +136,36 @@ func completionStatus(state map[string]string) (complete, hasPlan bool) {
 	return true, true
 }
 
-// firstFetchedAt is a pragmatic placeholder until SVC-01 (ingestion)
-// lands and every analysis.* / scores.* message carries fetched_at
-// end-to-end. The aggregator's emails.scored output declares the
-// partition key (internal_id, fetched_at) used by SVC-08 to write to
-// Postgres; for now both internal_id and fetched_at are derived from
-// the inbound logical email_id and the current wall-clock.
-//
-// See contracts/kafka/header.go's CONTRACT NOTE which tracks the same
-// follow-up: "aligning these two representations is a tracked
-// architectural follow-up".
-func firstFetchedAt(_ map[string]string) time.Time {
-	return time.Now().UTC()
+// keyForOrgEmail returns the aggregation hash key scoped by tenant so two
+// orgs cannot clobber each other's buckets when email_id overlaps.
+func keyForOrgEmail(orgID, emailID int64) string {
+	return fmt.Sprintf("%s%d:%d", keyPrefix, orgID, emailID)
 }
 
-// keyForEmailID returns the canonical Valkey key.
-func keyForEmailID(emailID int64) string {
-	return keyPrefix + fmt.Sprintf("%d", emailID)
+// publishLockKey is a short-TTL NX key for exclusive emails.scored emit.
+func publishLockKey(orgID, emailID int64) string {
+	return fmt.Sprintf("%spublock:%d:%d", keyPrefix, orgID, emailID)
+}
+
+// parseAggregatorBucketKey parses aggregator:{org}:{email}. Returns ok=false for
+// lock keys (aggregator:publock:...) or malformed suffixes.
+func parseAggregatorBucketKey(key string) (orgID, emailID int64, ok bool) {
+	if !strings.HasPrefix(key, keyPrefix) {
+		return 0, 0, false
+	}
+	rest := key[len(keyPrefix):]
+	if strings.HasPrefix(rest, "publock:") {
+		return 0, 0, false
+	}
+	colon := strings.LastIndexByte(rest, ':')
+	if colon <= 0 || colon >= len(rest)-1 {
+		return 0, 0, false
+	}
+	orgStr, emailStr := rest[:colon], rest[colon+1:]
+	o, err1 := strconv.ParseInt(orgStr, 10, 64)
+	em, err2 := strconv.ParseInt(emailStr, 10, 64)
+	if err1 != nil || err2 != nil || o <= 0 || em <= 0 {
+		return 0, 0, false
+	}
+	return o, em, true
 }

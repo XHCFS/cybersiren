@@ -29,8 +29,12 @@ func AnalyserHandler(component, outTopic string) Handler {
 
 		time.Sleep(time.Duration(rand.IntN(50)) * time.Millisecond) //nolint:gosec // not security-sensitive
 
+		ft := env.Meta.FetchedAt
+		if ft.IsZero() {
+			ft = time.Now().UTC()
+		}
 		out := contracts.ScoreEnvelope{
-			Meta:      contracts.NewMeta(env.Meta.EmailID, env.Meta.OrgID),
+			Meta:      contracts.NewMetaWithFetched(env.Meta.EmailID, env.Meta.OrgID, ft),
 			Component: component,
 			Score:     float64(rand.IntN(101)), //nolint:gosec
 		}
@@ -44,7 +48,7 @@ func AnalyserHandler(component, outTopic string) Handler {
 		if !ok {
 			return fmt.Errorf("svckit: producer for %s not configured (add to ProducerTopics)", outTopic)
 		}
-		if err := prod.Publish(ctx, []byte(strconv.FormatInt(env.Meta.EmailID, 10)), body, 1); err != nil {
+		if err := prod.Publish(ctx, []byte(strconv.FormatInt(env.Meta.EmailID, 10)), body, 1); err != nil { // +1 kafka retry
 			return fmt.Errorf("publish %s: %w", outTopic, err)
 		}
 		return nil

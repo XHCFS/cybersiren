@@ -165,3 +165,57 @@ func TestNewMetaSchemaVersion(t *testing.T) {
 	assert.Equal(t, int64(8), m.OrgID)
 	assert.False(t, m.Timestamp.IsZero())
 }
+
+func TestNewMetaWithFetched(t *testing.T) {
+	clock := time.Date(2026, 4, 10, 15, 30, 0, 0, time.UTC)
+	m := contracts.NewMetaWithFetched(10, 20, clock)
+	assert.Equal(t, int64(10), m.EmailID)
+	assert.Equal(t, int64(20), m.OrgID)
+	assert.True(t, m.FetchedAt.Equal(clock))
+	assert.Equal(t, contracts.SchemaVersion, m.SchemaVersion)
+}
+
+func TestMessageMetaFetchedAtJSONRoundTrip(t *testing.T) {
+	// Omitting fetched_at on the wire must decode to zero FetchedAt so consumers treat it as absent.
+	payload := []byte(`{"email_id":1,"org_id":2,"timestamp":"2026-01-02T03:04:05Z","schema_version":1}`)
+	var m contracts.MessageMeta
+	require.NoError(t, json.Unmarshal(payload, &m))
+	assert.True(t, m.FetchedAt.IsZero())
+
+	with := contracts.NewMetaWithFetched(1, 2, time.Date(2026, 3, 3, 1, 0, 0, 0, time.FixedZone("east", 3600)))
+	b2, err := json.Marshal(with)
+	require.NoError(t, err)
+	assert.Contains(t, string(b2), `"fetched_at":"2026-03-03T00:00:00Z"`)
+
+	var back contracts.MessageMeta
+	require.NoError(t, json.Unmarshal(b2, &back))
+	assert.True(t, back.FetchedAt.Equal(time.Date(2026, 3, 3, 0, 0, 0, 0, time.UTC)))
+}
+
+func TestEmailsScored_nilScorePointersOmitJSONKeys(t *testing.T) {
+	now := time.Date(2026, 5, 2, 12, 0, 0, 0, time.UTC)
+	meta := contracts.NewMetaWithFetched(42, 7, now)
+	es := contracts.EmailsScored{
+		Meta:             meta,
+		InternalID:       1001,
+		FetchedAt:        now,
+		PartialAnalysis:  false,
+		ComponentDetails: contracts.ComponentDetails{},
+	}
+	b, err := json.Marshal(es)
+	require.NoError(t, err)
+	s := string(b)
+	assert.NotContains(t, s, `"url_score"`)
+	assert.NotContains(t, s, `"header_score"`)
+	assert.NotContains(t, s, `"attachment_score"`)
+	assert.NotContains(t, s, `"nlp_score"`)
+
+	var out contracts.EmailsScored
+	require.NoError(t, json.Unmarshal(b, &out))
+	assert.Nil(t, out.URLScore)
+	assert.Nil(t, out.HeaderScore)
+	assert.Nil(t, out.AttachmentScore)
+	assert.Nil(t, out.NLPScore)
+	assert.Equal(t, int64(1001), out.InternalID)
+	assert.True(t, out.FetchedAt.Equal(now))
+}

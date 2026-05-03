@@ -69,12 +69,12 @@ func handle(ctx context.Context, msg kafkaconsumer.Message, deps svckit.Deps) er
 	}
 
 	parsedHeaders, subject, body, urls := parseRawEmail(raw)
-	meta := contracts.NewMeta(raw.Meta.EmailID, raw.Meta.OrgID)
 	key := []byte(strconv.FormatInt(raw.Meta.EmailID, 10))
 	fetchedAt := raw.FetchedAt
 	if fetchedAt.IsZero() {
 		fetchedAt = time.Now().UTC()
 	}
+	meta := contracts.NewMetaWithFetched(raw.Meta.EmailID, raw.Meta.OrgID, fetchedAt)
 
 	headersMsg := buildAnalysisHeaders(raw.Meta.EmailID, raw.Meta.OrgID, fetchedAt, parsedHeaders)
 
@@ -106,7 +106,7 @@ func handle(ctx context.Context, msg kafkaconsumer.Message, deps svckit.Deps) er
 		if !ok {
 			return fmt.Errorf("svc-02: producer %s not configured", o.topic)
 		}
-		if err := prod.Publish(ctx, key, body, 1); err != nil {
+		if err := prod.Publish(ctx, key, body, 1); err != nil { // +1 kafka retry after first
 			return fmt.Errorf("publish %s: %w", o.topic, err)
 		}
 	}

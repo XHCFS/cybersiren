@@ -15,6 +15,9 @@ import (
 // Methods MUST be safe for concurrent use; the production wrapper is
 // because valkey-go is, and the in-memory fake serialises with a mutex.
 type StateStore interface {
+	// SetNXEX performs SET key value NX EX ttlSecs. Returns true if the key
+	// was set (exclusive lock acquired). False means another holder has the lock.
+	SetNXEX(ctx context.Context, key string, ttlSecs int, value string) (bool, error)
 	// HSetIfAbsent sets field=value only if the field does not already
 	// exist (HSETNX). Returns true when the field was created.
 	HSetIfAbsent(ctx context.Context, key, field, value string) (bool, error)
@@ -44,6 +47,20 @@ type ValkeyStore struct {
 // NewValkeyStore wraps an existing valkey-go client.
 func NewValkeyStore(client valkeygo.Client) *ValkeyStore {
 	return &ValkeyStore{client: client}
+}
+
+func (s *ValkeyStore) SetNXEX(ctx context.Context, key string, ttlSecs int, value string) (bool, error) {
+	resp := s.client.Do(ctx,
+		s.client.B().Set().Key(key).Value(value).Nx().ExSeconds(int64(ttlSecs)).Build(),
+	)
+	_, err := resp.ToString()
+	if err != nil {
+		if valkeygo.IsValkeyNil(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("setnx %s: %w", key, err)
+	}
+	return true, nil
 }
 
 func (s *ValkeyStore) HSetIfAbsent(ctx context.Context, key, field, value string) (bool, error) {

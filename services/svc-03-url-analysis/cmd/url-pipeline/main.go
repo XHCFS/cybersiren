@@ -128,8 +128,12 @@ func handle(ctx context.Context, msg kafkaconsumer.Message, deps svckit.Deps) er
 		worstLabel = worseLabel(worstLabel, s.Label)
 	}
 
+	ft := input.Meta.FetchedAt
+	if ft.IsZero() {
+		ft = time.Now().UTC()
+	}
 	out := contracts.ScoreEnvelope{
-		Meta:      contracts.NewMeta(input.Meta.EmailID, input.Meta.OrgID),
+		Meta:      contracts.NewMetaWithFetched(input.Meta.EmailID, input.Meta.OrgID, ft),
 		Component: contracts.ComponentURL,
 		Score:     float64(maxScore),
 		Details: map[string]interface{}{
@@ -149,7 +153,7 @@ func handle(ctx context.Context, msg kafkaconsumer.Message, deps svckit.Deps) er
 	if !ok {
 		return fmt.Errorf("svc-03: producer for %s not configured", contracts.TopicScoresURL)
 	}
-	if err := prod.Publish(ctx, []byte(strconv.FormatInt(input.Meta.EmailID, 10)), body, 1); err != nil {
+	if err := prod.Publish(ctx, []byte(strconv.FormatInt(input.Meta.EmailID, 10)), body, 1); err != nil { // +1 kafka retry
 		return fmt.Errorf("publish scores.url: %w", err)
 	}
 

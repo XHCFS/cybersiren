@@ -30,7 +30,7 @@ type CacheConfig struct {
 // Cache is the rule cache with three tiers:
 //
 //  1. Hot in-memory snapshot per (org_id) — atomic.Value for lock-free reads.
-//  2. Valkey "rules_cache:{org_id}" string for cross-instance warm-start.
+//  2. Valkey "rules_cache:header:{org_id}" string for cross-instance warm-start.
 //  3. Postgres "rules" table — source of truth, hit only when both caches miss.
 //
 // A single background goroutine refreshes every Org we've ever served at
@@ -298,7 +298,7 @@ func (c *Cache) markKnown(orgID int64) {
 }
 
 func valkeyKey(orgID int64) string {
-	return fmt.Sprintf("rules_cache:{%d}", orgID)
+	return fmt.Sprintf("rules_cache:header:{%d}", orgID)
 }
 
 func (c *Cache) observeHit(tier string) {

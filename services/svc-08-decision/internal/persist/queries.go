@@ -1,11 +1,12 @@
 // Package persist owns the single-transaction database write performed by
 // SVC-08 Decision Engine for every emails.scored message.
 //
-// All four writes happen inside one pgx transaction:
+// All primary writes happen inside one pgx transaction:
 //  1. UPSERT campaigns (returns campaign_id, is_new, email_count_after).
 //  2. UPDATE emails (sets risk scores, campaign_id, analysis_metadata).
 //  3. INSERT verdicts (append-only).
 //  4. INSERT rule_hits (one per fired rule, append-only).
+//  5. UPDATE verdicts.kafka_verdict_wire (immutable emails.verdict JSON for idempotent republish).
 //
 // Failure of any step rolls back the transaction; the Kafka offset is
 // not committed and the message is redelivered after restart/rebalance.
@@ -70,6 +71,30 @@ FROM campaigns
 WHERE org_id = $1
   AND fingerprint = $2
   AND deleted_at IS NULL
+`
+
+const queryFindExistingVerdict = `
+SELECT id, kafka_verdict_wire::text AS kafka_wire
+FROM verdicts
+WHERE entity_type = $1::entity_type_enum
+  AND entity_id = $2
+  AND email_fetched_at IS NOT NULL
+  AND email_fetched_at = $3::timestamptz
+LIMIT 1
+`
+
+const queryUpdateVerdictKafkaWire = `
+UPDATE verdicts SET kafka_verdict_wire = $1::jsonb WHERE id = $2
+`
+
+const queryEmailCampaignSnapshot = `
+SELECT
+    e.campaign_id,
+    COALESCE((c.analysis_metadata->>'email_count')::int, 0) AS email_count
+FROM emails e
+JOIN campaigns c ON c.id = e.campaign_id AND c.deleted_at IS NULL
+WHERE e.internal_id = $1
+  AND e.fetched_at = $2::timestamptz
 `
 
 const queryInsertVerdict = `
