@@ -745,7 +745,7 @@
 </div>
 
 <div class="note">
-  <code>content_risk_score</code> mapping: <code>round(phishing_probability * 100)</code>. This feeds into <code>emails.content_risk_score</code> and <code>FinalVerdict.ContentRiskScore</code> in <code>shared/models/verdict.go</code>. <code>intent_labels</code> feeds <code>nlp_facets.intent_label</code> used for campaign fingerprinting in <code>DECISIONS.MD</code>.
+  <code>content_risk_score</code> mapping: <code>round(phishing_probability * 100)</code>. This feeds into <code>emails.content_risk_score</code> and <code>FinalVerdict.ContentRiskScore</code> in <code>shared/models/verdict.go</code>. <code>intent_labels</code> feeds <code>nlp_facets.intent_label</code> used for campaign fingerprinting (see the architecture spec at <code>docs/architecture/architecture-spec-detail.html</code>).
 </div>
 
 <h3>8.4 Exported Artifacts</h3>
@@ -931,7 +931,7 @@
 <h3>CyberSiren Internal</h3>
 <ul class="ref-list">
   <li><code>docs/internals/CyberSiren_URL_Low_latency_Model_Specification.html</code> — URL model spec (ML-SPEC-v1.1)</li>
-  <li><code>docs/decisions/DECISIONS.MD</code> — Key technical decisions (campaign fingerprinting, NLP integration)</li>
+  <li><code>docs/architecture/architecture-spec-detail.html</code> — Authoritative architecture spec; §16 Changelog records implementation deltas</li>
   <li><code>shared/models/verdict.go</code> — VerdictLabel enum, ContentRiskScore</li>
   <li><code>shared/models/email.go</code> — ParsedEmail struct (Subject, BodyPlain, BodyHTML)</li>
   <li><code>shared/config/config.go</code> — MLConfig.NLPServiceURL (http://localhost:8001)</li>

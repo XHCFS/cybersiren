@@ -1,2 +1,7 @@
 # ORT optimization cache — generated automatically on first run, do not commit
 model_int8_opt.onnx
+
+# DistilBERT INT8 model — large (~64 MB), the LFS-tracked source of truth
+# lives at python/svc-06-nlp/onnx/model_int8.onnx. The make `check-nlp-model`
+# target copies it here on demand; never commit it at this path.
+model_int8.onnx

@@ -29,7 +29,7 @@ CyberSiren JSON envelope.
 |-------------|-------|
 | **Docker** + **Docker Compose v2** | `docker compose version` should print v2.x |
 | **~4 GB disk** | Python ONNX Runtime + DistilBERT model weights + Go binary |
-| **Free ports** | `5432` (Postgres), `6379` (Valkey), `8086` (svc-06 HTTP + web UI), `9096` (svc-06 metrics), `9092` (Prometheus), `3001` (Grafana), `16686` (Jaeger UI), `4318` (OTLP) |
+| **Free ports** | `5432` (Postgres), `6379` (Valkey), `8086` (svc-06 HTTP + web UI), `9096` (svc-06 metrics), `19090` (Prometheus), `3001` (Grafana), `16686` (Jaeger UI), `4318` (OTLP) |
 
 ---
 
@@ -109,7 +109,7 @@ Once startup is complete, these URLs are available:
 | <http://localhost:8086> | **Web UI** — email classifier page |
 | <http://localhost:8086/healthz> | Health check — shows `model_ready` status |
 | <http://localhost:9096/metrics> | **Raw Prometheus metrics** (svc-06 exporter) |
-| <http://localhost:9092> | **Prometheus UI** — query & graph metrics |
+| <http://localhost:19090> | **Prometheus UI** — query & graph metrics |
 | <http://localhost:3001> | **Grafana** — auto-provisioned svc-06 dashboard (login: `admin`/`admin`) |
 | <http://localhost:16686> | **Jaeger UI** — distributed traces |
 
@@ -756,7 +756,7 @@ Each `Client.Predict` span carries these attributes:
 ### Prometheus Metrics
 
 svc-06 exposes Prometheus metrics on port **9096** (host). The demo also runs a
-**Prometheus server** on port **9092** that scrapes svc-06 every 10 seconds.
+**Prometheus server** on port **19090** that scrapes svc-06 every 10 seconds.
 
 #### Raw metrics endpoint
 
@@ -766,10 +766,10 @@ curl -s http://localhost:9096/metrics | grep nlp_
 
 #### Prometheus UI
 
-Open **<http://localhost:9092>** and query metrics directly.
+Open **<http://localhost:19090>** and query metrics directly.
 
 **Targets page** — verify svc-06 is being scraped:
-`http://localhost:9092/targets`
+`http://localhost:19090/targets`
 
 #### Key metrics
 
@@ -928,7 +928,7 @@ underscores map to struct nesting (e.g. `CYBERSIREN_ML__NLP_SERVICE_URL` →
 | `/predict` | 8086 | POST — Classify an email (JSON API) |
 | `/healthz` | 8086 | GET — Returns readiness and `model_ready` status |
 | `/metrics` | 9096 | GET — Raw Prometheus metrics (svc-06 exporter) |
-| Prometheus UI | 9092 | Query and graph Prometheus metrics |
+| Prometheus UI | 19090 | Query and graph Prometheus metrics |
 | Grafana | 3001 | Pre-configured svc-06 dashboard (admin/admin) |
 | Jaeger UI | 16686 | Distributed trace viewer |
 

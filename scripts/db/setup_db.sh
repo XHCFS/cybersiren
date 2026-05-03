@@ -21,6 +21,7 @@ DB_NAME="${DB_NAME:-cybersiren}"
 REPO_ROOT="${REPO_ROOT:-$(git -C "$(dirname "$0")" rev-parse --show-toplevel)}"
 MIGRATIONS_DIR="${MIGRATIONS_DIR:-${REPO_ROOT}/db/migrations}"
 FEEDS_SEED_FILE="${FEEDS_SEED_FILE:-${REPO_ROOT}/db/seeds/feeds.sql}"
+HEADER_RULES_SEED_FILE="${HEADER_RULES_SEED_FILE:-${REPO_ROOT}/db/seeds/header_rules_demo_seed.sql}"
 
 # Docker compose container name for postgres
 POSTGRES_CONTAINER="${POSTGRES_CONTAINER:-cybersiren-postgres}"
@@ -108,6 +109,27 @@ if [ "${MODE}" != "migrate-only" ]; then
     fi
 
     echo "Feeds seed complete."
+
+    # Seed header analysis rules (idempotent: ON CONFLICT (org_id, name, version)).
+    # Skipped silently if the file is missing — environments without
+    # svc-04 deployed should still be able to run db-setup.
+    if [ -f "${HEADER_RULES_SEED_FILE}" ]; then
+        echo "Seeding header analysis rules (idempotent)..."
+        if command -v psql &> /dev/null; then
+            PGPASSWORD="${DB_PASSWORD}" psql \
+                -h "${DB_HOST}" \
+                -p "${DB_PORT}" \
+                -U "${DB_USER}" \
+                -d "${DB_NAME}" \
+                -v ON_ERROR_STOP=1 \
+                -f "${HEADER_RULES_SEED_FILE}"
+        else
+            docker exec -i -e PGPASSWORD="${DB_PASSWORD}" "${POSTGRES_CONTAINER}" \
+                psql -U "${DB_USER}" -d "${DB_NAME}" -v ON_ERROR_STOP=1 \
+                < "${HEADER_RULES_SEED_FILE}"
+        fi
+        echo "Header analysis rules seed complete."
+    fi
 fi
 
 echo ""

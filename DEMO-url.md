@@ -22,7 +22,7 @@ via the JSON API.
 |-------------|-------|
 | **Docker** + **Docker Compose v2** | `docker compose version` should print v2.x |
 | **~2 GB disk** | Python ML dependencies (NumPy, LightGBM, joblib) + model file |
-| **Free ports** | `5432` (Postgres), `6379` (Valkey), `8083` (svc-03 HTTP), `9091` (svc-03 metrics), `9092` (Prometheus), `3001` (Grafana), `16686` (Jaeger UI), `4318` (OTLP) |
+| **Free ports** | `5432` (Postgres), `6379` (Valkey), `8083` (svc-03 HTTP), `9091` (svc-03 metrics), `19090` (Prometheus), `3001` (Grafana), `16686` (Jaeger UI), `4318` (OTLP) |
 
 ---
 
@@ -79,7 +79,7 @@ Once startup is complete, these URLs are available:
 | <http://localhost:8083> | **Web UI** — URL scanner page |
 | <http://localhost:8083/healthz> | Health check |
 | <http://localhost:9091/metrics> | **Raw Prometheus metrics** (svc-03 exporter) |
-| <http://localhost:9092> | **Prometheus UI** — query & graph metrics |
+| <http://localhost:19090> | **Prometheus UI** — query & graph metrics |
 | <http://localhost:3001> | **Grafana** — auto-provisioned svc-03 dashboard (login: `admin`/`admin`) |
 | <http://localhost:16686> | **Jaeger UI** — distributed traces |
 
@@ -627,7 +627,7 @@ Open **<http://localhost:16686>** in your browser.
 ### Prometheus Metrics
 
 svc-03 exposes Prometheus metrics on port **9091** (host). The demo also runs a
-**Prometheus server** on port **9092** that scrapes svc-03 every 10 seconds.
+**Prometheus server** on port **19090** that scrapes svc-03 every 10 seconds.
 
 #### Raw metrics endpoint
 
@@ -637,7 +637,7 @@ curl -s http://localhost:9091/metrics | grep ti_cache
 
 #### Prometheus UI
 
-Open **<http://localhost:9092>** and query metrics directly.
+Open **<http://localhost:19090>** and query metrics directly.
 
 **Targets page** — verify svc-03 is being scraped:
 
@@ -854,7 +854,7 @@ See the full reference in
 | `/scan` | 8083 | POST — Analyse a URL (JSON API) |
 | `/healthz` | 8083 | GET — Returns `200 ok` (readiness probe) |
 | `/metrics` | 9091 | GET — Raw Prometheus metrics (svc-03 exporter) |
-| Prometheus UI | 9092 | Query and graph Prometheus metrics |
+| Prometheus UI | 19090 | Query and graph Prometheus metrics |
 | Grafana | 3001 | Pre-configured dashboards (admin/admin) |
 | Jaeger UI | 16686 | Distributed trace viewer |
 

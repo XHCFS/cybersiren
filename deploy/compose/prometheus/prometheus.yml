@@ -12,7 +12,8 @@ global:
   evaluation_interval: 10s
 
 scrape_configs:
-  - job_name: "cybersiren-services"
+  # Demo / standalone services (HTTP demos for svc-03, svc-06, svc-11).
+  - job_name: "cybersiren-demos"
     scrape_timeout: 5s
     static_configs:
       - targets: ["svc-06-nlp:9090"]
@@ -24,3 +25,31 @@ scrape_configs:
       - targets: ["svc-11-ti-sync:9090"]
         labels:
           service: "svc-11-ti-sync"
+
+  # Pipeline-spine v0 stubs. These run natively (not in compose) via
+  # `make smoke` / scripts/dev/run_pipeline.sh, each on a distinct host
+  # port. host.docker.internal is the standard Linux/Mac shim that resolves
+  # the docker host from inside the prometheus container.
+  - job_name: "cybersiren-pipeline"
+    scrape_timeout: 5s
+    static_configs:
+      - targets: ["host.docker.internal:9101"]
+        labels: { service: "svc-01-ingestion" }
+      - targets: ["host.docker.internal:9102"]
+        labels: { service: "svc-02-parser" }
+      - targets: ["host.docker.internal:9103"]
+        labels: { service: "svc-03-url-pipeline" }
+      - targets: ["host.docker.internal:9104"]
+        labels: { service: "svc-04-header-analysis" }
+      - targets: ["host.docker.internal:9105"]
+        labels: { service: "svc-05-attachment-analysis" }
+      - targets: ["host.docker.internal:9106"]
+        labels: { service: "svc-06-nlp-pipeline" }
+      - targets: ["host.docker.internal:9107"]
+        labels: { service: "svc-07-aggregator" }
+      - targets: ["host.docker.internal:9108"]
+        labels: { service: "svc-08-decision" }
+      - targets: ["host.docker.internal:9109"]
+        labels: { service: "svc-09-notification" }
+      - targets: ["host.docker.internal:9110"]
+        labels: { service: "svc-10-api-dashboard" }
