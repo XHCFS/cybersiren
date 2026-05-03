@@ -6,6 +6,7 @@ package schema
 import (
 	"context"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -53,18 +54,32 @@ func TestPipelineVerdictUniqueIndex(t *testing.T) {
 	}
 	defer pool.Close()
 
-	var n int
+	var (
+		n        int
+		indexDef string
+	)
 	err = pool.QueryRow(ctx, `
-SELECT COUNT(*)
+SELECT COUNT(*), COALESCE(MAX(indexdef), '')
 FROM pg_indexes
 WHERE schemaname = 'public'
   AND tablename = 'verdicts'
   AND indexname = 'uq_verdicts_pipeline_email_partition'
-`).Scan(&n)
+`).Scan(&n, &indexDef)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if n != 1 {
 		t.Fatalf("expected uq_verdicts_pipeline_email_partition on verdicts, got count=%d", n)
+	}
+	def := strings.ToLower(indexDef)
+	for _, want := range []string{
+		"where",
+		"entity_type = 'email'",
+		"email_fetched_at is not null",
+		"source = any",
+	} {
+		if !strings.Contains(def, want) {
+			t.Fatalf("index predicate missing %q in definition: %s", want, indexDef)
+		}
 	}
 }

@@ -46,6 +46,11 @@ type ComponentDetails struct {
 // SVC-08 must not assume a non-nil score; partial analysis is signalled
 // via PartialAnalysis + MissingComponents.
 //
+// Delivery semantics: this topic is at-least-once. Rebalances/redelivery
+// can cause duplicate emails.scored publishes for the same
+// (internal_id,fetched_at) partition key; downstream idempotency lives in
+// SVC-08/verdicts rather than at this wire layer.
+//
 // ComponentDetails carries the original score messages verbatim for
 // downstream analysis (campaign fingerprinting reads sender_domain from
 // component_details.header, primary URL domain from component_details.url,

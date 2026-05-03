@@ -222,23 +222,26 @@ func (c *Cache) fromValkey(ctx context.Context, orgID int64) ([]CachedRule, bool
 	if c.valkey == nil {
 		return nil, false
 	}
-	key := valkeyKey(orgID)
-	cmd := c.valkey.Do(ctx, c.valkey.B().Get().Key(key).Build())
-	if err := cmd.Error(); err != nil {
-		// A simple cache miss is signalled by a nil reply, which valkey-go
-		// returns as an error containing "Nil". Treat any error as a miss.
-		return nil, false
+	for _, key := range []string{valkeyKey(orgID), legacyValkeyKey(orgID)} {
+		cmd := c.valkey.Do(ctx, c.valkey.B().Get().Key(key).Build())
+		if err := cmd.Error(); err != nil {
+			if !valkeygo.IsValkeyNil(err) {
+				c.log.Debug().Err(err).Str("key", key).Msg("rules cache valkey get failed")
+			}
+			continue
+		}
+		body, err := cmd.AsBytes()
+		if err != nil || len(body) == 0 {
+			continue
+		}
+		var rules []CachedRule
+		if err := json.Unmarshal(body, &rules); err != nil {
+			c.observeLoadError("valkey_decode")
+			continue
+		}
+		return rules, true
 	}
-	body, err := cmd.AsBytes()
-	if err != nil || len(body) == 0 {
-		return nil, false
-	}
-	var rules []CachedRule
-	if err := json.Unmarshal(body, &rules); err != nil {
-		c.observeLoadError("valkey_decode")
-		return nil, false
-	}
-	return rules, true
+	return nil, false
 }
 
 func (c *Cache) storeValkey(ctx context.Context, orgID int64, rules []CachedRule) {
@@ -299,6 +302,10 @@ func (c *Cache) markKnown(orgID int64) {
 
 func valkeyKey(orgID int64) string {
 	return fmt.Sprintf("rules_cache:header:{%d}", orgID)
+}
+
+func legacyValkeyKey(orgID int64) string {
+	return fmt.Sprintf("rules_cache:{%d}", orgID)
 }
 
 func (c *Cache) observeHit(tier string) {
