@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"time"
 
@@ -49,9 +50,16 @@ func (c Config) Defaults() Config {
 }
 
 // Publisher is the producer for emails.verdict (subset of
-// kafkaproducer.Producer).
+// kafkaproducer.Producer). retries is the number of *extra* attempts after
+// the first ProduceSync (same contract as shared/kafka/producer.Producer.Publish).
 type Publisher interface {
 	Publish(ctx context.Context, key, value []byte, retries int) error
+}
+
+// decisionWriter abstracts persistence for testing and wraps *persist.Writer.
+type decisionWriter interface {
+	Write(ctx context.Context, in persist.Input) (persist.Output, error)
+	GetCampaignHistory(ctx context.Context, orgID int64, fingerprint string) (*persist.CampaignHistory, error)
 }
 
 // Engine is the SVC-08 orchestrator. One instance is shared by every
@@ -62,7 +70,7 @@ type Engine struct {
 	rules     *rules.Cache
 	evaluator *rules.Evaluator
 	simhash   *campaign.Computer
-	writer    *persist.Writer
+	writer    decisionWriter
 	publisher Publisher
 	metrics   *metrics.Metrics
 	log       zerolog.Logger
@@ -74,7 +82,7 @@ func New(
 	cfg Config,
 	rulesCache *rules.Cache,
 	simhash *campaign.Computer,
-	writer *persist.Writer,
+	writer decisionWriter,
 	publisher Publisher,
 	m *metrics.Metrics,
 	log zerolog.Logger,
@@ -144,10 +152,10 @@ func (e *Engine) Handle(ctx context.Context, msg kafkaconsumer.Message) error {
 	fingerprint := campaign.Fingerprint(fpInputs)
 
 	var (
-		bodyHash  uint64
-		hasHash   bool
-		simMatch  campaign.Match
-		simHit    bool
+		bodyHash uint64
+		hasHash  bool
+		simMatch campaign.Match
+		simHit   bool
 	)
 	if body, ok := campaign.ExtractBody(scored.ComponentDetails); ok {
 		bodyHash, hasHash = e.simhash.Compute(body)
@@ -185,7 +193,10 @@ func (e *Engine) Handle(ctx context.Context, msg kafkaconsumer.Message) error {
 	rs, err := e.rules.Get(ctx, scored.Meta.OrgID)
 	if err != nil {
 		logCtx.Error().Err(err).Msg("decision rules cache load failed; degrading to blend-only verdict")
-		return e.publishDegraded(ctx, scored, components, blendOut, nudgedScore, fingerprint, history, simMatch, simHit, hasHash, bodyHash, time.Since(startedAt))
+		return e.publishDegraded(
+			ctx, scored, components, blendOut, nudgedScore, fingerprint, history,
+			simMatch, simHit, hasHash, bodyHash, time.Since(startedAt),
+		)
 	}
 
 	preRuleLabel := LabelFor(Round(nudgedScore))
@@ -208,6 +219,10 @@ func (e *Engine) Handle(ctx context.Context, msg kafkaconsumer.Message) error {
 	finalScore := ClampInt(Round(nudgedScore)+ruleAdjustment, 0, 100)
 	label := LabelFor(finalScore)
 	confidence := Confidence(finalScore, label, scored.PartialAnalysis, source)
+	procElapsed := time.Since(startedAt)
+
+	wireElapsed := procElapsed // snapshot for VerdictWireBuilder closure
+	mv := e.modelVersionFor(scored, source)
 
 	// 5. Single-transaction DB write.
 	dbStart := time.Now()
@@ -228,10 +243,21 @@ func (e *Engine) Handle(ctx context.Context, msg kafkaconsumer.Message) error {
 		Label:         string(label),
 		Confidence:    confidence,
 		VerdictSource: source,
-		ModelVersion:  e.modelVersionFor(scored, source),
+		ModelVersion:  mv,
 
 		Fired:            fired,
 		AnalysisMetadata: marshalAnalysisMetadata(blendOut, nudgedScore, nudgeAlpha, ruleAdjustment, simHit, simMatch),
+		VerdictWireBuilder: func(wx persist.VerdictWireContext) ([]byte, error) {
+			o := persist.Output{
+				CampaignID: wx.CampaignID,
+				IsNew:      wx.IsNew,
+				EmailCount: wx.EmailCount,
+				VerdictID:  wx.VerdictID,
+			}
+			v := buildVerdict(scored, finalScore, components, blendOut, label, confidence, source,
+				mv, fired, o, fingerprint, wireElapsed)
+			return json.Marshal(v)
+		},
 	})
 	if e.metrics != nil {
 		e.metrics.DBWriteDuration.Observe(time.Since(dbStart).Seconds())
@@ -241,10 +267,10 @@ func (e *Engine) Handle(ctx context.Context, msg kafkaconsumer.Message) error {
 		span.SetStatus(codes.Error, "decision tx failed")
 		e.bumpStatus("error")
 		logCtx.Error().Err(err).Msg("decision tx failed; offset will NOT be committed")
-		return err
+		return fmt.Errorf("decision persist write: %w", err)
 	}
 
-	if e.metrics != nil {
+	if !out.DedupeSkip && e.metrics != nil {
 		if out.IsNew {
 			e.metrics.CampaignTotal.WithLabelValues("new").Inc()
 		} else {
@@ -252,19 +278,20 @@ func (e *Engine) Handle(ctx context.Context, msg kafkaconsumer.Message) error {
 		}
 	}
 
-	// 6. Best-effort SimHash store (post-commit). Errors are logged
-	// only — the verdict is already committed and emitted.
-	if hasHash {
+	// 6. Best-effort SimHash store — skip on Kafka redelivery: index was
+	// populated on the first successful processing path.
+	if hasHash && !out.DedupeSkip {
 		if err := e.simhash.Store(ctx, scored.Meta.OrgID, out.CampaignID, bodyHash, fingerprint); err != nil {
 			logCtx.Debug().Err(err).Int64("campaign_id", out.CampaignID).Msg("simhash store failed; index entry skipped")
 		}
 	}
 
-	// 7. Publish emails.verdict.
-	verdict := buildVerdict(scored, finalScore, components, blendOut, label, confidence, source,
-		e.modelVersionFor(scored, source), fired, out, fingerprint, time.Since(startedAt))
-
-	body, err := json.Marshal(verdict)
+	// 7. Publish emails.verdict (prefer kafka_verdict_wire from DB when present).
+	body, err := verdictKafkaBody(out, func() ([]byte, error) {
+		v := buildVerdict(scored, finalScore, components, blendOut, label, confidence, source,
+			mv, fired, out, fingerprint, procElapsed)
+		return json.Marshal(v)
+	})
 	if err != nil {
 		e.bumpStatus("error")
 		span.RecordError(err)
@@ -272,7 +299,12 @@ func (e *Engine) Handle(ctx context.Context, msg kafkaconsumer.Message) error {
 		return fmt.Errorf("marshal emails.verdict: %w", err)
 	}
 
-	if err := e.publisher.Publish(ctx, encodeKey(scored.Meta.EmailID), body, e.cfg.PublishRetryAttempts); err != nil {
+	if err := e.publisher.Publish(
+		ctx,
+		encodeKey(scored.Meta.EmailID),
+		body,
+		e.cfg.PublishRetryAttempts,
+	); err != nil {
 		e.bumpStatus("error")
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "publish verdict failed")
@@ -283,6 +315,9 @@ func (e *Engine) Handle(ctx context.Context, msg kafkaconsumer.Message) error {
 	if e.metrics != nil {
 		e.metrics.RiskScore.Observe(float64(finalScore))
 		e.metrics.VerdictTotal.WithLabelValues(string(label)).Inc()
+	}
+	if out.DedupeSkip {
+		logCtx.Info().Msg("emails.scored replay; verdict idempotent in DB, republished emails.verdict to Kafka")
 	}
 
 	logCtx.Info().
@@ -333,6 +368,7 @@ func (e *Engine) publishDegraded(
 	label := LabelFor(finalScore)
 	source := VerdictSourceRule
 	confidence := Confidence(finalScore, label, scored.PartialAnalysis, source)
+	mvdeg := e.modelVersionFor(scored, source)
 
 	out, err := e.writer.Write(ctx, persist.Input{
 		OrgID:      scored.Meta.OrgID,
@@ -351,41 +387,63 @@ func (e *Engine) publishDegraded(
 		Label:         string(label),
 		Confidence:    confidence,
 		VerdictSource: source,
-		ModelVersion:  e.modelVersionFor(scored, source),
+		ModelVersion:  mvdeg,
 
 		Fired: nil,
 		AnalysisMetadata: marshalAnalysisMetadata(
 			blendOut, nudgedScore, 0, 0, simHit, simMatch,
 		),
+		VerdictWireBuilder: func(wx persist.VerdictWireContext) ([]byte, error) {
+			o := persist.Output{
+				CampaignID: wx.CampaignID,
+				IsNew:      wx.IsNew,
+				EmailCount: wx.EmailCount,
+				VerdictID:  wx.VerdictID,
+			}
+			v := buildVerdict(scored, finalScore, components, blendOut, label, confidence, source,
+				mvdeg, nil, o, fingerprint, elapsed)
+			return json.Marshal(v)
+		},
 	})
 	if err != nil {
 		e.bumpStatus("error")
-		return err
+		return fmt.Errorf("decision persist write (degraded): %w", err)
 	}
 
-	if hasHash {
-		_ = e.simhash.Store(ctx, scored.Meta.OrgID, out.CampaignID, bodyHash, fingerprint)
+	if !out.DedupeSkip {
+		if hasHash {
+			_ = e.simhash.Store(ctx, scored.Meta.OrgID, out.CampaignID, bodyHash, fingerprint)
+		}
+		if e.metrics != nil {
+			if out.IsNew {
+				e.metrics.CampaignTotal.WithLabelValues("new").Inc()
+			} else {
+				e.metrics.CampaignTotal.WithLabelValues("existing").Inc()
+			}
+		}
 	}
 
-	verdict := buildVerdict(scored, finalScore, components, blendOut, label, confidence, source,
-		e.modelVersionFor(scored, source), nil, out, fingerprint, elapsed)
-	body, err := json.Marshal(verdict)
+	body, err := verdictKafkaBody(out, func() ([]byte, error) {
+		v := buildVerdict(scored, finalScore, components, blendOut, label, confidence, source,
+			mvdeg, nil, out, fingerprint, elapsed)
+		return json.Marshal(v)
+	})
 	if err != nil {
 		return err
 	}
-	if err := e.publisher.Publish(ctx, encodeKey(scored.Meta.EmailID), body, e.cfg.PublishRetryAttempts); err != nil {
+	if err := e.publisher.Publish(
+		ctx,
+		encodeKey(scored.Meta.EmailID),
+		body,
+		e.cfg.PublishRetryAttempts,
+	); err != nil {
 		e.bumpStatus("error")
-		return err
+		return fmt.Errorf("publish emails.verdict (degraded): %w", err)
 	}
 	e.bumpStatus("ok")
 	if e.metrics != nil {
 		e.metrics.RiskScore.Observe(float64(finalScore))
 		e.metrics.VerdictTotal.WithLabelValues(string(label)).Inc()
-		if out.IsNew {
-			e.metrics.CampaignTotal.WithLabelValues("new").Inc()
-		} else {
-			e.metrics.CampaignTotal.WithLabelValues("existing").Inc()
-		}
 	}
 	_ = history // suppressed: logged through persist write inputs already
 	return nil
@@ -409,6 +467,13 @@ func (e *Engine) bumpStatus(status string) {
 // helpers
 // ----------------------------------------------------------------------
 
+func verdictKafkaBody(out persist.Output, fresh func() ([]byte, error)) ([]byte, error) {
+	if len(out.KafkaVerdictWire) > 0 {
+		return slices.Clone(out.KafkaVerdictWire), nil
+	}
+	return fresh()
+}
+
 func decodeScored(b []byte) (contracts.EmailsScored, error) {
 	var out contracts.EmailsScored
 	if len(b) == 0 {
@@ -420,6 +485,24 @@ func decodeScored(b []byte) (contracts.EmailsScored, error) {
 	if out.Meta.EmailID <= 0 {
 		return out, fmt.Errorf("emails.scored: meta.email_id must be > 0, got %d", out.Meta.EmailID)
 	}
+	if out.Meta.OrgID <= 0 {
+		return out, fmt.Errorf("emails.scored: meta.org_id must be > 0, got %d", out.Meta.OrgID)
+	}
+	if out.InternalID <= 0 {
+		return out, fmt.Errorf("emails.scored: internal_id must be > 0, got %d", out.InternalID)
+	}
+	if out.InternalID != out.Meta.EmailID {
+		return out, fmt.Errorf("emails.scored: internal_id %d must match meta.email_id %d",
+			out.InternalID, out.Meta.EmailID)
+	}
+	if out.FetchedAt.IsZero() {
+		return out, errors.New("emails.scored: fetched_at is required (emails partition key)")
+	}
+	if !out.Meta.FetchedAt.IsZero() && !out.Meta.FetchedAt.Equal(out.FetchedAt) {
+		return out, fmt.Errorf("emails.scored: meta.fetched_at and top-level fetched_at disagree (%v vs %v)",
+			out.Meta.FetchedAt.UTC(), out.FetchedAt.UTC())
+	}
+	out.Meta.FetchedAt = out.FetchedAt.UTC()
 	return out, nil
 }
 
@@ -463,9 +546,9 @@ func marshalAnalysisMetadata(
 	}
 	if simHit {
 		meta["simhash"] = map[string]any{
-			"matched":           true,
-			"matched_campaign":  simMatch.CampaignID,
-			"hamming_distance":  simMatch.Distance,
+			"matched":          true,
+			"matched_campaign": simMatch.CampaignID,
+			"hamming_distance": simMatch.Distance,
 		}
 	}
 	body, err := json.Marshal(meta)
@@ -499,9 +582,11 @@ func buildVerdict(
 			ScoreImpact: fr.Rule.ScoreImpact,
 		})
 	}
+	meta := contracts.NewMeta(scored.Meta.EmailID, scored.Meta.OrgID)
+	meta.FetchedAt = scored.FetchedAt.UTC()
 	campID := out.CampaignID
 	verdict := contracts.EmailsVerdict{
-		Meta:                  contracts.NewMeta(scored.Meta.EmailID, scored.Meta.OrgID),
+		Meta:                  meta,
 		InternalID:            scored.InternalID,
 		FetchedAt:             scored.FetchedAt,
 		VerdictLabel:          string(label),

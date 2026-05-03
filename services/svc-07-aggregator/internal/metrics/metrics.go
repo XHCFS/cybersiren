@@ -10,11 +10,11 @@ import (
 // Metrics is the bag of SVC-07 Prometheus collectors. All names match
 // docs/design/svc-07-08-design-brief.md §2.9.
 type Metrics struct {
-	MessagesTotal        *prometheus.CounterVec // labels: topic, status (ok|wait|error|complete|partial)
-	CompletionLatencyMS  prometheus.Histogram
-	PartialCompletions   prometheus.Counter
-	ActiveBuckets        prometheus.Gauge
-	PublishErrors        *prometheus.CounterVec // labels: kind=publish|del|hsetnx|hset
+	MessagesTotal       *prometheus.CounterVec // labels: topic, status (ok|wait|error|complete|partial)
+	CompletionLatencyMS prometheus.Histogram
+	PartialCompletions  prometheus.Counter
+	ActiveBuckets       prometheus.Gauge
+	PublishErrors       *prometheus.CounterVec // labels: kind=publish|del|hsetnx|hset
 }
 
 // New registers the metrics on reg and returns the holder. Re-registering

@@ -16,6 +16,7 @@ type Metrics struct {
 	DBWriteDuration    prometheus.Histogram
 	RulesFiredTotal    *prometheus.CounterVec // labels: rule_id
 	ProcessingDuration prometheus.Histogram
+	SimhashLookupIndex prometheus.Histogram // SMEMBERS size per lookup
 }
 
 // New registers all SVC-08 metrics on reg and returns the holder.
@@ -75,6 +76,16 @@ func New(reg *prometheus.Registry) *Metrics {
 			Name:    "decision_processing_duration_seconds",
 			Help:    "End-to-end SVC-08 per-message processing duration.",
 			Buckets: []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5},
+		},
+	))
+
+	m.SimhashLookupIndex = registerHistogram(reg, prometheus.NewHistogram(
+		prometheus.HistogramOpts{
+			Name: "decision_simhash_lookup_index_size",
+			Help: "Cardinality of SimHash candidate index sets (svc-07-08 brief: linear-scan cost visibility).",
+			Buckets: []float64{
+				0, 1, 2, 3, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096,
+			},
 		},
 	))
 

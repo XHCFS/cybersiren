@@ -1,6 +1,7 @@
 package campaign
 
 import (
+	"context"
 	"testing"
 
 	"github.com/mfonda/simhash"
@@ -13,14 +14,14 @@ import (
 // docker/docker-compose.yml.
 
 func TestComputer_Compute_EmptyReturnsFalse(t *testing.T) {
-	c := NewComputer(nil, SimHashThreshold, zerolog.Nop())
+	c := NewComputer(nil, SimHashThreshold, zerolog.Nop(), nil)
 	if _, ok := c.Compute(""); ok {
 		t.Fatalf("Compute(\"\") ok=true, want false")
 	}
 }
 
 func TestComputer_Compute_DeterministicAndDistinctsDiffer(t *testing.T) {
-	c := NewComputer(nil, SimHashThreshold, zerolog.Nop())
+	c := NewComputer(nil, SimHashThreshold, zerolog.Nop(), nil)
 	a, ok := c.Compute("urgent action required: please verify your account now")
 	if !ok {
 		t.Fatalf("Compute(...) ok=false")
@@ -40,7 +41,7 @@ func TestComputer_NearDuplicateWithinThreshold(t *testing.T) {
 	// Re-using the same body with a tiny edit should keep the SimHash
 	// within the threshold. Note: SimHash is approximate, so we don't
 	// assert an *exact* distance — only that it's ≤ threshold.
-	c := NewComputer(nil, SimHashThreshold, zerolog.Nop())
+	c := NewComputer(nil, SimHashThreshold, zerolog.Nop(), nil)
 	const body = "your bank statement is ready for download. log in to view it now."
 	a, _ := c.Compute(body)
 	// One-character edit: "log in" → "sign in".
@@ -54,14 +55,14 @@ func TestComputer_NearDuplicateWithinThreshold(t *testing.T) {
 }
 
 func TestComputer_NilClientNoOps(t *testing.T) {
-	c := NewComputer(nil, SimHashThreshold, zerolog.Nop())
+	c := NewComputer(nil, SimHashThreshold, zerolog.Nop(), nil)
 	// Lookup with no client must return (zero, false, nil).
-	m, found, err := c.Lookup(nil, 1, 0xdeadbeef)
+	m, found, err := c.Lookup(context.TODO(), 1, 0xdeadbeef)
 	if found || err != nil || m != (Match{}) {
 		t.Fatalf("Lookup(nil client) = (%+v, %v, %v); want (empty, false, nil)", m, found, err)
 	}
 	// Store with no client must succeed (no-op).
-	if err := c.Store(nil, 1, 1, 0xdeadbeef, "fp"); err != nil {
+	if err := c.Store(context.TODO(), 1, 1, 0xdeadbeef, "fp"); err != nil {
 		t.Fatalf("Store(nil client) returned %v, want nil", err)
 	}
 }

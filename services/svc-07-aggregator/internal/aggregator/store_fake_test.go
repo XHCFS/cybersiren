@@ -12,15 +12,38 @@ import (
 // full hash, SCAN walking by prefix). It is intentionally NOT a generic
 // Redis emulator — only the operations we actually call are supported.
 type fakeStore struct {
-	mu     sync.Mutex
-	hashes map[string]map[string]string
+	mu         sync.Mutex
+	hashes     map[string]map[string]string
+	stringNX   map[string]struct{}
+	stringVals map[string]string
 
 	// Optional injected errors so tests can simulate transient failure.
 	errOnHSetNX func(key, field string) error
+	errOnSetNX  func(key string) error
 }
 
 func newFakeStore() *fakeStore {
-	return &fakeStore{hashes: map[string]map[string]string{}}
+	return &fakeStore{
+		hashes:     map[string]map[string]string{},
+		stringNX:   map[string]struct{}{},
+		stringVals: map[string]string{},
+	}
+}
+
+func (f *fakeStore) SetNXEX(_ context.Context, key string, _ int, value string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.errOnSetNX != nil {
+		if err := f.errOnSetNX(key); err != nil {
+			return false, err
+		}
+	}
+	if _, ok := f.stringNX[key]; ok {
+		return false, nil
+	}
+	f.stringNX[key] = struct{}{}
+	f.stringVals[key] = value
+	return true, nil
 }
 
 func (f *fakeStore) HSetIfAbsent(_ context.Context, key, field, value string) (bool, error) {
@@ -101,6 +124,8 @@ func (f *fakeStore) Del(_ context.Context, key string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	delete(f.hashes, key)
+	delete(f.stringNX, key)
+	delete(f.stringVals, key)
 	return nil
 }
 
@@ -156,4 +181,11 @@ func (r *recorderPublisher) count() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return len(r.messages)
+}
+
+func (f *fakeStore) nxHeld(key string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	_, ok := f.stringNX[key]
+	return ok
 }

@@ -17,6 +17,11 @@ import (
 	kafkaconsumer "github.com/saif/cybersiren/shared/kafka/consumer"
 )
 
+func testPartitionFetchedAt(t *testing.T) time.Time {
+	t.Helper()
+	return time.Date(2026, 5, 3, 12, 0, 2, 0, time.UTC)
+}
+
 func newAgg(t *testing.T, store StateStore, pub Publisher) *Aggregator {
 	t.Helper()
 	log := zerolog.New(io.Discard)
@@ -30,7 +35,7 @@ func newAgg(t *testing.T, store StateStore, pub Publisher) *Aggregator {
 func planMsg(t *testing.T, emailID, orgID int64, expected ...string) kafkaconsumer.Message {
 	t.Helper()
 	body, err := json.Marshal(contracts.AnalysisPlan{
-		Meta:           contracts.NewMeta(emailID, orgID),
+		Meta:           contracts.NewMetaWithFetched(emailID, orgID, testPartitionFetchedAt(t)),
 		ExpectedScores: expected,
 	})
 	require.NoError(t, err)
@@ -40,7 +45,8 @@ func planMsg(t *testing.T, emailID, orgID int64, expected ...string) kafkaconsum
 func envelopeMsg(t *testing.T, topic string, emailID, orgID int64, score float64) kafkaconsumer.Message {
 	t.Helper()
 	body, err := json.Marshal(contracts.ScoreEnvelope{
-		Meta:      contracts.NewMeta(emailID, orgID),
+		Meta: contracts.NewMetaWithFetched(emailID, orgID,
+			testPartitionFetchedAt(t)),
 		Component: componentForTopic(topic),
 		Score:     score,
 	})
@@ -50,9 +56,11 @@ func envelopeMsg(t *testing.T, topic string, emailID, orgID int64, score float64
 
 func headerMsg(t *testing.T, emailID, orgID int64, score int) kafkaconsumer.Message {
 	t.Helper()
+	ft := testPartitionFetchedAt(t)
 	body, err := json.Marshal(contracts.ScoresHeaderMessage{
 		EmailID:   emailID,
 		OrgID:     orgID,
+		FetchedAt: ft,
 		Component: contracts.ComponentHeader,
 		Score:     score,
 	})
@@ -87,6 +95,8 @@ func TestHandle_PlanArrivesLast_TriggersEmit(t *testing.T) {
 	require.Equal(t, 1, pub.count())
 	var out contracts.EmailsScored
 	require.NoError(t, json.Unmarshal(pub.messages[0], &out))
+	assert.Equal(t, testPartitionFetchedAt(t).UTC(), out.FetchedAt.UTC())
+	assert.Equal(t, out.InternalID, out.Meta.EmailID)
 	require.NotNil(t, out.URLScore)
 	assert.Equal(t, 72, *out.URLScore)
 	require.NotNil(t, out.HeaderScore)
@@ -101,7 +111,7 @@ func TestHandle_PlanArrivesLast_TriggersEmit(t *testing.T) {
 	assert.Empty(t, out.ComponentDetails.Attachment)
 
 	// Key removed after publish.
-	state, _ := store.HGetAll(ctx, keyForEmailID(emailID))
+	state, _ := store.HGetAll(ctx, keyForOrgEmail(orgID, emailID))
 	assert.Empty(t, state)
 }
 
@@ -144,10 +154,7 @@ func TestHandle_PublishFailure_ReleasesLockForRetry(t *testing.T) {
 	require.Error(t, err, "publish failure must surface as error so offset is not committed")
 	assert.Equal(t, 0, pub.count())
 
-	// __publishing must have been released so a redelivered message can retry.
-	v, ok, err := store.HGet(ctx, keyForEmailID(emailID), fieldPublishing)
-	require.NoError(t, err)
-	assert.False(t, ok, "publishing lock must be released; got %q", v)
+	assert.False(t, store.nxHeld(publishLockKey(orgID, emailID)), "publish NX lock must be released after failure")
 
 	// Redelivery succeeds.
 	require.NoError(t, a.Handle(ctx, envelopeMsg(t, contracts.TopicScoresURL, emailID, orgID, 80)))
@@ -202,9 +209,12 @@ func TestPackager_FlatHeaderShapeForwardedRaw(t *testing.T) {
 	})
 	require.NoError(t, err)
 
+	ft := testPartitionFetchedAt(t).UTC().Format(startedLayout)
 	state := map[string]string{
-		fieldPlan:                  string(planBody),
-		fieldStartedAt:             time.Now().UTC().Format(startedLayout),
+		fieldPartitionFetchedAt:     ft,
+		fieldPlan:                   string(planBody),
+		fieldOrgID:                  "1",
+		fieldStartedAt:              time.Now().UTC().Format(startedLayout),
 		contracts.TopicScoresHeader: string(headerBody),
 	}
 	out, err := packageState(1, 1, state, time.Now().UTC(), false)
@@ -236,8 +246,31 @@ func TestExtractIDs_EnvelopeAndFlatShapes(t *testing.T) {
 	assert.Equal(t, int64(44), oid)
 }
 
-func TestKeyForEmailID_Deterministic(t *testing.T) {
+func TestKeyForOrgEmail_Deterministic(t *testing.T) {
 	t.Parallel()
-	assert.Equal(t, "aggregator:42", keyForEmailID(42))
-	assert.Equal(t, "aggregator:"+strconv.FormatInt(123456789, 10), keyForEmailID(123456789))
+	assert.Equal(t, "aggregator:1:42", keyForOrgEmail(1, 42))
+	assert.Equal(t, "aggregator:2:"+strconv.FormatInt(123456789, 10), keyForOrgEmail(2, 123456789))
+}
+
+func TestIsEmailAggregatorKey(t *testing.T) {
+	t.Parallel()
+	assert.True(t, isEmailAggregatorKey(keyForOrgEmail(1, 42)))
+	assert.False(t, isEmailAggregatorKey(publishLockKey(1, 42)), "publish lock keys must not be swept as buckets")
+}
+
+func TestParseAggregatorBucketKey(t *testing.T) {
+	t.Parallel()
+	o, e, ok := parseAggregatorBucketKey("aggregator:7:99")
+	require.True(t, ok)
+	assert.Equal(t, int64(7), o)
+	assert.Equal(t, int64(99), e)
+
+	_, _, bad := parseAggregatorBucketKey("aggregator:notnum:1")
+	assert.False(t, bad)
+
+	_, _, lock := parseAggregatorBucketKey("aggregator:publock:7:99")
+	assert.False(t, lock)
+
+	_, _, legacy := parseAggregatorBucketKey("aggregator:42")
+	assert.False(t, legacy, "legacy email-only keys must not parse")
 }

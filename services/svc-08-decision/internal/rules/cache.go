@@ -41,8 +41,12 @@ type FiredRule = dsl.FiredRule
 type SignalSnapshot = dsl.SignalSnapshot
 
 // CacheConfig configures Cache behaviour. Defaults are appropriate for
-// the SVC-08 decision engine (target = email + campaign rules,
-// 60-second TTL).
+// the SVC-08 decision engine (60-second TTL).
+//
+// Targets: Postgres rule_target_enum has email|url|attachment|header|campaign
+// — there is no "decision" value. svc-08 loads rules that fire on email-level
+// and campaign-level snapshots (overlap with svc-04 only on target=email rules;
+// svc-04 also loads header + email — keep products' Valkey caches distinct).
 type CacheConfig struct {
 	// Targets is the set of rules.target values to load. Defaults to
 	// {"email", "campaign"}.
@@ -320,9 +324,9 @@ func (c *Cache) markKnown(orgID int64) {
 }
 
 func valkeyKey(orgID int64) string {
-	// Same key shape as svc-04 (rules_cache:{org_id}); rule sets are
-	// shared between services.
-	return fmt.Sprintf("rules_cache:{%d}", orgID)
+	// Distinct from svc-04's header rules snapshot even when both services
+	// validate against different rule Target sets stored in Postgres.
+	return fmt.Sprintf("rules_cache:decision:{%d}", orgID)
 }
 
 func (c *Cache) observeHit(tier string) {
