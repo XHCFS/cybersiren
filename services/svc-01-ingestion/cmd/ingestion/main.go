@@ -1,20 +1,30 @@
 // STUB: replace with real implementation. Accepts a synthetic ingest request
-// over HTTP and emits emails.raw. NO Gmail/Outlook/IMAP adapters.
+// over HTTP, INSERTs the row into the partitioned `emails` table, and emits
+// emails.raw. NO Gmail/Outlook/IMAP adapters.
+//
+// The `emails` insert is what binds the logical email_id used on Kafka to
+// the (internal_id, fetched_at) partition key downstream services persist
+// against (svc-04 rule_hits, svc-08 verdict + emails score update). Without
+// it, svc-08's UPDATE matches 0 rows and the pipeline never emits a verdict.
 //
 // In v0 the email_id and org_id are int64 BIGINT values (matching
 // emails.internal_id / orgs.id), generated from the request when not
-// supplied — once the real ingestion path lands they will come from the
-// INSERT into emails.
+// supplied — once the real ingestion path lands the BIGSERIAL emails.id
+// from this INSERT will be the authoritative source.
 package main
 
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"os"
 	"strconv"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/rs/zerolog"
 
 	contracts "github.com/saif/cybersiren/shared/contracts/kafka"
@@ -42,7 +52,7 @@ func main() {
 		ProducerTopics: []string{contracts.TopicEmailsRaw},
 		HTTPPort:       8081,
 		HTTPRoutes: func(mux *http.ServeMux, deps svckit.Deps) {
-			mux.HandleFunc("/ingest", ingestHandler(deps.Producers[contracts.TopicEmailsRaw], deps.Log))
+			mux.HandleFunc("/ingest", ingestHandler(deps.Pool, deps.Producers[contracts.TopicEmailsRaw], deps.Log))
 		},
 	}); err != nil {
 		l := zerolog.New(os.Stderr)
@@ -51,7 +61,7 @@ func main() {
 	}
 }
 
-func ingestHandler(prod *kafkaproducer.Producer, log zerolog.Logger) http.HandlerFunc {
+func ingestHandler(pool *pgxpool.Pool, prod *kafkaproducer.Producer, log zerolog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "POST required", http.StatusMethodNotAllowed)
@@ -78,6 +88,21 @@ func ingestHandler(prod *kafkaproducer.Producer, log zerolog.Logger) http.Handle
 			req.SourceAdapter = "http-stub"
 		}
 
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		defer cancel()
+
+		// Insert the row into the partitioned `emails` table BEFORE publishing
+		// emails.raw. Downstream services persist against (internal_id,
+		// fetched_at) — svc-04 rule_hits FK, svc-08 emails UPDATE + verdict
+		// FK — so the row must exist by the time their messages arrive. The
+		// publish only fans out after the INSERT commits so we can't ship a
+		// Kafka event that points at a non-existent partition row.
+		if err := insertEmailRow(ctx, pool, req, now); err != nil {
+			log.Error().Err(err).Int64("email_id", req.EmailID).Msg("insert emails row failed")
+			http.Error(w, "persist failed", http.StatusInternalServerError)
+			return
+		}
+
 		payload := contracts.EmailsRaw{
 			Meta:          contracts.NewMeta(req.EmailID, req.OrgID),
 			FetchedAt:     now,
@@ -92,9 +117,6 @@ func ingestHandler(prod *kafkaproducer.Producer, log zerolog.Logger) http.Handle
 			http.Error(w, "marshal failed", http.StatusInternalServerError)
 			return
 		}
-
-		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
-		defer cancel()
 
 		key := []byte(strconv.FormatInt(req.EmailID, 10))
 		// Publish last arg: extra kafka retries after first attempt (see kafka/producer).
@@ -112,4 +134,33 @@ func ingestHandler(prod *kafkaproducer.Producer, log zerolog.Logger) http.Handle
 			"email_id": req.EmailID,
 		})
 	}
+}
+
+// insertEmailRow writes a minimal emails row keyed by (internal_id, fetched_at).
+// Idempotent: 23505 (unique violation, e.g. retried POST with the same
+// EMAIL_ID) is treated as success.
+func insertEmailRow(ctx context.Context, pool *pgxpool.Pool, req ingestRequest, fetchedAt time.Time) error {
+	if pool == nil {
+		return errors.New("svc-01: postgres pool unavailable")
+	}
+	const q = `
+INSERT INTO emails (internal_id, fetched_at, org_id, message_id)
+VALUES ($1, $2::timestamptz, $3, $4)
+ON CONFLICT (internal_id, fetched_at) DO NOTHING
+`
+	_, err := pool.Exec(ctx, q,
+		req.EmailID,
+		pgtype.Timestamptz{Time: fetchedAt, Valid: true},
+		pgtype.Int8{Int64: req.OrgID, Valid: req.OrgID > 0},
+		pgtype.Text{String: req.MessageID, Valid: req.MessageID != ""},
+	)
+	if err == nil {
+		return nil
+	}
+	var pe *pgconn.PgError
+	if errors.As(err, &pe) && pe.Code == "23505" {
+		// Concurrent retry won the insert race — treat as success.
+		return nil
+	}
+	return err
 }
