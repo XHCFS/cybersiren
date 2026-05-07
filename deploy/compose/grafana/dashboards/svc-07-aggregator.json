@@ -4,10 +4,10 @@
   "fiscalYearStartMonth": 0,
   "graphTooltip": 0,
   "id": null,
-  "uid": "cybersiren-svc-07-08",
+  "uid": "cybersiren-svc-07",
   "links": [],
-  "title": "SVC-07 Aggregator + SVC-08 Decision",
-  "tags": ["cybersiren", "pipeline", "svc-07", "svc-08"],
+  "title": "svc-07 Aggregator",
+  "tags": ["cybersiren", "pipeline", "svc-07"],
   "schemaVersion": 39,
   "version": 1,
   "time": { "from": "now-15m", "to": "now" },
@@ -15,7 +15,7 @@
   "refresh": "10s",
   "panels": [
     {
-      "title": "SVC-07 — Messages by status",
+      "title": "Messages by status",
       "type": "timeseries",
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
@@ -35,7 +35,7 @@
       ]
     },
     {
-      "title": "SVC-07 — Active Buckets",
+      "title": "Active buckets",
       "type": "stat",
       "gridPos": { "h": 8, "w": 6, "x": 12, "y": 0 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
@@ -56,7 +56,7 @@
       }
     },
     {
-      "title": "SVC-07 — Partial completions",
+      "title": "Partial completions (timeout-driven)",
       "type": "stat",
       "gridPos": { "h": 8, "w": 6, "x": 18, "y": 0 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
@@ -65,7 +65,7 @@
       ]
     },
     {
-      "title": "SVC-07 — Completion latency (ms)",
+      "title": "Completion latency (ms)",
       "type": "timeseries",
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
@@ -88,7 +88,7 @@
       ]
     },
     {
-      "title": "SVC-07 — Publish errors by kind",
+      "title": "Publish errors by kind",
       "type": "timeseries",
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
@@ -101,91 +101,28 @@
       ]
     },
     {
-      "title": "SVC-08 — Messages (ok vs error)",
+      "title": "Go runtime — goroutines",
       "type": "timeseries",
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
         {
-          "expr": "sum by (status) (rate(decision_messages_total[1m]))",
-          "legendFormat": "{{status}}",
+          "expr": "go_goroutines{service=\"svc-07-aggregator\"}",
+          "legendFormat": "goroutines",
           "refId": "A"
         }
       ]
     },
     {
-      "title": "SVC-08 — Verdicts by label",
+      "title": "Go runtime — heap (MiB)",
       "type": "timeseries",
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
         {
-          "expr": "sum by (label) (increase(decision_verdict_total[5m]))",
-          "legendFormat": "{{label}}",
+          "expr": "go_memstats_heap_alloc_bytes{service=\"svc-07-aggregator\"} / 1048576",
+          "legendFormat": "heap_alloc",
           "refId": "A"
-        }
-      ]
-    },
-    {
-      "title": "SVC-08 — Risk score distribution",
-      "type": "histogram",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 24 },
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "targets": [
-        {
-          "expr": "sum by (le) (increase(decision_risk_score_bucket[5m]))",
-          "format": "heatmap",
-          "legendFormat": "{{le}}",
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "title": "SVC-08 — Campaigns (new vs existing)",
-      "type": "timeseries",
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 24 },
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "targets": [
-        {
-          "expr": "sum by (type) (increase(decision_campaign_total[5m]))",
-          "legendFormat": "{{type}}",
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "title": "SVC-08 — DB write duration (s)",
-      "type": "timeseries",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 32 },
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "targets": [
-        {
-          "expr": "histogram_quantile(0.50, sum by (le) (rate(decision_db_write_duration_seconds_bucket[5m])))",
-          "legendFormat": "p50",
-          "refId": "A"
-        },
-        {
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(decision_db_write_duration_seconds_bucket[5m])))",
-          "legendFormat": "p95",
-          "refId": "B"
-        }
-      ]
-    },
-    {
-      "title": "SVC-08 — Processing duration (s)",
-      "type": "timeseries",
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 32 },
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "targets": [
-        {
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(decision_processing_duration_seconds_bucket[5m])))",
-          "legendFormat": "p95",
-          "refId": "A"
-        },
-        {
-          "expr": "histogram_quantile(0.99, sum by (le) (rate(decision_processing_duration_seconds_bucket[5m])))",
-          "legendFormat": "p99",
-          "refId": "B"
         }
       ]
     }

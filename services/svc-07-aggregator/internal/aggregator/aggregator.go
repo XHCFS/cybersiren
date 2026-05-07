@@ -8,11 +8,15 @@ import (
 	"time"
 
 	"github.com/rs/zerolog"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/saif/cybersiren/services/svc-07-aggregator/internal/metrics"
 	contracts "github.com/saif/cybersiren/shared/contracts/kafka"
 	kafkaconsumer "github.com/saif/cybersiren/shared/kafka/consumer"
 	kafkaproducer "github.com/saif/cybersiren/shared/kafka/producer"
+	"github.com/saif/cybersiren/shared/observability/tracing"
 )
 
 // Publisher is the subset of *kafkaproducer.Producer the aggregator
@@ -39,6 +43,7 @@ type Aggregator struct {
 	publisher Publisher
 	metrics   *metrics.Metrics
 	log       zerolog.Logger
+	tracer    trace.Tracer
 	now       func() time.Time // injectable for tests
 }
 
@@ -73,6 +78,7 @@ func New(
 		publisher: publisher,
 		metrics:   m,
 		log:       log,
+		tracer:    tracing.Tracer("svc-07-aggregator"),
 		now:       func() time.Time { return time.Now().UTC() },
 	}
 }
@@ -85,18 +91,32 @@ func New(
 // Malformed payloads return nil so the offset advances — leaving a poison
 // pill blocking the partition forever is worse than skipping it.
 func (a *Aggregator) Handle(ctx context.Context, msg kafkaconsumer.Message) error {
+	ctx, span := a.tracer.Start(ctx, "aggregator.process", trace.WithAttributes(
+		attribute.String("messaging.kafka.topic", msg.Topic),
+		attribute.Int("messaging.kafka.partition", msg.Partition),
+		attribute.Int64("messaging.kafka.offset", msg.Offset),
+	))
+	defer span.End()
+
 	emailID, orgID, err := extractIDs(msg.Value)
 	if err != nil {
 		a.observeMessage(msg.Topic, "error")
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "malformed payload")
 		a.log.Error().Err(err).Str("topic", msg.Topic).Int("partition", msg.Partition).
 			Int64("offset", msg.Offset).Msg("malformed payload; skipping")
 		return nil
 	}
 	if emailID == 0 {
 		a.observeMessage(msg.Topic, "error")
+		span.SetStatus(codes.Error, "payload missing email_id")
 		a.log.Warn().Str("topic", msg.Topic).Msg("payload missing email_id; skipping")
 		return nil
 	}
+	span.SetAttributes(
+		attribute.Int64("email_id", emailID),
+		attribute.Int64("org_id", orgID),
+	)
 
 	key := keyForOrgEmail(orgID, emailID)
 	field := msg.Topic
@@ -144,10 +164,12 @@ func (a *Aggregator) Handle(ctx context.Context, msg kafkaconsumer.Message) erro
 	complete, hasPlan := completionStatus(state)
 	if !hasPlan {
 		a.observeMessage(msg.Topic, "wait")
+		span.SetAttributes(attribute.String("aggregator.status", "wait_plan"))
 		return nil
 	}
 	if !complete {
 		a.observeMessage(msg.Topic, "wait")
+		span.SetAttributes(attribute.String("aggregator.status", "wait_scores"))
 		return nil
 	}
 
@@ -163,6 +185,7 @@ func (a *Aggregator) Handle(ctx context.Context, msg kafkaconsumer.Message) erro
 	}
 	if !got {
 		a.observeMessage(msg.Topic, "wait")
+		span.SetAttributes(attribute.String("aggregator.status", "wait_lock"))
 		return nil
 	}
 
@@ -171,13 +194,19 @@ func (a *Aggregator) Handle(ctx context.Context, msg kafkaconsumer.Message) erro
 		_ = a.store.Del(ctx, lockKey)
 		a.observeMessage(msg.Topic, "error")
 		a.bumpPublishError("publish")
+		span.RecordError(pubErr)
+		span.SetStatus(codes.Error, "publish emails.scored failed")
 		return pubErr
 	}
 
 	a.observeMessage(msg.Topic, "complete")
+	span.SetAttributes(attribute.String("aggregator.status", "complete"))
 	if a.metrics != nil && !startedAt.IsZero() {
-		a.metrics.CompletionLatencyMS.Observe(float64(time.Since(startedAt).Milliseconds()))
+		latency := time.Since(startedAt).Milliseconds()
+		a.metrics.CompletionLatencyMS.Observe(float64(latency))
+		span.SetAttributes(attribute.Int64("aggregator.completion_latency_ms", latency))
 	}
+	span.SetStatus(codes.Ok, "")
 	return nil
 }
 
