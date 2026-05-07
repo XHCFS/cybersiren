@@ -414,12 +414,19 @@ services:
   # Redpanda Kafka API — they used to collide.)
   prometheus:
     image: prom/prometheus:latest
-    profiles: ["demo", "monitoring"]
+    profiles: ["demo", "monitoring", "smoke"]
     container_name: cybersiren-prometheus
     ports:
       - "${PROMETHEUS_PORT:-19090}:9090"
     volumes:
       - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    # `host.docker.internal` is auto-resolved on Docker Desktop (Mac/Win)
+    # but NOT on Linux — without this entry the smoke pipeline natives at
+    # host.docker.internal:9101..9110 are unreachable and every scrape
+    # target shows "down" with a DNS lookup error. host-gateway is the
+    # standard alias Docker Engine resolves to the host's loopback.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
       - cybersiren
     restart: unless-stopped
@@ -429,7 +436,7 @@ services:
   # UI at http://localhost:3001. Login: admin / admin (skip password change).
   grafana:
     image: grafana/grafana:latest
-    profiles: ["demo", "monitoring"]
+    profiles: ["demo", "monitoring", "smoke"]
     container_name: cybersiren-grafana
     ports:
       - "3001:3000"
