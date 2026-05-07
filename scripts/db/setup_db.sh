@@ -22,6 +22,7 @@ REPO_ROOT="${REPO_ROOT:-$(git -C "$(dirname "$0")" rev-parse --show-toplevel)}"
 MIGRATIONS_DIR="${MIGRATIONS_DIR:-${REPO_ROOT}/db/migrations}"
 FEEDS_SEED_FILE="${FEEDS_SEED_FILE:-${REPO_ROOT}/db/seeds/feeds.sql}"
 HEADER_RULES_SEED_FILE="${HEADER_RULES_SEED_FILE:-${REPO_ROOT}/db/seeds/header_rules_demo_seed.sql}"
+ORGANISATIONS_SEED_FILE="${ORGANISATIONS_SEED_FILE:-${REPO_ROOT}/db/seeds/organisations_seed.sql}"
 
 # Docker compose container name for postgres
 POSTGRES_CONTAINER="${POSTGRES_CONTAINER:-cybersiren-postgres}"
@@ -86,6 +87,26 @@ fi
 
 # ── Seed ─────────────────────────────────────────────────────────────────────
 if [ "${MODE}" != "migrate-only" ]; then
+    # Seed organisations table (idempotent: ON CONFLICT (id) DO NOTHING).
+    # Provides the demo tenant (org_id=1) every downstream service expects.
+    if [ -f "${ORGANISATIONS_SEED_FILE}" ]; then
+        echo "Seeding organisations (idempotent)..."
+        if command -v psql &> /dev/null; then
+            PGPASSWORD="${DB_PASSWORD}" psql \
+                -h "${DB_HOST}" \
+                -p "${DB_PORT}" \
+                -U "${DB_USER}" \
+                -d "${DB_NAME}" \
+                -v ON_ERROR_STOP=1 \
+                -f "${ORGANISATIONS_SEED_FILE}"
+        else
+            docker exec -i -e PGPASSWORD="${DB_PASSWORD}" "${POSTGRES_CONTAINER}" \
+                psql -U "${DB_USER}" -d "${DB_NAME}" -v ON_ERROR_STOP=1 \
+                < "${ORGANISATIONS_SEED_FILE}"
+        fi
+        echo "Organisations seed complete."
+    fi
+
     # Seed feeds table (idempotent: each INSERT uses ON CONFLICT on feeds.name)
     echo "Seeding feeds table (idempotent)..."
     if [ ! -f "${FEEDS_SEED_FILE}" ]; then

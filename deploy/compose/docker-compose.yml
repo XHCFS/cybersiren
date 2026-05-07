@@ -167,6 +167,8 @@ services:
           echo "  Applying $$(basename $$f)..."
           psql -f "$$f" 2>&1 || true
         done
+        echo "Seeding organisations..."
+        psql -f /seeds/organisations_seed.sql
         echo "Seeding feeds..."
         psql -f /seeds/feeds.sql
         echo "Seeding TI demo data..."
