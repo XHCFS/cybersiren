@@ -17,6 +17,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"strconv"
@@ -162,5 +163,5 @@ ON CONFLICT (internal_id, fetched_at) DO NOTHING
 		// Concurrent retry won the insert race — treat as success.
 		return nil
 	}
-	return err
+	return fmt.Errorf("svc-01: insert emails row: %w", err)
 }
