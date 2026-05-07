@@ -92,7 +92,9 @@ SELECT
     e.campaign_id,
     COALESCE((c.analysis_metadata->>'email_count')::int, 0) AS email_count
 FROM emails e
-JOIN campaigns c ON c.id = e.campaign_id AND c.deleted_at IS NULL
+LEFT JOIN campaigns c
+       ON c.id = e.campaign_id
+      AND c.deleted_at IS NULL
 WHERE e.internal_id = $1
   AND e.fetched_at = $2::timestamptz
 `

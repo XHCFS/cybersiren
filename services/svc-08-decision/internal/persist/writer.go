@@ -173,19 +173,38 @@ func (w *Writer) runOnce(ctx context.Context, in Input) (Output, error) {
 		storedWire = []byte(wireText.String)
 	}
 	if err == nil {
-		var campID int64
+		// LEFT JOIN: campaign_id may be NULL when the campaign was
+		// soft-deleted between the original commit and this replay, or
+		// on legacy rows that never linked one. The stored
+		// kafka_verdict_wire is what republish actually needs; live
+		// campaign linkage is best-effort here.
+		var campID pgtype.Int8
 		var emailCount int32
-		if err := tx.QueryRow(ctx, queryEmailCampaignSnapshot,
+		scanErr := tx.QueryRow(ctx, queryEmailCampaignSnapshot,
 			in.InternalID,
 			fetchedAtParam(in.FetchedAt),
-		).Scan(&campID, &emailCount); err != nil {
-			return Output{}, fmt.Errorf("idempotent replay: load email campaign row: %w", err)
+		).Scan(&campID, &emailCount)
+		switch {
+		case scanErr == nil:
+			// fall through
+		case errors.Is(scanErr, pgx.ErrNoRows):
+			// emails row itself missing — log and proceed; the stored
+			// wire is the source of truth for republish.
+			w.log.Warn().
+				Int64("email_internal_id", in.InternalID).
+				Msg("dedupe replay: emails row missing; republishing from stored wire")
+		default:
+			return Output{}, fmt.Errorf("idempotent replay: load email campaign row: %w", scanErr)
 		}
 		if err := tx.Commit(ctx); err != nil {
 			return Output{}, fmt.Errorf("commit idempotent decision tx: %w", err)
 		}
+		var campOut int64
+		if campID.Valid {
+			campOut = campID.Int64
+		}
 		return Output{
-			CampaignID:       campID,
+			CampaignID:       campOut,
 			IsNew:            false,
 			EmailCount:       int(emailCount),
 			VerdictID:        existingVerdict,
