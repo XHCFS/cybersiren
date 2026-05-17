@@ -12,6 +12,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/rs/zerolog"
 
+	"github.com/saif/cybersiren/internal/phishing"
 	urlpkg "github.com/saif/cybersiren/services/svc-03-url-analysis/internal/url"
 	"github.com/saif/cybersiren/shared/config"
 	sharedhttp "github.com/saif/cybersiren/shared/http"
@@ -23,6 +24,23 @@ import (
 	"github.com/saif/cybersiren/shared/postgres/repository"
 	sharedvalkey "github.com/saif/cybersiren/shared/valkey"
 )
+
+// urlPredictor abstracts the URL model so the handler is testable without a
+// real Python worker.
+type urlPredictor interface {
+	PredictWithRoute(ctx context.Context, url string) (score int, prob float64, routed bool, reason string, err error)
+}
+
+// tiLookup abstracts the TI checker for testing without Valkey/Postgres.
+type tiLookup interface {
+	Check(ctx context.Context, url string) (urlpkg.TIResult, error)
+}
+
+// phishingScorer abstracts the Layer-2 ML detector for testing without GeoIP
+// databases or a running Python sidecar.
+type phishingScorer interface {
+	Score(ctx context.Context, rawURL string) (phishing.Result, error)
+}
 
 func main() {
 	bootstrapLog := logger.New("info", true)
@@ -76,21 +94,27 @@ func main() {
 	dbPool := pool.MustNew(ctx, cfg.DB.DSN(), poolOpts, log)
 	defer dbPool.Close()
 
-	valkeyClient := sharedvalkey.MustNew(sharedvalkey.ClientOptions{
+	// Valkey is optional: if unavailable (e.g. local dev without infra), TI
+	// checking is disabled for the session and all lookups return no-match.
+	var tiLookupInst tiLookup
+	valkeyClient, valkeyErr := sharedvalkey.New(sharedvalkey.ClientOptions{
 		Addr:     cfg.Valkey.Addr,
 		Password: cfg.Valkey.Password,
 		DB:       cfg.Valkey.DB,
 	}, log)
-	defer valkeyClient.Close()
-
-	tiRepo := repository.NewTIRepository(dbPool, log, reg)
-	tiCache := sharedvalkey.NewTICache(valkeyClient, tiRepo, log, reg, 0)
-
-	if cacheErr := tiCache.RefreshDomainCache(ctx); cacheErr != nil {
-		log.Error().Err(cacheErr).Msg("initial TI domain cache refresh failed")
+	if valkeyErr != nil {
+		log.Warn().Err(valkeyErr).Msg("valkey unavailable; TI lookups disabled for this session")
+		tiLookupInst = &noopTILookup{}
+	} else {
+		defer valkeyClient.Close()
+		tiRepo := repository.NewTIRepository(dbPool, log, reg)
+		tiCache := sharedvalkey.NewTICache(valkeyClient, tiRepo, log, reg, 0)
+		if cacheErr := tiCache.RefreshDomainCache(ctx); cacheErr != nil {
+			log.Error().Err(cacheErr).Msg("initial TI domain cache refresh failed")
+		}
+		tiLookupInst = urlpkg.NewTIChecker(tiCache, log)
+		log.Info().Msg("TI checker ready")
 	}
-
-	tiChecker := urlpkg.NewTIChecker(tiCache, log)
 
 	model, err := urlpkg.NewURLModel(cfg.ML.URLModelPath, cfg.ML.URLModelPoolSize, func(msg string, modelErr error) {
 		log.Error().Err(modelErr).Str("component", "url_model").Msg(msg)
@@ -101,6 +125,24 @@ func main() {
 	}
 	defer model.Close()
 
+	// Layer-2 ML phishing detector (fail-open: starts even if GeoIP unavailable).
+	det, detErr := phishing.NewDetector(phishing.Config{
+		SidecarURL: cfg.Phishing.SidecarURL,
+		GeoIPDir:   cfg.Phishing.GeoIPDir,
+		Threshold:  cfg.Phishing.Threshold,
+	})
+	var scorer phishingScorer
+	if detErr != nil {
+		log.Warn().Err(detErr).Msg("phishing ML detector init failed; Layer-2 scoring disabled")
+	} else {
+		scorer = det
+		defer det.Close()
+		log.Info().
+			Str("sidecar", cfg.Phishing.SidecarURL).
+			Str("geoip_dir", cfg.Phishing.GeoIPDir).
+			Msg("phishing ML detector ready")
+	}
+
 	srv := sharedhttp.NewDefaultServer()
 
 	srv.Engine().Static("/static", "./static")
@@ -108,7 +150,7 @@ func main() {
 		c.File("./static/index.html")
 	})
 
-	srv.POST("/scan", scanHandler(model, tiChecker, log))
+	srv.POST("/scan", scanHandler(model, tiLookupInst, scorer, log))
 
 	go func() {
 		if srvErr := srv.Start(fmt.Sprintf(":%d", cfg.Server.Port)); srvErr != nil {
@@ -134,6 +176,14 @@ func main() {
 	log.Info().Msg("shutdown complete")
 }
 
+// noopTILookup satisfies tiLookup when Valkey is not available.
+// All URLs return no-match; no error is surfaced to the caller.
+type noopTILookup struct{}
+
+func (n *noopTILookup) Check(_ context.Context, _ string) (urlpkg.TIResult, error) {
+	return urlpkg.TIResult{}, nil
+}
+
 type scanRequest struct {
 	URL string `json:"url"`
 }
@@ -149,9 +199,17 @@ type scanResponse struct {
 	TIThreatType string  `json:"ti_threat_type"`
 	TIRiskScore  int     `json:"ti_risk_score"`
 	Degraded     bool    `json:"degraded"`
+	// GuardHit is set when the domain guard short-circuits scoring.
+	// "allowlisted" means the apex domain is in the known-good set.
+	// "typosquat:<brand>" means it closely resembles a known brand.
+	GuardHit string `json:"guard_hit,omitempty"`
+	// Layer-2 fields — populated only when TI feed does not match.
+	MLDeployP  float64 `json:"ml_deploy_p,omitempty"`
+	MLVerdict  string  `json:"ml_verdict,omitempty"`
+	MLCacheHit bool    `json:"ml_cache_hit,omitempty"`
 }
 
-func scanHandler(model *urlpkg.URLModel, tiChecker *urlpkg.TIChecker, log zerolog.Logger) sharedhttp.HandlerFunc {
+func scanHandler(model urlPredictor, ti tiLookup, scorer phishingScorer, log zerolog.Logger) sharedhttp.HandlerFunc {
 	return func(ctx sharedhttp.Context) {
 		var req scanRequest
 		if reqErr := ctx.ParseJSON(&req); reqErr != nil {
@@ -169,9 +227,48 @@ func scanHandler(model *urlpkg.URLModel, tiChecker *urlpkg.TIChecker, log zerolo
 			return
 		}
 
+		// Domain guard: fast-path known-good domains and phishing patterns before
+		// touching the ML model or sidecar. L1 score is not used for
+		// user-submitted scan labels — only TI + L2 drive the verdict.
+		apex := urlpkg.ApexFromURL(normalized)
+		guard := urlpkg.CheckDomain(apex)
+		switch guard.Verdict {
+		case "real":
+			_ = ctx.OK(scanResponse{
+				URL:      normalized,
+				Label:    "legitimate",
+				GuardHit: "allowlisted",
+			})
+			return
+		case "typosquat":
+			_ = ctx.OK(scanResponse{
+				URL:         normalized,
+				Score:       100,
+				Probability: 1.0,
+				Label:       "phishing",
+				GuardHit:    "typosquat:" + guard.MatchedBrand,
+			})
+			return
+		}
+
+		// Brand-in-subdomain check: fires before ML when apex is unknown.
+		// Catches patterns like "paypal-security.verify-login.com" where the
+		// brand appears in a subdomain label but the registered domain is foreign.
+		hostname := urlpkg.HostnameFromURL(normalized)
+		if sub := urlpkg.CheckSubdomainBrand(hostname); sub.Verdict == "brand-in-subdomain" {
+			_ = ctx.OK(scanResponse{
+				URL:         normalized,
+				Score:       100,
+				Probability: 1.0,
+				Label:       "phishing",
+				GuardHit:    "brand-in-subdomain:" + sub.MatchedBrand,
+			})
+			return
+		}
+
 		var (
-			mlScore  int
-			mlProb   float64
+			rawScore int
+			rawProb  float64
 			routed   bool
 			reason   string
 			tiResult urlpkg.TIResult
@@ -182,49 +279,74 @@ func scanHandler(model *urlpkg.URLModel, tiChecker *urlpkg.TIChecker, log zerolo
 
 		go func() {
 			defer wg.Done()
-			mlScore, mlProb, routed, reason, _ = model.PredictWithRoute(ctx.Request().Context(), normalized)
+			// L1 model still called for degraded-mode detection and routing
+			// transparency, but its score is NOT used in classifyLabel for
+			// user-submitted URLs (it was calibrated on feed data, not live scans).
+			rawScore, rawProb, routed, reason, _ = model.PredictWithRoute(ctx.Request().Context(), normalized)
 		}()
 
 		go func() {
 			defer wg.Done()
-			tiResult, _ = tiChecker.Check(ctx.Request().Context(), normalized)
+			tiResult, _ = ti.Check(ctx.Request().Context(), normalized)
 		}()
 
 		wg.Wait()
 
-		label := classifyLabel(mlScore, tiResult, routed)
-		degraded := mlScore == 50 && mlProb == 0.5
-
-		log.Debug().
-			Str("url", normalized).
-			Int("ml_score", mlScore).
-			Float64("ml_prob", mlProb).
-			Bool("routed", routed).
-			Str("route_reason", reason).
-			Bool("ti_match", tiResult.Matched).
-			Str("ti_threat", tiResult.ThreatType).
-			Int("ti_risk", tiResult.RiskScore).
-			Str("label", label).
-			Bool("degraded", degraded).
-			Msg("scan complete")
-
-		_ = ctx.OK(scanResponse{
+		resp := scanResponse{
 			URL:          normalized,
-			Score:        mlScore,
-			Probability:  mlProb,
-			Label:        label,
+			Score:        rawScore,
+			Probability:  rawProb,
 			Routed:       routed,
 			RouteReason:  reason,
 			TIMatch:      tiResult.Matched,
 			TIThreatType: tiResult.ThreatType,
 			TIRiskScore:  tiResult.RiskScore,
-			Degraded:     degraded,
-		})
+			Degraded:     rawScore == 50 && rawProb == 0.5,
+		}
+
+		// Layer 2: ML phishing check fires only on TI-feed misses.
+		if !tiResult.Matched && scorer != nil {
+			mlCtx, mlCancel := context.WithTimeout(ctx.Request().Context(), 45*time.Second)
+			defer mlCancel()
+			if phishResult, phishErr := scorer.Score(mlCtx, normalized); phishErr != nil {
+				log.Warn().Err(phishErr).Str("url", normalized).Msg("phishing ML check failed")
+			} else {
+				resp.MLDeployP = phishResult.DeployP
+				resp.MLVerdict = phishResult.Verdict
+				resp.MLCacheHit = phishResult.CacheHit
+			}
+		}
+
+		// L1 score overridden to 0 for user-submitted scans — label is driven
+		// by TI match and L2 fusion verdict only.
+		resp.Label = classifyLabel(0, tiResult, false, resp.MLVerdict)
+
+		log.Debug().
+			Str("url", normalized).
+			Int("ml_score", rawScore).
+			Float64("ml_prob", rawProb).
+			Bool("routed", routed).
+			Str("route_reason", reason).
+			Bool("ti_match", tiResult.Matched).
+			Str("ti_threat", tiResult.ThreatType).
+			Int("ti_risk", tiResult.RiskScore).
+			Str("ml2_verdict", resp.MLVerdict).
+			Str("label", resp.Label).
+			Bool("degraded", resp.Degraded).
+			Msg("scan complete")
+
+		_ = ctx.OK(resp)
 	}
 }
 
-func classifyLabel(mlScore int, ti urlpkg.TIResult, routed bool) string {
+// classifyLabel maps Layer-1 (ML score + TI) and Layer-2 (fusion ML verdict)
+// signals to a final label.
+// mlVerdict is "phishing" | "benign" | "" (empty means Layer 2 did not run).
+func classifyLabel(mlScore int, ti urlpkg.TIResult, routed bool, mlVerdict string) string {
 	if ti.Matched && ti.RiskScore >= 80 {
+		return "phishing"
+	}
+	if mlVerdict == "phishing" {
 		return "phishing"
 	}
 	if routed {

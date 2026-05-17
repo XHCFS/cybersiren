@@ -183,6 +183,24 @@
     <span class="field-value" id="ti-risk">—</span>
   </div>
 
+  <!-- Fusion ML (Layer 2) — only shown on TI-feed misses -->
+  <div id="ml2-section" style="display:none">
+    <div class="section-title">Fusion ML (Layer 2)</div>
+    <div class="field">
+      <span class="field-label">Deploy Score</span>
+      <span class="field-value" id="ml2-deploy-p">—</span>
+    </div>
+    <div class="score-bar-track"><div id="ml2-bar" class="score-bar-fill"></div></div>
+    <div class="field">
+      <span class="field-label">Fusion Verdict</span>
+      <span class="field-value" id="ml2-verdict">—</span>
+    </div>
+    <div class="field">
+      <span class="field-label">Cache Hit</span>
+      <span class="field-value" id="ml2-cache-hit">—</span>
+    </div>
+  </div>
+
   <!-- Verdict -->
   <div class="section-title">Combined Verdict</div>
   <div class="field">
@@ -274,6 +292,23 @@
     // Degraded
     const dw = document.getElementById('degraded-warning');
     dw.classList.toggle('active', Boolean(d.degraded));
+
+    // Layer 2 — show only when ml_verdict is present (TI miss path)
+    const ml2Section = document.getElementById('ml2-section');
+    if (d.ml_verdict) {
+      const deployP = typeof d.ml_deploy_p === 'number' ? d.ml_deploy_p : 0;
+      document.getElementById('ml2-deploy-p').textContent = deployP.toFixed(4);
+      const ml2bar = document.getElementById('ml2-bar');
+      ml2bar.style.width = Math.min(deployP * 100, 100) + '%';
+      ml2bar.style.background = deployP >= 0.35 ? 'var(--red)' : 'var(--green)';
+      const ml2v = document.getElementById('ml2-verdict');
+      ml2v.textContent = d.ml_verdict;
+      ml2v.style.color = d.ml_verdict === 'phishing' ? 'var(--red)' : 'var(--green)';
+      document.getElementById('ml2-cache-hit').textContent = d.ml_cache_hit ? 'Yes (apex cached)' : 'No';
+      ml2Section.style.display = 'block';
+    } else {
+      ml2Section.style.display = 'none';
+    }
 
     results.classList.add('active');
   }

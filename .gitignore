@@ -89,3 +89,9 @@ __pycache__/
 tmp/
 temp/
 .pytest_cache/
+
+# MaxMind GeoIP databases (large binary files, not committed)
+*.mmdb
+
+# Trained ML model artifacts (exported from training, not committed)
+fusion_export/models/*.joblib

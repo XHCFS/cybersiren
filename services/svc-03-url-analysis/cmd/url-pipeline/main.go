@@ -22,6 +22,7 @@ import (
 
 	"github.com/rs/zerolog"
 
+	"github.com/saif/cybersiren/internal/phishing"
 	"github.com/saif/cybersiren/services/svc-03-url-analysis/internal/url"
 	contracts "github.com/saif/cybersiren/shared/contracts/kafka"
 	kafkaconsumer "github.com/saif/cybersiren/shared/kafka/consumer"
@@ -37,8 +38,9 @@ const (
 )
 
 var (
-	urlModel  *url.URLModel
-	tiChecker *url.TIChecker
+	urlModel         *url.URLModel
+	tiChecker        *url.TIChecker
+	phishingDetector *phishing.Detector
 )
 
 func main() {
@@ -77,6 +79,23 @@ func main() {
 			}
 			tiChecker = url.NewTIChecker(tiCache, log)
 			log.Info().Msg("TI checker ready")
+
+			// Layer-2 ML phishing detector (fail-open: missing GeoIP or unreachable
+			// sidecar should not prevent the service from starting).
+			det, detErr := phishing.NewDetector(phishing.Config{
+				SidecarURL: deps.Cfg.Phishing.SidecarURL,
+				GeoIPDir:   deps.Cfg.Phishing.GeoIPDir,
+				Threshold:  deps.Cfg.Phishing.Threshold,
+			})
+			if detErr != nil {
+				log.Warn().Err(detErr).Msg("phishing ML detector init failed; Layer-2 scoring disabled")
+			} else {
+				phishingDetector = det
+				log.Info().
+					Str("sidecar", deps.Cfg.Phishing.SidecarURL).
+					Str("geoip_dir", deps.Cfg.Phishing.GeoIPDir).
+					Msg("phishing ML detector ready")
+			}
 			return nil
 		},
 		Handler: handle,
@@ -98,7 +117,11 @@ type urlScan struct {
 	TIMatch      bool    `json:"ti_match"`
 	TIThreatType string  `json:"ti_threat_type,omitempty"`
 	TIRiskScore  int     `json:"ti_risk_score"`
-	Label        string  `json:"label"`
+	// Layer-2 ML fields — populated only on TI-feed misses.
+	MLDeployP  float64 `json:"ml_deploy_p,omitempty"`
+	MLVerdict  string  `json:"ml_verdict,omitempty"`
+	MLCacheHit bool    `json:"ml_cache_hit,omitempty"`
+	Label      string  `json:"label"`
 }
 
 func handle(ctx context.Context, msg kafkaconsumer.Message, deps svckit.Deps) error {
@@ -203,13 +226,31 @@ func scanOne(ctx context.Context, raw string, log zerolog.Logger) urlScan {
 	out.TIMatch = tiRes.Matched
 	out.TIThreatType = tiRes.ThreatType
 	out.TIRiskScore = tiRes.RiskScore
-	out.Label = classifyLabel(mlScore, tiRes, routed)
+
+	// Layer 2: ML phishing check fires only on TI-feed misses.
+	if !tiRes.Matched && phishingDetector != nil {
+		mlCtx, mlCancel := context.WithTimeout(ctx, 15*time.Second)
+		defer mlCancel()
+		if phishResult, phishErr := phishingDetector.Score(mlCtx, normalized); phishErr != nil {
+			log.Warn().Err(phishErr).Str("url", normalized).Msg("phishing ML check failed")
+		} else {
+			out.MLDeployP = phishResult.DeployP
+			out.MLVerdict = phishResult.Verdict
+			out.MLCacheHit = phishResult.CacheHit
+		}
+	}
+
+	out.Label = classifyLabel(mlScore, tiRes, routed, out.MLVerdict)
 	return out
 }
 
-// classifyLabel mirrors the rule set in cmd/url-analysis/main.go.
-func classifyLabel(mlScore int, ti url.TIResult, routed bool) string {
+// classifyLabel maps ML + TI + Layer-2 signals to a label.
+// mlVerdict is the fusion scorer verdict ("phishing" | "benign" | "").
+func classifyLabel(mlScore int, ti url.TIResult, routed bool, mlVerdict string) string {
 	if ti.Matched && ti.RiskScore >= 80 {
+		return "phishing"
+	}
+	if mlVerdict == "phishing" {
 		return "phishing"
 	}
 	if routed {

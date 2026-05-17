@@ -28,7 +28,14 @@ require (
 )
 
 require (
+	github.com/hashicorp/golang-lru/v2 v2.0.7 // indirect
 	github.com/klauspost/compress v1.18.5 // indirect
+	github.com/likexian/gokit v0.25.16 // indirect
+	github.com/likexian/whois v1.15.7 // indirect
+	github.com/likexian/whois-parser v1.24.21 // indirect
+	github.com/mfonda/simhash v0.0.0-20151007195837-79f94a1100d6 // indirect
+	github.com/oschwald/geoip2-golang v1.13.0 // indirect
+	github.com/oschwald/maxminddb-golang v1.13.0 // indirect
 	github.com/pierrec/lz4/v4 v4.1.26 // indirect
 	github.com/twmb/franz-go/pkg/kmsg v1.13.1 // indirect
 )
