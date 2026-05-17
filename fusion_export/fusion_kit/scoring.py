@@ -83,18 +83,20 @@ def fusion(
 
     Default mode is ``"mean"`` with asymmetric weighting:
 
-    - Normal range (op_p ≥ 0.05): arithmetic mean — 50% url_p + 50% op_p.
-    - Confident-benign range (op_p < 0.05): 15% url_p + 85% op_p.
+    - Normal range (op_p ≥ 0.01): arithmetic mean — 50% url_p + 50% op_p.
+    - Extremely-confident-benign range (op_p < 0.01): 60% url_p + 40% op_p.
 
-    The asymmetry matters because the URL char model scores major brand names
-    (google, paypal, amazon) very high — those n-grams appear constantly in
-    phishing URLs.  When op_p is near zero the operational model is signalling
-    with high confidence that this URL has legitimate operational properties
-    (established ASN, old domain, valid cert from a known CA, real registrar).
-    In that regime url_p is uninformative; giving it 50% weight produces false
-    positives on real google.com, amazon.com, etc.  Shifting weight to 85%
-    op_p eliminates those FPs without sacrificing detection — real phishing
-    always has elevated op_p because it lacks the benign operational profile.
+    The Go domain guard (Cisco top-10K allowlist + typosquat + brand-in-subdomain)
+    short-circuits all known-good domains before the sidecar is called.  The old
+    threshold of 0.05 was calibrated when the sidecar had to defend against FPs on
+    google.com, paypal.com etc. — those never reach the sidecar any more.
+
+    The narrower threshold (0.01) limits damping to infrastructure that is
+    definitively clean.  At that confidence level, the url_p signal (char n-gram
+    model, FNR=1.64%) is the dominant discriminator.  Giving it 60% weight catches
+    phishing hosted on legitimate cloud platforms (url_p ≈ 0.90, op_p ≈ 0.003 →
+    deploy_p ≈ 0.541 → detected) while the domain guard ensures known-good domains
+    never reach the sidecar to produce false positives.
 
     Use ``"max"`` only when you want either model's high score to dominate
     regardless of the other (more aggressive, higher FPR).
@@ -112,8 +114,8 @@ def fusion(
         result = np.maximum(url_p, op_p)
     else:
         mean = 0.5 * (url_p + op_p)
-        dampened = 0.15 * url_p + 0.85 * op_p
-        result = np.where(op_p < 0.05, dampened, mean)
+        dampened = 0.60 * url_p + 0.40 * op_p
+        result = np.where(op_p < 0.01, dampened, mean)
     if shortener_mask is not None and op_p is not None:
         shortener_score = 0.1 * url_p + 0.9 * op_p
         result = np.where(shortener_mask, shortener_score, result)
