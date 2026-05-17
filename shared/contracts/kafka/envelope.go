@@ -16,9 +16,15 @@ const SchemaVersion = 1
 // emails.internal_id / orgs.id PKs used by svc-04 and svc-08 when they
 // write to Postgres. The aggregator (svc-07) carries them along as the
 // partition key on every produce.
+//
+// FetchedAt is emails.fetched_at (partition discriminator on the emails
+// table). Producers SHOULD set this on analysis.plans and every scores.*
+// envelope meta so svc-07 can forward it verbatim on emails.scored; when
+// omitted, downstream consumers cannot address partitioned rows reliably.
 type MessageMeta struct {
 	EmailID       int64     `json:"email_id"`
 	OrgID         int64     `json:"org_id"`
+	FetchedAt     time.Time `json:"fetched_at,omitempty"`
 	Timestamp     time.Time `json:"timestamp"`
 	TraceID       string    `json:"trace_id,omitempty"`
 	SpanID        string    `json:"span_id,omitempty"`
@@ -34,4 +40,12 @@ func NewMeta(emailID, orgID int64) MessageMeta {
 		Timestamp:     time.Now().UTC(),
 		SchemaVersion: SchemaVersion,
 	}
+}
+
+// NewMetaWithFetched returns a MessageMeta with FetchedAt populated (emails
+// table partition key). Use on analysis.plans and scores.* producers.
+func NewMetaWithFetched(emailID, orgID int64, fetchedAt time.Time) MessageMeta {
+	m := NewMeta(emailID, orgID)
+	m.FetchedAt = fetchedAt.UTC()
+	return m
 }

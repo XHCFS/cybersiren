@@ -227,6 +227,10 @@ test-shared:
 test-short:
 	go test -race -short ./...
 
+## integration-schema: Postgres migration smoke tests (DATABASE_URL required; migrate DB first)
+integration-schema:
+	go test -tags=integration -race -count=1 -v ./integrations/schema/...
+
 ## test-cover: Run all tests and open HTML coverage report
 test-cover:
 	go test -race -coverprofile=coverage.out ./...
@@ -477,7 +481,7 @@ check-compose-env:
         up up-infra down down-v logs ps \
         db-setup db-migrate db-seed db-reset db-shell \
         generate build build-svc \
-        test test-svc test-shared test-short test-cover \
+        test test-svc test-shared test-short integration-schema test-cover \
         vet lint lint-fix tidy \
         valkey-cli kafka-topics check-tools \
         demo demo-build demo-all demo-all-build demo-stop-all jaeger \

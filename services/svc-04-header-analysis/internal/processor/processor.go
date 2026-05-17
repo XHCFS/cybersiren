@@ -188,7 +188,7 @@ func (p *Processor) Handle(ctx context.Context, msg sharedconsumer.Message) erro
 		return fmt.Errorf("marshal scores.header: %w", err)
 	}
 
-	if err := p.producer.Publish(ctx, encodeKey(parsed.EmailID), body, p.cfg.PublishRetryAttempts); err != nil {
+	if err := p.producer.Publish(ctx, encodeKey(parsed.EmailID), body, p.cfg.PublishRetryAttempts); err != nil { // extra kafka retries cfg
 		p.observeError("publish")
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "publish scores.header failed")
@@ -223,7 +223,7 @@ func (p *Processor) publishNeutral(ctx context.Context, parsed contractsk.Analys
 	if err != nil {
 		return fmt.Errorf("marshal neutral scores.header: %w", err)
 	}
-	if err := p.producer.Publish(ctx, encodeKey(parsed.EmailID), body, p.cfg.PublishRetryAttempts); err != nil {
+	if err := p.producer.Publish(ctx, encodeKey(parsed.EmailID), body, p.cfg.PublishRetryAttempts); err != nil { // extra kafka retries cfg
 		p.observeError("publish")
 		return fmt.Errorf("publish neutral scores.header: %w", err)
 	}

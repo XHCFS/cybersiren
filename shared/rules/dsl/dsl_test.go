@@ -1,4 +1,4 @@
-package rules
+package dsl
 
 import (
 	"encoding/json"
@@ -163,14 +163,16 @@ func TestEvaluate_MalformedRulesReturnError(t *testing.T) {
 		[]byte("not json"),
 		[]byte(`[]`),
 		[]byte(`{}`),
-		[]byte(`{"signal":"x"}`),                // missing op
-		[]byte(`{"signal":"x","op":"unknown"}`), // unknown op
-		[]byte(`{"category":"auth"}`),           // missing expr
+		[]byte(`{"signal":"x"}`),
+		[]byte(`{"signal":"x","op":"unknown"}`),
+		[]byte(`{"category":"auth"}`),
 	}
 
 	snap := SignalSnapshot{"x": 1}
 	for i, c := range cases {
+		i, c := i, c
 		t.Run("", func(t *testing.T) {
+			t.Parallel()
 			r, err := Evaluate(c, snap)
 			if err == nil && r.Matched {
 				t.Fatalf("case %d: expected error or no-match, got %+v", i, r)

@@ -35,8 +35,8 @@ type Config struct {
 	BatchTimeout time.Duration
 	// WriteTimeout caps a single ProduceSync call.
 	WriteTimeout time.Duration
-	// Retries caps the number of attempts WriteMessages will make per
-	// publish. When 0, a single best-effort attempt is made.
+	// Retries is how many *additional* attempts to make after the first
+	// ProduceSync try (retries=0 → 1 attempt; retries=3 → 4 attempts).
 	Retries int
 }
 
@@ -119,8 +119,8 @@ func New(cfg Config, log zerolog.Logger, reg *prometheus.Registry) (*Producer, e
 }
 
 // Publish sends one record. The active OTel span on ctx is propagated into
-// Kafka headers via kotel. retries caps the in-process retry attempts on
-// transient errors (0 = single best-effort attempt).
+// Kafka headers via kotel. retries is the count of *extra* tries after the
+// first attempt (retries=3 → up to 4 ProduceSync calls).
 func (p *Producer) Publish(ctx context.Context, key, value []byte, retries int) error {
 	if p == nil || p.client == nil {
 		return errors.New("kafka producer: not initialised")
@@ -129,10 +129,7 @@ func (p *Producer) Publish(ctx context.Context, key, value []byte, retries int) 
 	start := time.Now()
 	var lastErr error
 
-	attempts := retries
-	if attempts < 1 {
-		attempts = 1
-	}
+	attempts := normalizePublishAttempts(retries)
 
 	for attempt := 0; attempt < attempts; attempt++ {
 		ctxAttempt, cancel := context.WithTimeout(ctx, p.writeTimeout)
@@ -180,6 +177,15 @@ func (p *Producer) Ping(ctx context.Context) error {
 		return fmt.Errorf("kafka producer ping: %w", err)
 	}
 	return nil
+}
+
+// normalizePublishAttempts maps the retries parameter to a total attempt count.
+func normalizePublishAttempts(retries int) int {
+	a := retries + 1
+	if a < 1 {
+		return 1
+	}
+	return a
 }
 
 func splitBrokers(brokers string) []string {

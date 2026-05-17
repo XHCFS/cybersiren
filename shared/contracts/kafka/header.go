@@ -91,6 +91,9 @@ type ReceivedHop struct {
 type ScoresHeaderMessage struct {
 	EmailID int64 `json:"email_id"`
 	OrgID   int64 `json:"org_id"`
+	// FetchedAt is emails.fetched_at (composite PK); required for partitioned
+	// emails updates from svc-08 when propagated through emails.scored.
+	FetchedAt time.Time `json:"fetched_at,omitempty"`
 
 	Component string `json:"component"` // always "header"
 	Score     int    `json:"score"`     // [0, 100]

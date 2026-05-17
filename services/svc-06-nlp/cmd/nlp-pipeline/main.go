@@ -83,8 +83,12 @@ func handle(ctx context.Context, msg kafkaconsumer.Message, deps svckit.Deps) er
 		return fmt.Errorf("nlp predict (status=%d): %w", status, err)
 	}
 
+	ft := input.Meta.FetchedAt
+	if ft.IsZero() {
+		ft = time.Now().UTC()
+	}
 	out := contracts.ScoreEnvelope{
-		Meta:      contracts.NewMeta(input.Meta.EmailID, input.Meta.OrgID),
+		Meta:      contracts.NewMetaWithFetched(input.Meta.EmailID, input.Meta.OrgID, ft),
 		Component: contracts.ComponentNLP,
 		Score:     float64(resp.ContentRiskScore),
 		Details: map[string]interface{}{
@@ -105,7 +109,7 @@ func handle(ctx context.Context, msg kafkaconsumer.Message, deps svckit.Deps) er
 	if !ok {
 		return fmt.Errorf("svc-06: producer for %s not configured", contracts.TopicScoresNLP)
 	}
-	if err := prod.Publish(ctx, []byte(strconv.FormatInt(input.Meta.EmailID, 10)), body, 1); err != nil {
+	if err := prod.Publish(ctx, []byte(strconv.FormatInt(input.Meta.EmailID, 10)), body, 1); err != nil { // +1 kafka retry
 		return fmt.Errorf("publish scores.nlp: %w", err)
 	}
 
