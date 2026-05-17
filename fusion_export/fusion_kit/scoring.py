@@ -81,22 +81,24 @@ def fusion(
     """
     Fuse URL-model and operational-model probabilities.
 
-    Default mode is ``"mean"`` with asymmetric weighting:
+    Default mode is ``"mean"`` with asymmetric weighting across three ranges:
 
-    - Normal range (op_p ≥ 0.01): arithmetic mean — 50% url_p + 50% op_p.
-    - Extremely-confident-benign range (op_p < 0.01): 60% url_p + 40% op_p.
+    - CDN-phishing range (op_p < 0.01): 60% url_p + 40% op_p.
+      Catches phishing hosted on clean cloud / CDN infrastructure where the
+      domain barely resolves.  The Go domain guard already allowlists all
+      top-10K domains, so this range only sees genuinely unknown domains.
 
-    The Go domain guard (Cisco top-10K allowlist + typosquat + brand-in-subdomain)
-    short-circuits all known-good domains before the sidecar is called.  The old
-    threshold of 0.05 was calibrated when the sidecar had to defend against FPs on
-    google.com, paypal.com etc. — those never reach the sidecar any more.
+    - Established-domain range (url_p > 0.95 AND 0.01 ≤ op_p < 0.10):
+      40% url_p + 60% op_p.
+      When the char model is extremely confident (url_p > 0.95) but the
+      operational model gives a moderate benign signal (op_p 1–10%), the
+      URL has phishing-like path keywords (login/verify/account) on a domain
+      that is established but not in the top-10K.  This is a false-positive
+      hotspot for legitimate small-business banking and portal sites.  Giving
+      op_p 60% weight reduces those FPs while preserving recall for phishing
+      where op_p is truly near zero (CDN range above).
 
-    The narrower threshold (0.01) limits damping to infrastructure that is
-    definitively clean.  At that confidence level, the url_p signal (char n-gram
-    model, FNR=1.64%) is the dominant discriminator.  Giving it 60% weight catches
-    phishing hosted on legitimate cloud platforms (url_p ≈ 0.90, op_p ≈ 0.003 →
-    deploy_p ≈ 0.541 → detected) while the domain guard ensures known-good domains
-    never reach the sidecar to produce false positives.
+    - Normal range (everything else with op_p ≥ 0.01): 50% url_p + 50% op_p.
 
     Use ``"max"`` only when you want either model's high score to dominate
     regardless of the other (more aggressive, higher FPR).
@@ -113,9 +115,13 @@ def fusion(
     if mode == "max":
         result = np.maximum(url_p, op_p)
     else:
-        mean = 0.5 * (url_p + op_p)
-        dampened = 0.60 * url_p + 0.40 * op_p
-        result = np.where(op_p < 0.01, dampened, mean)
+        mean = 0.5 * url_p + 0.5 * op_p          # normal range
+        dampened = 0.60 * url_p + 0.40 * op_p    # CDN-phishing range
+        conservative = 0.40 * url_p + 0.60 * op_p  # established-domain range
+        in_cdm = op_p < 0.01
+        in_est = (url_p > 0.95) & ~in_cdm & (op_p < 0.10)
+        result = np.where(in_cdm, dampened, mean)
+        result = np.where(in_est, conservative, result)
     if shortener_mask is not None and op_p is not None:
         shortener_score = 0.1 * url_p + 0.9 * op_p
         result = np.where(shortener_mask, shortener_score, result)
