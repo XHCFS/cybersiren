@@ -75,41 +75,37 @@ def fusion(
     url_p: np.ndarray,
     op_p: np.ndarray | None,
     *,
-    mode: Literal["max", "mean", "op_only"] = "op_only",
+    mode: Literal["max", "mean"] = "mean",
     shortener_mask: np.ndarray | None = None,
 ) -> np.ndarray:
     """
     Fuse URL-model and operational-model probabilities.
 
-    Default mode is ``"op_only"``:
+    Default mode is ``"mean"`` with asymmetric weighting:
 
-    - ``"op_only"``: deploy_p = op_p. url_p drives zero weight in the verdict.
-      If op_p is None (enrichment did not run at all), returns zeros — fail
-      open, every URL scores 0.0 = benign. url_p and shortener_mask are
-      ignored entirely in this mode.
+    - Normal range (op_p ≥ 0.05): arithmetic mean — 50% url_p + 50% op_p.
+    - Confident-benign range (op_p < 0.05): 15% url_p + 85% op_p.
 
-    The ``"op_only"`` default is correct because url_p (structural LightGBM)
-    scores deep legitimate OAuth and login URLs at ≥ 0.9 — path-entropy,
-    path-depth, and sensitive-word features fire on any login flow regardless
-    of domain legitimacy. url_p is a routing gate, not a verdict signal.
+    The asymmetry matters because the URL char model scores major brand names
+    (google, paypal, amazon) very high — those n-grams appear constantly in
+    phishing URLs.  When op_p is near zero the operational model is signalling
+    with high confidence that this URL has legitimate operational properties
+    (established ASN, old domain, valid cert from a known CA, real registrar).
+    In that regime url_p is uninformative; giving it 50% weight produces false
+    positives on real google.com, amazon.com, etc.  Shifting weight to 85%
+    op_p eliminates those FPs without sacrificing detection — real phishing
+    always has elevated op_p because it lacks the benign operational profile.
 
-    Legacy modes (kept for backwards-compatibility):
-
-    - ``"mean"``: asymmetric weighting — normal range (op_p ≥ 0.05): 50%/50%
-      arithmetic mean; confident-benign range (op_p < 0.05): 15% url_p +
-      85% op_p. Shortener mask shifts weight to 10%/90%.
-    - ``"max"``: max(url_p, op_p) — more aggressive, higher FPR.
+    Use ``"max"`` only when you want either model's high score to dominate
+    regardless of the other (more aggressive, higher FPR).
 
     ``shortener_mask``: boolean array marking URLs whose apex domain is a
-    known URL shortener (bit.ly, t.co, tinyurl.com, etc.).  Only used in
-    ``"mean"`` mode. The production pipeline resolves redirects before
-    scoring, so this mask is only needed for offline/unit-test scoring where
-    redirects are not followed.
+    known URL shortener (bit.ly, t.co, tinyurl.com, etc.).  For these the
+    URL char model scores the opaque code, not the redirect destination.
+    Fusion weight shifts to 10% url_p + 90% op_p.  The production pipeline
+    resolves redirects before scoring, so this mask is only needed for
+    offline/unit-test scoring where redirects are not followed.
     """
-    if mode == "op_only":
-        if op_p is None:
-            return np.zeros_like(url_p)
-        return op_p
     if op_p is None:
         return url_p
     if mode == "max":
