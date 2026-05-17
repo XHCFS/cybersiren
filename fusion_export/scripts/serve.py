@@ -90,7 +90,8 @@ def _apex(url: str) -> str:
 
 class Scorer:
     def __init__(self, models_dir: Path, fusion_mode: str, threshold: float,
-                 content_gate: bool, workers: int, feed_tag: str):
+                 content_gate: bool, workers: int, feed_tag: str, url_model: str):
+        self.url_model = url_model
         self.fusion_mode = fusion_mode
         self.threshold = threshold
         self.content_gate = content_gate
@@ -98,10 +99,10 @@ class Scorer:
         self.feed_tag = feed_tag
 
         struct_path = models_dir / "url_struct_lgb.joblib"
-        url_path = models_dir / "url_char_lr.joblib"
+        url_path    = models_dir / "url_char_lr.joblib"
         op_path = models_dir / "hgb_operational.joblib"
 
-        if struct_path.exists():
+        if url_model == "structural" and struct_path.exists():
             self._struct = load_structural_scorer(struct_path)
             self._url_bundle = None
         else:
@@ -276,6 +277,8 @@ def main() -> int:
     ap.add_argument("--content-gate", action="store_true")
     ap.add_argument("--workers", type=int, default=6)
     ap.add_argument("--feed-tag", type=str, default="fusion_sidecar")
+    ap.add_argument("--url-model", choices=("char_lr", "structural"), default="char_lr",
+                    help="URL-side model: char_lr (higher recall) or structural (lower FPR)")
     args = ap.parse_args()
 
     global _scorer
@@ -287,9 +290,9 @@ def main() -> int:
         content_gate=args.content_gate,
         workers=args.workers,
         feed_tag=args.feed_tag,
+        url_model=args.url_model,
     )
-    url_model = "structural_lgb" if _scorer._struct is not None else "url_char_lr"
-    print(f"Models loaded. url_model={url_model} threshold={args.threshold} "
+    print(f"Models loaded. url_model={_scorer.url_model} threshold={args.threshold} "
           f"fusion={args.fusion} content_gate={args.content_gate}", flush=True)
 
     server = HTTPServer((args.host, args.port), Handler)
