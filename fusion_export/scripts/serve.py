@@ -193,7 +193,7 @@ class Scorer:
                 "url_p": round(float(up), 6),
                 "op_p": round(float(opp), 6),
                 "deploy_p": round(float(dp), 6),
-                "verdict": "phishing" if dp >= self.threshold else "benign",
+                "verdict": "phishing" if dp > self.threshold else "benign",
             }
             if self.content_gate:
                 r["cg_triggered"] = bool(gr.triggered) if gr else False
@@ -271,7 +271,7 @@ def main() -> int:
     ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--host", type=str, default="127.0.0.1")
     ap.add_argument("--models-dir", type=Path, default=ROOT / "models")
-    ap.add_argument("--fusion", choices=("max", "mean"), default="mean")
+    ap.add_argument("--fusion", choices=("max", "mean", "op_only"), default="op_only")
     ap.add_argument("--threshold", type=float, default=0.50)
     ap.add_argument("--content-gate", action="store_true")
     ap.add_argument("--workers", type=int, default=6)
@@ -289,7 +289,7 @@ def main() -> int:
         feed_tag=args.feed_tag,
     )
     url_model = "structural_lgb" if _scorer._struct is not None else "url_char_lr"
-    print(f"Models loaded. url_model={url_model} threshold={args.threshold} "
+    print(f"Models loaded. url_model={url_model} threshold={args.threshold:.2f} "
           f"fusion={args.fusion} content_gate={args.content_gate}", flush=True)
 
     server = HTTPServer((args.host, args.port), Handler)
