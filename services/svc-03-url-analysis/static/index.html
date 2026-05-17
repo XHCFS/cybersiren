@@ -152,6 +152,15 @@
 
   <div id="url-display" class="url-display"></div>
 
+  <!-- Domain Guard — shown only when the guard short-circuits scoring -->
+  <div id="guard-section" style="display:none">
+    <div class="section-title">Domain Guard</div>
+    <div class="field">
+      <span class="field-label">Guard Result</span>
+      <span class="field-value" id="guard-hit">—</span>
+    </div>
+  </div>
+
   <!-- ML Analysis -->
   <div class="section-title">ML Analysis</div>
   <div class="field">
@@ -262,10 +271,33 @@
     // URL
     document.getElementById('url-display').textContent = d.url || '—';
 
-    // ML
+    // Domain guard
+    const guardSection = document.getElementById('guard-section');
+    const guardHit = d.guard_hit || '';
+    if (guardHit) {
+      const guardEl = document.getElementById('guard-hit');
+      if (guardHit === 'allowlisted') {
+        guardEl.textContent = 'Allowlisted (Cisco top-10K)';
+        guardEl.style.color = 'var(--green)';
+      } else if (guardHit.startsWith('typosquat:')) {
+        guardEl.textContent = 'Typosquat detected — ' + guardHit.slice(10);
+        guardEl.style.color = 'var(--red)';
+      } else if (guardHit.startsWith('brand-in-subdomain:')) {
+        guardEl.textContent = 'Brand in subdomain — ' + guardHit.slice(19);
+        guardEl.style.color = 'var(--red)';
+      } else {
+        guardEl.textContent = guardHit;
+      }
+      guardSection.style.display = 'block';
+    } else {
+      guardSection.style.display = 'none';
+    }
+
+    // ML — when guard fires for "allowlisted", ML was not invoked
+    const mlBypassed = guardHit === 'allowlisted';
     const score = typeof d.score === 'number' ? d.score : 0;
-    document.getElementById('ml-score').textContent = score;
-    document.getElementById('ml-prob').textContent = typeof d.probability === 'number' ? d.probability.toFixed(4) : '—';
+    document.getElementById('ml-score').textContent = mlBypassed ? 'N/A' : score;
+    document.getElementById('ml-prob').textContent = mlBypassed ? 'N/A' : (typeof d.probability === 'number' ? d.probability.toFixed(4) : '—');
     document.getElementById('ml-label').textContent = d.label || '—';
 
     // Score bar

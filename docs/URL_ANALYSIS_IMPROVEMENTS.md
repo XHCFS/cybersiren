@@ -2,8 +2,9 @@
 
 CyberSiren's URL analysis pipeline has three detection layers: **ML scoring**
 (deployed XGBoost lexical model), **TI lookup** (Valkey domain cache fed by 4 threat
-feeds), and **enrichment** (currently a stub). This document covers known gaps in
-all three layers and a prioritised roadmap to address them.
+feeds), and **enrichment** (operational model via sidecar — see §Current Architecture).
+This document covers known gaps in all three layers and a prioritised roadmap to
+address them.
 
 ---
 
@@ -22,23 +23,40 @@ all three layers and a prioritised roadmap to address them.
 
 ## Current Architecture
 
+The pipeline now has four stages, implemented in PR #140:
+
 ```
 POST /scan { url }
   │
-  ├─► ML Model (XGBoost, deployed feature schema from `ml/config.json`)
-  │     └─► score: 0–100, probability: 0.0–1.0
+  ├─► Domain Guard  ✅ IMPLEMENTED (Go handler — fires first)
+  │     ├─► Cisco Umbrella top-10K allowlist (embedded go:embed)
+  │     │     └─► known-good apex → "legitimate" fast path (ML skipped)
+  │     ├─► Levenshtein d=1 typosquat scan (12 major brands)
+  │     │     └─► match → "phishing" fast path, guard_hit="typosquat:<brand>"
+  │     └─► Brand keyword in subdomain scan
+  │           └─► match → "phishing" fast path, guard_hit="brand-in-subdomain:<brand>"
   │
-  ├─► TI Cache Lookup (Valkey HGETALL on exact normalised domain)
+  ├─► ML Model  (XGBoost, 28 lexical features, `ml/config.json`)
+  │     └─► score: 0–100, probability: 0.0–1.0
+  │         (skipped if domain guard fired)
+  │
+  ├─► TI Cache Lookup  (Valkey HGETALL on exact normalised domain)
   │     └─► matched: bool, risk_score: 0–100, threat_type: string
   │
-  └─► Enricher (TODO — stub only)
-        └─► (nothing yet)
+  └─► Layer 2 Fusion Sidecar  ✅ IMPLEMENTED (optional, not in docker-compose demo)
+        ├─► url_char_lr  — character n-gram LR model (FNR 1.64%, FPR 1.29%)
+        ├─► Operational HGB  — live enrichment (DNS, WHOIS, TLS, ASN, GeoIP, HTTP)
+        └─► Asymmetric fusion: 60% url_p + 40% op_p (op_p < 0.01)
+                                50% url_p + 50% op_p (op_p ≥ 0.01)
+            Benchmark: 93.6% phishing detected (299 live URLs), 0/46 FPR
 
-Verdict logic:
-  if TI matched AND ti_risk_score ≥ 80 → "phishing"
-  else if ml_score ≥ 70              → "phishing"
-  else if ml_score ≥ 40              → "suspicious"
-  else                               → "legitimate"
+Verdict logic (demo mode, no L2 sidecar):
+  if guard fired "real"                  → "legitimate"
+  if guard fired "typosquat/brand-sub"   → "phishing"
+  if TI matched AND ti_risk_score ≥ 80   → "phishing"
+  else if ml_score ≥ 70                  → "phishing"
+  else if ml_score ≥ 40                  → "suspicious"
+  else                                   → "legitimate"
 ```
 
 ---
@@ -150,28 +168,28 @@ Only 4 URL-focused feeds are ingested. Missing:
 
 ## Enrichment Gaps
 
-### Issue 9: Enricher Is a Stub
+### Issue 9: Enricher — Partially Implemented in L2 Sidecar
 
-`services/svc-03-url-analysis/internal/url/enricher.go` contains only:
-```go
-package url
-// TODO: implement enricher.
-```
+`services/svc-03-url-analysis/internal/url/enricher.go` is still a stub in the
+Go service. However, live enrichment **is implemented** in the Layer 2 Python
+sidecar (`fusion_export/scripts/serve.py`) as the **operational model** (HGB
+classifier on ~50 live-enrichment features). It runs per-request and covers:
 
-No live enrichment signals are available at scan time. The following are
-standard in phishing detection pipelines but entirely absent:
+| Signal | Status |
+|--------|--------|
+| DNS A/AAAA/MX/NS resolution | ✅ Implemented in sidecar |
+| WHOIS domain age / registrar | ✅ Implemented in sidecar |
+| TLS certificate issuer & age | ✅ Implemented in sidecar |
+| ASN / hosting provider | ✅ Implemented in sidecar |
+| Geo-IP of hosting | ✅ Implemented in sidecar |
+| HTTP response code & headers | ✅ Implemented in sidecar |
+| **Page content analysis** | ❌ Not yet (login form, brand logo detection) |
+| **VirusTotal / URLScan API** | ❌ Not yet |
+| **Passive DNS history** | ❌ Not yet |
 
-| Signal | Value | Effort |
-|--------|-------|--------|
-| **WHOIS domain age** | Domains < 30 days old are 10× more likely to be phishing | Medium |
-| **SSL certificate issuer** | Let's Encrypt free certs are disproportionately used by phishing | Low |
-| **SSL certificate age** | Certs issued < 7 days ago correlate with phishing | Low |
-| **DNS MX/SPF/DKIM records** | Missing or misconfigured email auth = suspicious | Medium |
-| **Passive DNS history** | First-seen date, resolution count, IP diversity | Medium |
-| **HTTP redirect chain** | Phishing URLs often chain 3–5 redirects through shorteners | Medium |
-| **Page content analysis** | Login form presence, brand logo detection, form action URL | High |
-| **VirusTotal / URLScan API** | Community verdicts + full page rendering | Low (API call) |
-| **Geo-IP of hosting** | Hosting in unusual jurisdictions for the claimed brand | Low |
+The sidecar is not wired into the docker-compose demo stack. To enable it, run
+`python fusion_export/scripts/serve.py --workers 4 --url-model char_lr` and
+configure the Go handler with `CYBERSIREN_PHISHING_SCORER_URL=http://localhost:8765`.
 
 ---
 
@@ -186,15 +204,23 @@ gradation. Problems:
 - No weighting between ML confidence and TI confidence.
 - No way to express "TI says suspicious but not certain."
 
-### Issue 11: No Signal Fusion
+### Issue 11: Signal Fusion — ✅ Implemented in Layer 2 Sidecar
 
-ML and TI run in parallel but their results are combined with simple if/else
-logic, not probabilistic fusion. There's no way to express:
+The Layer 2 sidecar implements asymmetric probabilistic fusion of the URL
+character model and the operational enrichment model:
 
-- "ML says 60% phishing AND TI says known-bad domain" → should be very high
-  confidence phishing
-- "ML says 30% phishing AND TI says no match AND domain is 10 years old" →
-  should be very low confidence
+```
+deploy_p = 0.60 × url_p + 0.40 × op_p   (when op_p < 0.01 — extremely confident-benign range)
+deploy_p = 0.50 × (url_p + op_p)         (standard mean otherwise)
+```
+
+This is calibrated so that phishing hosted on clean CDN infrastructure (high
+url_p ≈ 0.95, low op_p ≈ 0.001) still scores above the 0.5 threshold, while the
+domain guard prevents the high url_p weight from producing FPs on known-good
+domains. Benchmark: 93.6% detection (280/299 live OpenPhish URLs), 0/46 FPR.
+
+ML and TI in the Go handler (demo mode, no sidecar) still use simple if/else.
+Weighted signal fusion across all three signals (ML, TI, enrichment) is P2 work:
 
 ### Issue 12: No Feedback Loop
 
@@ -222,33 +248,23 @@ would need it.
 
 These can ship as Go code changes without touching the ML model.
 
-#### 1A. Top-Domain Allowlist ⭐ P0
+#### 1A. Top-Domain Allowlist — ✅ SHIPPED (PR #140)
 
-Load the existing `ml/data/top-1m.csv` (or a curated top-10K subset) into
-memory at startup. Before returning the ML score, check if the URL's registered
-domain is in the set. If it matches, clamp the score:
+Implemented as a **domain guard** in the Go handler
+(`services/svc-03-url-analysis/internal/url/domainguard.go`).
 
-```go
-registered := normalization.ExtractRegisteredDomain(url)
-if rank, ok := topDomainRank[registered]; ok && rank <= 10_000 {
-    if mlScore > 20 {
-        mlScore = 20
-    }
-}
-```
+The allowlist is sourced from the Cisco Umbrella top-10K (extracted from the
+top-1M CSV via `scripts/update_allowlist.py`) and embedded at compile time via
+`go:embed data/top10k_domains.txt`. The guard runs before any ML or TI lookup.
 
-**What already exists:**
-- `ml/data/top-1m.csv` — 1M entries, `rank,domain` format
-- `feature_extractor.go` — `golang.org/x/net/publicsuffix` for eTLD+1 parsing
+Three layers implemented:
+1. **Apex allowlist** — exact match against 10K domains → `guard_hit: "allowlisted"`
+2. **Typosquat detection** — Levenshtein d=1 against 12 major brands → `guard_hit: "typosquat:<brand>"`
+3. **Brand-in-subdomain** — keyword scan on subdomain labels → `guard_hit: "brand-in-subdomain:<brand>"`
 
-**What needs to be built:**
-- Extract eTLD+1 helper into `shared/normalization/`
-- `DomainAllowlist` struct: loads CSV at startup (top-10K ≈ 200 KB)
-- Post-scoring clamp in `/scan` handler
-- Config: `CYBERSIREN_ML__ALLOWLIST_TOP_N=10000`
-
-**Impact:** Eliminates false positives for google.com, meet.google.com, x.com,
-t.co, and all top-10K domains + their subdomains. Zero model changes.
+**Impact achieved:** Eliminates all FPs for known top-10K domains and their subdomains.
+The domain guard is the reason the 60/40 fusion weights can be aggressive (high url_p
+weight) without FPs on known-good domains — those domains never reach the sidecar.
 
 #### 1B. TI Domain Walking ⭐ P0
 
@@ -528,7 +544,8 @@ Extract the `publicsuffix.EffectiveTLDPlusOne()` logic from
 
 | Priority | Fix | Layer | Effort | Retrain? |
 |----------|-----|-------|--------|----------|
-| **P0** | 1A — Top-domain allowlist | ML | ~2 hours | No |
+| ✅ **Done** | 1A — Top-domain allowlist (Cisco top-10K, go:embed) | ML | shipped | No |
+| ✅ **Done** | Layer 2 signal fusion (60/40 asymmetric, 93.6% detection) | Verdict | shipped | No |
 | **P0** | 1B — TI domain walking | TI | ~3 hours | No |
 | **P0** | 4A — Balance www-prefix training data | ML | ~1 day | Yes |
 | **P1** | 2A — `domain_in_top_1m` feature | ML | ~2 hours + retrain | Yes |
