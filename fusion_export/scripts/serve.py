@@ -110,6 +110,48 @@ class Scorer:
 
         self.op_clf, self.op_cols, self.ref_card, self.max_cat = load_operational_bundle(op_path)
 
+    def score_features(self, requests_: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Score pre-computed feature rows (from Go enricher), bypassing re-enrichment.
+
+        Each element of requests_ must have:
+          "normalized_url"  – the (possibly redirect-resolved) URL string
+          "is_shortener"    – bool, whether the apex is a known URL shortener
+          "features"        – flat dict of enrichment features (Go FeatureVector keys)
+        """
+        if not requests_:
+            return []
+
+        norm_urls = [r.get("normalized_url", "") for r in requests_]
+        shortener_mask = np.array([bool(r.get("is_shortener", False)) for r in requests_], dtype=bool)
+
+        if self._struct is not None:
+            url_p = self._struct.score(norm_urls)
+        else:
+            url_p = score_url_hash(self._url_bundle, norm_urls)
+
+        rows = []
+        for r in requests_:
+            feat = r.get("features") or {}
+            row: dict[str, Any] = {}
+            for col in self.op_cols:
+                row[col] = feat.get(col, np.nan if col in _NUMERIC_OP_COLS else "")
+            rows.append(row)
+
+        op_p = score_operational(self.op_clf, self.op_cols, self.ref_card, self.max_cat, rows)
+        dep = fusion(url_p, op_p, mode=self.fusion_mode,
+                     shortener_mask=shortener_mask if shortener_mask.any() else None)
+
+        results = []
+        for u, up, opp, dp in zip(norm_urls, url_p, op_p, dep):
+            results.append({
+                "url":       u,
+                "url_p":     round(float(up),  6),
+                "op_p":      round(float(opp), 6),
+                "deploy_p":  round(float(dp),  6),
+                "verdict":   "phishing" if dp >= self.threshold else "benign",
+            })
+        return results
+
     def score(self, urls: list[str]) -> list[dict[str, Any]]:
         if not urls:
             return []
@@ -265,6 +307,21 @@ class Handler(BaseHTTPRequestHandler):
                 return
             results = _scorer.score([url])
             self._send_json(200, results[0] if results else {})
+
+        elif self.path == "/score-features":
+            reqs = body.get("requests", [])
+            if not isinstance(reqs, list):
+                self._send_json(400, {"error": "'requests' must be a list"})
+                return
+            if len(reqs) > 500:
+                self._send_json(400, {"error": "max 500 requests per call"})
+                return
+            results = _scorer.score_features(reqs)
+            self._send_json(200, {
+                "results": results,
+                "threshold": _scorer.threshold,
+                "fusion_mode": _scorer.fusion_mode,
+            })
 
         else:
             self._send_json(404, {"error": "not found"})

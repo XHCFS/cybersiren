@@ -269,6 +269,16 @@ _EPHEMERAL_PLATFORM_SUFFIXES: Final[frozenset[str]] = frozenset({
     "railway.app",
     "surge.sh",
     "usercontent.dev",   # GitHub user content
+    "wasmer.app",        # Wasmer WebAssembly hosting
+    "replit.app",        # Replit
+    "replit.co",         # Replit (legacy)
+    "repl.co",           # Replit (legacy)
+    "zya.me",            # Free subdomain hosting
+    "dweb.link",         # IPFS/Filecoin dweb gateway (includes *.ipfs.dweb.link)
+    "ipfs.io",           # IPFS public gateway
+    "stackblitz.io",     # StackBlitz
+    "codesandbox.io",    # CodeSandbox
+    "codepen.io",        # CodePen
     # Portfolio / website builder platforms
     "myportfolio.com",   # Adobe Portfolio
     "company.site",      # Square Sites
