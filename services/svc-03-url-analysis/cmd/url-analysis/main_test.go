@@ -147,13 +147,13 @@ func TestClassifyLabel(t *testing.T) {
 			want: "legitimate",
 		},
 		{
-			name:      "Layer-2 phishing verdict overrides clean ML score",
-			score:     5, mlVerdict: "phishing",
+			name:  "Layer-2 phishing verdict overrides clean ML score",
+			score: 5, mlVerdict: "phishing",
 			want: "phishing",
 		},
 		{
-			name:   "Routed to enrichment → suspicious",
-			score:  30, routed: true,
+			name:  "Routed to enrichment → suspicious",
+			score: 30, routed: true,
 			want: "suspicious",
 		},
 		{
@@ -172,8 +172,8 @@ func TestClassifyLabel(t *testing.T) {
 			want:  "legitimate",
 		},
 		{
-			name:      "TI high risk beats L2 benign",
-			score:     10, ti: urlpkg.TIResult{Matched: true, RiskScore: 95}, mlVerdict: "benign",
+			name:  "TI high risk beats L2 benign",
+			score: 10, ti: urlpkg.TIResult{Matched: true, RiskScore: 95}, mlVerdict: "benign",
 			want: "phishing",
 		},
 	}
@@ -344,7 +344,9 @@ func TestScanHandler_ConcurrentSafe(t *testing.T) {
 
 func TestScanHandler_TILowRiskNotPhishing(t *testing.T) {
 	t.Parallel()
-	// TI match but risk score < 80 — should not be phishing from TI alone.
+	// TI match but risk score < 80 — classifyLabel ignores low-confidence
+	// TI matches, so Layer 2 is invited to weigh in. With L2 returning
+	// benign, the label stays non-phishing.
 	scorer := &fakeScorer{result: phishing.Result{Verdict: "benign", DeployP: 0.1}}
 	engine := newTestEngine(
 		&fakeModel{score: 10, prob: 0.10},
@@ -353,9 +355,25 @@ func TestScanHandler_TILowRiskNotPhishing(t *testing.T) {
 	)
 	w, data := doScan(t, engine, "https://phish-test-site.xyz/")
 	require.Equal(t, http.StatusOK, w.Code)
-	// TI matched but risk < 80, so Layer 2 is still skipped (TI match path).
-	assert.Equal(t, 0, scorer.callCount(), "scorer must NOT be called on any TI match")
+	assert.Equal(t, 1, scorer.callCount(), "scorer must be called when TI risk < 80")
 	assert.NotEqual(t, "phishing", data["label"])
+}
+
+// Regression: low-confidence TI match + L2 phishing verdict must escalate to
+// phishing. Before the gate fix, L2 was skipped on any TI match.
+func TestScanHandler_TILowRiskL2EscalatesPhishing(t *testing.T) {
+	t.Parallel()
+	scorer := &fakeScorer{result: phishing.Result{Verdict: "phishing", DeployP: 0.85}}
+	engine := newTestEngine(
+		&fakeModel{score: 10, prob: 0.10},
+		&fakeTI{result: urlpkg.TIResult{Matched: true, RiskScore: 30, ThreatType: "informational"}},
+		scorer,
+	)
+	w, data := doScan(t, engine, "https://looks-bad.xyz/login")
+	require.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, 1, scorer.callCount(), "L2 must run on low-confidence TI match")
+	assert.Equal(t, "phishing", data["label"])
+	assert.Equal(t, "phishing", data["ml_verdict"])
 }
 
 // ─── Handler: domain guard fast-path ─────────────────────────────────────────

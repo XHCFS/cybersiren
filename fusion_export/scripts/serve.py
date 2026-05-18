@@ -46,9 +46,8 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
@@ -205,7 +204,6 @@ class Scorer:
 
 
 _scorer: Scorer | None = None
-_lock = threading.Lock()
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -237,6 +235,14 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(400, {"error": "invalid JSON"})
             return
 
+        # Guard non-object bodies (null, lists, scalars) before calling .get().
+        if not isinstance(body, dict):
+            self._send_json(400, {"error": "request body must be a JSON object"})
+            return
+
+        # No global lock around Scorer.score: models are loaded once at startup
+        # and treated as read-only thereafter. The ThreadingHTTPServer below
+        # gives us per-request threads; serializing them defeats the point.
         if self.path == "/score":
             urls = body.get("urls", [])
             if not isinstance(urls, list):
@@ -245,8 +251,7 @@ class Handler(BaseHTTPRequestHandler):
             if len(urls) > 500:
                 self._send_json(400, {"error": "max 500 URLs per request"})
                 return
-            with _lock:
-                results = _scorer.score(urls)
+            results = _scorer.score(urls)
             self._send_json(200, {
                 "results": results,
                 "threshold": _scorer.threshold,
@@ -258,8 +263,7 @@ class Handler(BaseHTTPRequestHandler):
             if not url:
                 self._send_json(400, {"error": "'url' is required"})
                 return
-            with _lock:
-                results = _scorer.score([url])
+            results = _scorer.score([url])
             self._send_json(200, results[0] if results else {})
 
         else:
@@ -295,7 +299,7 @@ def main() -> int:
     print(f"Models loaded. url_model={_scorer.url_model} threshold={args.threshold} "
           f"fusion={args.fusion} content_gate={args.content_gate}", flush=True)
 
-    server = HTTPServer((args.host, args.port), Handler)
+    server = ThreadingHTTPServer((args.host, args.port), Handler)
     print(f"Listening on {args.host}:{args.port}", flush=True)
     try:
         server.serve_forever()

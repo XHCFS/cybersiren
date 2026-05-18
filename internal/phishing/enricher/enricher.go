@@ -2,6 +2,7 @@ package enricher
 
 import (
 	"context"
+	"fmt"
 	"net/url"
 	"strings"
 	"time"
@@ -114,7 +115,7 @@ func (e *Enricher) Enrich(ctx context.Context, rawURL string) (EnrichedURL, erro
 
 	// Ignore context-cancellation errors — enrichment degrades gracefully.
 	if err := g.Wait(); err != nil && gctx.Err() == nil {
-		return eu, err
+		return eu, fmt.Errorf("enrich %q: %w", rawURL, err)
 	}
 
 	eu.Features = ComputeFeatures(eu)

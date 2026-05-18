@@ -304,8 +304,11 @@ func scanHandler(model urlPredictor, ti tiLookup, scorer phishingScorer, log zer
 			Degraded:     rawScore == 50 && rawProb == 0.5,
 		}
 
-		// Layer 2: ML phishing check fires only on TI-feed misses.
-		if !tiResult.Matched && scorer != nil {
+		// Layer 2: ML phishing check fires when TI didn't match OR when TI
+		// matched with low confidence (< 80 risk). A low-confidence TI hit
+		// alone is not enough to label phishing in classifyLabel, so we still
+		// want L2 to weigh in.
+		if (!tiResult.Matched || tiResult.RiskScore < 80) && scorer != nil {
 			mlCtx, mlCancel := context.WithTimeout(ctx.Request().Context(), 45*time.Second)
 			defer mlCancel()
 			if phishResult, phishErr := scorer.Score(mlCtx, normalized); phishErr != nil {

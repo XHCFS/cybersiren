@@ -332,7 +332,7 @@
       document.getElementById('ml2-deploy-p').textContent = deployP.toFixed(4);
       const ml2bar = document.getElementById('ml2-bar');
       ml2bar.style.width = Math.min(deployP * 100, 100) + '%';
-      ml2bar.style.background = deployP >= 0.35 ? 'var(--red)' : 'var(--green)';
+      ml2bar.style.background = deployP >= 0.50 ? 'var(--red)' : 'var(--green)';
       const ml2v = document.getElementById('ml2-verdict');
       ml2v.textContent = d.ml_verdict;
       ml2v.style.color = d.ml_verdict === 'phishing' ? 'var(--red)' : 'var(--green)';

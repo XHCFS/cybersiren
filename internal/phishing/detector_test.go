@@ -92,10 +92,6 @@ func TestDetector_LivePhishingURL(t *testing.T) {
 
 func splitLines(s string) []string {
 	var lines []string
-	for _, l := range []byte(s) {
-		_ = l
-	}
-	// Simple split without importing extra packages.
 	start := 0
 	for i := 0; i < len(s); i++ {
 		if s[i] == '\n' {

@@ -370,7 +370,8 @@ func Load() (*Config, error) {
 		Phishing: PhishingConfig{
 			SidecarURL: "http://127.0.0.1:8765",
 			GeoIPDir:   "../../fusion_export/fusion_kit",
-			Threshold:  0.35,
+			// Matches internal/phishing.DefaultThreshold and the sidecar default.
+			Threshold: 0.50,
 		},
 		Header: HeaderConfig{
 			RuleCacheTTLSeconds:     60,

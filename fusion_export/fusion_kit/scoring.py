@@ -118,9 +118,9 @@ def fusion(
         mean = 0.5 * url_p + 0.5 * op_p          # normal range
         dampened = 0.60 * url_p + 0.40 * op_p    # CDN-phishing range
         conservative = 0.40 * url_p + 0.60 * op_p  # established-domain range
-        in_cdm = op_p < 0.01
-        in_est = (url_p > 0.95) & ~in_cdm & (op_p < 0.10)
-        result = np.where(in_cdm, dampened, mean)
+        in_cdn = op_p < 0.01
+        in_est = (url_p > 0.95) & ~in_cdn & (op_p < 0.10)
+        result = np.where(in_cdn, dampened, mean)
         result = np.where(in_est, conservative, result)
     if shortener_mask is not None and op_p is not None:
         shortener_score = 0.1 * url_p + 0.9 * op_p

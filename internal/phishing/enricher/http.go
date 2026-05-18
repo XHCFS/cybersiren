@@ -2,7 +2,10 @@ package enricher
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -31,10 +34,15 @@ var (
 	reFavicon    = regexp.MustCompile(`(?i)` +
 		`<link[^>]+rel=["'][^"']*(?:shortcut\s+)?icon[^"']*["'][^>]+href=["']([^"']+)["']` +
 		`|<link[^>]+href=["']([^"']+)["'][^>]+rel=["'][^"']*(?:shortcut\s+)?icon[^"']*["']`)
-	rePassword = regexp.MustCompile(`(?i)<input[^>]+type\s*=\s*["']?password["']?`)
+	rePassword       = regexp.MustCompile(`(?i)<input[^>]+type\s*=\s*["']?password["']?`)
 	reHiddenRedirect = regexp.MustCompile(
 		`(?i)<input[^>]+type\s*=\s*["']?hidden["']?[^>]+name\s*=\s*["']?` +
 			`(?:redirect|return|return_to|next|goto|url|back|callback|destination)["']?`)
+	reStripTags = regexp.MustCompile(`<[^>]+>`)
+
+	// errBlockedAddress is returned when the dialer resolves the target to a
+	// private, loopback, link-local, or otherwise non-public address.
+	errBlockedAddress = errors.New("blocked: non-public IP address")
 
 	httpClient = &http.Client{
 		Timeout: 5 * time.Second,
@@ -42,19 +50,80 @@ var (
 			if len(via) >= 10 {
 				return http.ErrUseLastResponse
 			}
+			// Re-validate the scheme of every redirect target. The dialer
+			// already blocks non-public IPs at the TCP layer, but a redirect
+			// to file:// / data:// / etc. would bypass DialContext entirely.
+			if req.URL == nil || (req.URL.Scheme != "http" && req.URL.Scheme != "https") {
+				return errBlockedAddress
+			}
 			return nil
 		},
 		Transport: &http.Transport{
 			ResponseHeaderTimeout: 5 * time.Second,
+			DialContext:           safeDialContext,
 		},
 	}
 )
 
+// isPublicIPFn is the predicate the dialer uses to decide whether an
+// IP address may be dialed. Tests can swap it (see http_test.go).
+var isPublicIPFn = isPublicIP
+
+// safeDialContext is an http.Transport DialContext that rejects targets
+// resolving to non-public IPs (loopback, link-local incl. 169.254.169.254
+// cloud metadata, private RFC1918/RFC4193, multicast, unspecified).
+// Mitigates SSRF when fetching user-submitted URLs server-side.
+func safeDialContext(ctx context.Context, network, addr string) (net.Conn, error) {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return nil, fmt.Errorf("split host:port %q: %w", addr, err)
+	}
+	var resolver net.Resolver
+	ips, err := resolver.LookupIP(ctx, "ip", host)
+	if err != nil {
+		return nil, fmt.Errorf("resolve %q: %w", host, err)
+	}
+	var allowed []net.IP
+	for _, ip := range ips {
+		if isPublicIPFn(ip) {
+			allowed = append(allowed, ip)
+		}
+	}
+	if len(allowed) == 0 {
+		return nil, errBlockedAddress
+	}
+	d := net.Dialer{Timeout: 5 * time.Second}
+	var lastErr error
+	for _, ip := range allowed {
+		conn, dialErr := d.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
+		if dialErr == nil {
+			return conn, nil
+		}
+		lastErr = dialErr
+	}
+	return nil, lastErr
+}
+
+func isPublicIP(ip net.IP) bool {
+	if ip == nil || ip.IsUnspecified() || ip.IsLoopback() ||
+		ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() ||
+		ip.IsMulticast() || ip.IsInterfaceLocalMulticast() ||
+		ip.IsPrivate() {
+		return false
+	}
+	return true
+}
+
 const browserUA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
 
 // FetchHTTP fetches rawURL and parses relevant fields from the HTML body.
-// Returns zero-value HTTPResult (StatusCode=0) on error.
+// Returns zero-value HTTPResult (StatusCode=0) on error, including refusal
+// to fetch non-http(s) schemes and non-public IPs (SSRF guard).
 func FetchHTTP(ctx context.Context, rawURL string) HTTPResult {
+	parsed, err := url.Parse(rawURL)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+		return HTTPResult{}
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return HTTPResult{}
@@ -107,8 +176,7 @@ func FetchHTTP(ctx context.Context, rawURL string) HTTPResult {
 }
 
 func stripTags(s string) string {
-	reTag := regexp.MustCompile(`<[^>]+>`)
-	return reTag.ReplaceAllString(s, "")
+	return reStripTags.ReplaceAllString(s, "")
 }
 
 // extractDomainFromHref resolves href against base and returns its apex domain.

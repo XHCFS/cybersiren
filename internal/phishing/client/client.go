@@ -113,28 +113,34 @@ func (c *Client) ScoreBatch(ctx context.Context, reqs []ScoreRequest) ([]ScoreRe
 
 	results := make([]ScoreResult, len(wireResp.Results))
 	for i, r := range wireResp.Results {
-		results[i] = ScoreResult{
-			URL:          r.URL,
-			EffectiveURL: r.EffectiveURL,
-			URLP:         r.URLP,
-			OpP:          r.OpP,
-			DeployP:      r.DeployP,
-			Verdict:      r.Verdict,
-		}
+		results[i] = ScoreResult(r)
 	}
 	return results, nil
 }
 
 // CachedScore returns from the LRU cache if available, otherwise calls Score.
-// The cache key is the apex domain of the URL.
+//
+// The cache key is the full URL — not the apex domain — because the sidecar's
+// url_p is computed on the URL string and is path-dependent (e.g.
+// github.com/login differs from github.com/foo). When url is empty the cache
+// is bypassed entirely. apexKey is accepted for backwards compatibility and
+// is unused.
 func (c *Client) CachedScore(ctx context.Context, url, apexKey string) (ScoreResult, bool, error) {
-	if hit, ok := c.cache.Get(apexKey); ok {
+	_ = apexKey
+	if url == "" {
+		result, err := c.Score(ctx, ScoreRequest{URL: url})
+		if err != nil {
+			return ScoreResult{}, false, err
+		}
+		return result, false, nil
+	}
+	if hit, ok := c.cache.Get(url); ok {
 		return hit, true, nil
 	}
 	result, err := c.Score(ctx, ScoreRequest{URL: url})
 	if err != nil {
 		return ScoreResult{}, false, err
 	}
-	c.cache.Set(apexKey, result)
+	c.cache.Set(url, result)
 	return result, false, nil
 }

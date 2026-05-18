@@ -13,6 +13,7 @@ package phishing
 
 import (
 	"context"
+	"fmt"
 	"net/url"
 	"strings"
 
@@ -21,13 +22,20 @@ import (
 	phclient "github.com/saif/cybersiren/internal/phishing/client"
 )
 
+// DefaultThreshold is the canonical deploy_p cutoff used across the Go
+// detector, the Python sidecar default, and the UI red-band threshold.
+// Keep these in sync.
+const DefaultThreshold = 0.50
+
 // Config configures the Detector.
 type Config struct {
 	// SidecarURL is the base URL of the Python scoring sidecar (default "http://127.0.0.1:8765").
 	SidecarURL string
 	// GeoIPDir is kept for backwards-compatible config; the v2 sidecar handles GeoIP internally.
 	GeoIPDir string
-	// Threshold is the deploy_p cutoff for "phishing" verdict (default 0.50).
+	// Threshold is the deploy_p cutoff above which Score reclassifies the
+	// sidecar verdict as "phishing" (default DefaultThreshold). Allows the
+	// Go side to apply a stricter or laxer cutoff than the sidecar.
 	Threshold float64
 }
 
@@ -36,7 +44,7 @@ func (c *Config) withDefaults() {
 		c.SidecarURL = "http://127.0.0.1:8765"
 	}
 	if c.Threshold == 0 {
-		c.Threshold = 0.50
+		c.Threshold = DefaultThreshold
 	}
 }
 
@@ -62,7 +70,7 @@ func NewDetector(cfg Config) (*Detector, error) {
 	cfg.withDefaults()
 	c, err := phclient.NewClient(cfg.SidecarURL)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("create phishing sidecar client: %w", err)
 	}
 	return &Detector{cfg: cfg, client: c}, nil
 }
@@ -78,7 +86,15 @@ func (d *Detector) Score(ctx context.Context, rawURL string) (Result, error) {
 
 	scored, cacheHit, err := d.client.CachedScore(ctx, rawURL, apexKey)
 	if err != nil {
-		return Result{}, err
+		return Result{}, fmt.Errorf("sidecar score: %w", err)
+	}
+
+	// Reapply the Go-side threshold over deploy_p. This lets svc-03 pick its
+	// own cutoff (env: CYBERSIREN_PHISHING__THRESHOLD) independent of whatever
+	// the sidecar process was started with.
+	verdict := "benign"
+	if scored.DeployP >= d.cfg.Threshold {
+		verdict = "phishing"
 	}
 
 	return Result{
@@ -87,7 +103,7 @@ func (d *Detector) Score(ctx context.Context, rawURL string) (Result, error) {
 		URLP:         scored.URLP,
 		OpP:          scored.OpP,
 		DeployP:      scored.DeployP,
-		Verdict:      scored.Verdict,
+		Verdict:      verdict,
 		CacheHit:     cacheHit,
 	}, nil
 }

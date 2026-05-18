@@ -231,8 +231,10 @@ func scanOne(ctx context.Context, raw string, log zerolog.Logger) urlScan {
 	out.TIThreatType = tiRes.ThreatType
 	out.TIRiskScore = tiRes.RiskScore
 
-	// Layer 2: ML phishing check fires only on TI-feed misses.
-	if !tiRes.Matched && phishingDetector != nil {
+	// Layer 2: ML phishing check fires when TI didn't match OR when TI
+	// matched with low confidence (< 80 risk). classifyLabel ignores
+	// low-confidence TI matches, so we still want L2 to weigh in.
+	if (!tiRes.Matched || tiRes.RiskScore < 80) && phishingDetector != nil {
 		mlCtx, mlCancel := context.WithTimeout(ctx, 15*time.Second)
 		defer mlCancel()
 		if phishResult, phishErr := phishingDetector.Score(mlCtx, normalized); phishErr != nil {

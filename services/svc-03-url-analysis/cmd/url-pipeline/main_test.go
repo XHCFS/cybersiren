@@ -32,13 +32,13 @@ func TestPipelineClassifyLabel(t *testing.T) {
 			want: "legitimate",
 		},
 		{
-			name:      "Layer-2 phishing verdict → phishing even with clean ML",
-			score:     5, mlVerdict: "phishing",
+			name:  "Layer-2 phishing verdict → phishing even with clean ML",
+			score: 5, mlVerdict: "phishing",
 			want: "phishing",
 		},
 		{
-			name:   "Routed → suspicious",
-			score:  20, routed: true,
+			name:  "Routed → suspicious",
+			score: 20, routed: true,
 			want: "suspicious",
 		},
 		{
@@ -57,13 +57,13 @@ func TestPipelineClassifyLabel(t *testing.T) {
 			want:  "legitimate",
 		},
 		{
-			name:      "Layer-2 benign does not change ML-based suspicious",
-			score:     50, mlVerdict: "benign",
+			name:  "Layer-2 benign does not change ML-based suspicious",
+			score: 50, mlVerdict: "benign",
 			want: "suspicious",
 		},
 		{
-			name:      "Layer-2 phishing overrides routed-only suspicious",
-			score:     30, routed: true, mlVerdict: "phishing",
+			name:  "Layer-2 phishing overrides routed-only suspicious",
+			score: 30, routed: true, mlVerdict: "phishing",
 			want: "phishing",
 		},
 	}
