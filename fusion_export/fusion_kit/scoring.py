@@ -95,13 +95,19 @@ def fusion(
       well-calibrated and phishing paths (login/verify/account/mfa) are
       strong lexical signals even on clean hosting infrastructure.
 
-    - High-operational range (op_p > 0.60): 25% url_p + 75% op_p.
+    - High-operational range (op_p > 0.60, url_p ≥ 0.05): 25% url_p + 75% op_p.
       When the operational model is highly confident (strong signals from
       DNS, WHOIS, TLS, content analysis, ASN), op_p dominates.  This
       catches phishing where the URL string is innocuous (numeric or
       brand-less domain names) but the infrastructure/content is clearly
       malicious.  Legitimate sites with clean infrastructure have op_p
       well below this threshold.
+
+      Guard: when url_p < 0.05 (URL model sees nothing suspicious at all),
+      fall back to the normal blend even if op_p > 0.60.  Legitimate
+      platform deployments (developer demos on vercel.app / pages.dev) land
+      at url_p ≈ 0.001–0.026; real phishing in the high-op zone has url_p
+      ≥ 0.06 (numeric domains, brand hooks in the path).
 
     Use ``"max"`` only when you want either model's high score to dominate
     regardless of the other (more aggressive, higher FPR).
@@ -121,7 +127,10 @@ def fusion(
         result = np.maximum(url_p, op_p)
     else:
         in_cdn = op_p < 0.01
-        in_high_op = op_p > 0.60
+        # High-op blend only when url_p ≥ 0.05; below that the URL model
+        # sees nothing suspicious and the high op_p is likely an ephemeral
+        # platform deployment, not phishing infrastructure.
+        in_high_op = (op_p > 0.60) & (url_p >= 0.05)
         cdn_blend = 0.65 * url_p + 0.35 * op_p    # CDN-phishing range
         high_op_blend = 0.25 * url_p + 0.75 * op_p  # high-operational range
         mean = 0.60 * url_p + 0.40 * op_p           # normal range
