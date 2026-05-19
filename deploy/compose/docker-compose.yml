@@ -217,7 +217,7 @@ services:
       # directory is reachable, the Go enricher in internal/phishing/enricher
       # loads and svc-03 routes scoring via /score-features (per-enricher Go
       # Jaeger spans); otherwise the detector falls back to /score.
-      CYBERSIREN_PHISHING__GEO_IP_DIR: /app/geoip
+      CYBERSIREN_PHISHING__GEOIP_DIR: /app/geoip
       CYBERSIREN_METRICS_PORT: "9090"
       CYBERSIREN_JAEGER_ENDPOINT: http://jaeger:4318
     networks:
