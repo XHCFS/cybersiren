@@ -158,6 +158,12 @@ jobs:
       - name: Install jq
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends jq
 
+      - name: Install L1 model Python deps
+        # svc-03 spawns the L1 inference subprocess on startup; mirrors
+        # deploy/docker/Dockerfile.url_analysis line 20. Without these the
+        # service fatals before the e2e runner can hit /healthz.
+        run: pip install --no-cache-dir joblib numpy scikit-learn xgboost lightgbm tldextract
+
       - name: Install migrate
         run: |
           curl -L https://github.com/golang-migrate/migrate/releases/download/v4.18.1/migrate.linux-amd64.tar.gz | tar xz
