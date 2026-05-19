@@ -302,6 +302,9 @@ svc-demo-port = $(or $(demo-port-$(call svc-short-profile,$(1))),8083)
 NLP_MODEL := services/svc-06-nlp/nlp/onnx/model_int8.onnx
 NLP_MODEL_SRC := python/svc-06-nlp/onnx/model_int8.onnx
 
+FUSION_URL_MODEL := fusion_export/models/url_char_lr.joblib
+FUSION_HGB_MODEL := fusion_export/models/hgb_operational.joblib
+
 ## check-nlp-model: Ensure the NLP ONNX model is present at the path the
 ## FastAPI service expects. Pulls via Git LFS if the source copy is also a
 ## stub, then copies the source into place.
@@ -320,9 +323,31 @@ check-nlp-model:
 	cp "$(NLP_MODEL_SRC)" "$(NLP_MODEL)"; \
 	echo "  [svc-06] ONNX model ready ($$(du -sh $(NLP_MODEL) | cut -f1))"
 
+## check-fusion-models: Ensure the L2 fusion bundles (url_char_lr.joblib +
+## hgb_operational.joblib) are present at the path the sidecar loads from.
+## Pulls via Git LFS if they look like stubs. Required by demo svc=svc-03-*.
+check-fusion-models:
+	@url_size=$$(wc -c < "$(FUSION_URL_MODEL)" 2>/dev/null || echo 0); \
+	hgb_size=$$(wc -c < "$(FUSION_HGB_MODEL)" 2>/dev/null || echo 0); \
+	if [ "$$url_size" -lt 1000 ] || [ "$$hgb_size" -lt 1000 ]; then \
+	    echo "  [fusion] joblib bundles missing — pulling via Git LFS..."; \
+	    git lfs pull --include="fusion_export/models/*.joblib,fusion_export/models/*.metrics.json"; \
+	fi
+	@url_size=$$(wc -c < "$(FUSION_URL_MODEL)" 2>/dev/null || echo 0); \
+	hgb_size=$$(wc -c < "$(FUSION_HGB_MODEL)" 2>/dev/null || echo 0); \
+	if [ "$$url_size" -lt 1000 ] || [ "$$hgb_size" -lt 1000 ]; then \
+	    echo "  [fusion] ERROR: fusion bundles still missing after LFS pull."; \
+	    echo "  [fusion]        Expected: $(FUSION_URL_MODEL), $(FUSION_HGB_MODEL)"; \
+	    echo "  [fusion]        Train via fusion_export/scripts/{train_url_model,retrain_operational}.py"; \
+	    echo "  [fusion]        or fetch the LFS-tracked bundles from the canonical source."; \
+	    exit 1; \
+	fi
+	@echo "  [fusion] models ready ($$(du -sh fusion_export/models | cut -f1))"
+
 demo: check-docker check-compose-env
 	@[ "$(svc)" ] || (echo "Usage: make demo svc=<service-name>"; exit 1)
 	@if [ "$(call svc-short-profile,$(svc))" = "svc-06" ]; then $(MAKE) check-nlp-model; fi
+	@if [ "$(call svc-short-profile,$(svc))" = "svc-03" ]; then $(MAKE) check-fusion-models; fi
 	$(DOCKER_COMPOSE) --profile postgres --profile valkey --profile kafka \
 	    --profile monitoring --profile observability \
 	    --profile $(call svc-short-profile,$(svc)) up -d --wait
@@ -339,6 +364,7 @@ demo: check-docker check-compose-env
 demo-build: check-docker check-compose-env
 	@[ "$(svc)" ] || (echo "Usage: make demo-build svc=<service-name>"; exit 1)
 	@if [ "$(call svc-short-profile,$(svc))" = "svc-06" ]; then $(MAKE) check-nlp-model; fi
+	@if [ "$(call svc-short-profile,$(svc))" = "svc-03" ]; then $(MAKE) check-fusion-models; fi
 	$(DOCKER_COMPOSE) --profile postgres --profile valkey --profile kafka \
 	    --profile monitoring --profile observability \
 	    --profile $(call svc-short-profile,$(svc)) up -d --wait --build
@@ -352,7 +378,7 @@ demo-build: check-docker check-compose-env
 
 ## demo-all: Run demo service bundle (svc-03 + svc-06 + svc-11) with full observability stack.
 ##           Uses cached images — fast on repeat runs. Force a rebuild with: make demo-all-build
-demo-all: check-docker check-compose-env check-nlp-model
+demo-all: check-docker check-compose-env check-nlp-model check-fusion-models
 	$(DOCKER_COMPOSE) --profile postgres --profile valkey \
 	    --profile monitoring --profile observability \
 	    --profile svc-03 --profile svc-06 --profile svc-11 up -d --wait
@@ -367,7 +393,7 @@ demo-all: check-docker check-compose-env check-nlp-model
 
 ## demo-all-build: Like demo-all but force-rebuilds all service images first.
 ##                 Use after code changes.
-demo-all-build: check-docker check-compose-env check-nlp-model
+demo-all-build: check-docker check-compose-env check-nlp-model check-fusion-models
 	$(DOCKER_COMPOSE) --profile postgres --profile valkey \
 	    --profile monitoring --profile observability \
 	    --profile svc-03 --profile svc-06 --profile svc-11 up -d --wait --build

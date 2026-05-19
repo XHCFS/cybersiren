@@ -27,8 +27,38 @@ via the JSON API.
 | Requirement | Notes |
 |-------------|-------|
 | **Docker** + **Docker Compose v2** | `docker compose version` should print v2.x |
-| **~2 GB disk** | Python ML dependencies (NumPy, LightGBM, joblib) + model file |
-| **Free ports** | `5432` (Postgres), `6379` (Valkey), `8083` (svc-03 HTTP), `9091` (svc-03 metrics), `19090` (Prometheus), `3001` (Grafana), `16686` (Jaeger UI), `4318` (OTLP) |
+| **~2 GB disk** | Python ML dependencies (NumPy, LightGBM, joblib) + model files |
+| **Free ports** | `5432` (Postgres), `6379` (Valkey), `8083` (svc-03 HTTP), `9091` (svc-03 metrics), `8765` (fusion sidecar), `19090` (Prometheus), `3001` (Grafana), `16686` (Jaeger UI), `4318` (OTLP) |
+| **Git LFS** | Required for the L2 fusion bundles (`url_char_lr.joblib`, `hgb_operational.joblib`). `make demo svc=svc-03-url-analysis` runs `git lfs pull` for them automatically (see `make check-fusion-models`). |
+
+### L2 Fusion sidecar
+
+`make demo svc=svc-03-url-analysis` now also starts the Python L2 fusion sidecar
+(container `fusion-sidecar`, port `8765` on the host). Verify it's up:
+
+```bash
+curl http://localhost:8765/health
+# {"status":"ok","models_loaded":true}
+```
+
+The `/scan` UI exposes the fusion fields when a URL bypasses TI but reaches L2:
+`ml_deploy_p`, `ml_verdict`, `ml_cache_hit`. The deploy threshold is `0.50` by
+default (env `CYBERSIREN_PHISHING__THRESHOLD` on the svc-03 container). Override
+at compose time without rebuilding:
+
+```bash
+CYBERSIREN_PHISHING__THRESHOLD=0.30 make demo svc=svc-03-url-analysis
+```
+
+**Fail-open:** if you stop just the fusion-sidecar container, svc-03 keeps
+serving `/scan` and falls back to domain guard + L1 + TI only:
+
+```bash
+docker compose --profile svc-03 stop fusion-sidecar
+curl -s -X POST -H "Content-Type: application/json" \
+     -d '{"url":"https://google.com/"}' http://localhost:8083/scan | jq .
+# guard_hit=allowlisted; verdict=legitimate; ml_* fields absent.
+```
 
 ---
 

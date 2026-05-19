@@ -90,8 +90,5 @@ tmp/
 temp/
 .pytest_cache/
 
-# MaxMind GeoIP databases (large binary files, not committed)
-*.mmdb
-
-# Trained ML model artifacts (exported from training, not committed)
-fusion_export/models/*.joblib
+# MaxMind GeoIP databases and trained ML model artifacts are now Git-LFS
+# tracked (see .gitattributes). Pull on demand via `make check-fusion-models`.
