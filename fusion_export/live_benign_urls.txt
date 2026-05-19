@@ -1,0 +1,40 @@
+# live_benign_urls.txt
+#
+# Sample of benign URLs used as a control set by the build-tagged integration
+# test in internal/phishing/detector_test.go. The deployed fusion model
+# (deploy_p < 0.50) is expected to label each as "benign".
+#
+# Source: drawn from services/svc-03-url-analysis/internal/url/data/top10k_domains.txt
+# (Cisco Umbrella popularity list, top-10K). Mix of bare apex, deep paths,
+# HTTPS, and a redirect-target URL to exercise the enrichment code paths.
+#
+# Format: one URL per line. Lines beginning with `#` are skipped by the test
+# reader.
+#
+# source: cisco-umbrella-top-10K-2026-05-19
+
+https://google.com/
+https://www.google.com/search?q=phishing+research
+https://en.wikipedia.org/wiki/Phishing
+https://en.wikipedia.org/wiki/Levenshtein_distance
+https://www.microsoft.com/en-us/security
+https://learn.microsoft.com/en-us/security/compass/incident-response-overview
+https://www.apple.com/
+https://support.apple.com/en-us/HT204145
+https://www.amazon.com/
+https://aws.amazon.com/security/
+https://www.cloudflare.com/learning/security/what-is-phishing/
+https://github.com/
+https://github.com/golang/go/blob/master/README.md
+https://stackoverflow.com/questions/tagged/phishing
+https://www.npmjs.com/
+https://www.python.org/
+https://docs.python.org/3/library/index.html
+https://www.mozilla.org/en-US/firefox/
+https://developer.mozilla.org/en-US/docs/Web/Security
+https://www.linkedin.com/
+https://www.youtube.com/
+https://www.dropbox.com/
+https://www.cisco.com/
+https://www.akamai.com/
+https://www.opendns.com/
