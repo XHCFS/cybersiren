@@ -6,6 +6,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // IsShortener returns true if rawURL's apex domain is in the known shortener list.
@@ -27,6 +29,10 @@ func ResolveShortURL(ctx context.Context, rawURL string) (string, error) {
 	if !IsShortener(rawURL) {
 		return "", nil
 	}
+
+	ctx, span := enricherTracer.Start(ctx, "enricher.shortener.ResolveShortURL")
+	defer span.End()
+	span.SetAttributes(attribute.String("enricher.short_url", rawURL))
 
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()

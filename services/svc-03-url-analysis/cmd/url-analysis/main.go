@@ -155,11 +155,15 @@ func main() {
 	phishingMetrics := phclient.NewMetrics(reg)
 
 	// Layer-2 ML phishing detector (fail-open: starts even if GeoIP unavailable).
+	// When GeoIPDir is set and loads, the detector routes through the Go
+	// enricher + /score-features for per-enricher Jaeger spans; otherwise it
+	// falls back to /score (sidecar-side enrichment).
 	det, detErr := phishing.NewDetector(phishing.Config{
 		SidecarURL: cfg.Phishing.SidecarURL,
 		GeoIPDir:   cfg.Phishing.GeoIPDir,
 		Threshold:  cfg.Phishing.Threshold,
 		Metrics:    phishingMetrics,
+		Log:        log,
 	})
 	var scorer phishingScorer
 	if detErr != nil {
@@ -170,6 +174,7 @@ func main() {
 		log.Info().
 			Str("sidecar", cfg.Phishing.SidecarURL).
 			Str("geoip_dir", cfg.Phishing.GeoIPDir).
+			Bool("go_enricher", det.UsesGoEnricher()).
 			Msg("phishing ML detector ready")
 	}
 

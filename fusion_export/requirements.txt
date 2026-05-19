@@ -19,6 +19,13 @@ langdetect
 # Optional: serve.py degrades to no-op metrics if the import fails.
 prometheus_client>=0.20
 
+# Observability — OTLP/HTTP trace export to Jaeger:4318 (set via
+# OTEL_EXPORTER_OTLP_ENDPOINT on the compose service). Optional: serve.py
+# degrades to no-op spans if any of these imports fail.
+opentelemetry-api>=1.20
+opentelemetry-sdk>=1.20
+opentelemetry-exporter-otlp-proto-http>=1.20
+
 # Optional: MaxMind GeoLite2 .mmdb files are NOT on PyPI — place GeoLite2-City.mmdb,
 # GeoLite2-ASN.mmdb (and optionally Country) in fusion_kit/ next to enrich.py, or adjust
 # paths inside enrich.py if you relocate them.

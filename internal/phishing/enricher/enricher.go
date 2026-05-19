@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -50,6 +51,10 @@ func (e *Enricher) Close() {
 // Enrich runs all enrichment steps concurrently for one URL.
 // The whole operation is bounded by an 8-second timeout.
 func (e *Enricher) Enrich(ctx context.Context, rawURL string) (EnrichedURL, error) {
+	ctx, span := enricherTracer.Start(ctx, "enricher.Enrich")
+	defer span.End()
+	span.SetAttributes(attribute.String("enricher.url", rawURL))
+
 	ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
 	defer cancel()
 
@@ -101,12 +106,20 @@ func (e *Enricher) Enrich(ctx context.Context, rawURL string) (EnrichedURL, erro
 		return nil
 	})
 
-	// GeoIP (starts after DNS delivers the IP)
+	// GeoIP (starts after DNS delivers the IP). GeoIPLookup.Lookup has no
+	// ctx of its own, so wrap it in a span here for trace continuity.
 	g.Go(func() error {
 		select {
 		case ip := <-ipCh:
 			if ip != "" {
+				_, geoSpan := enricherTracer.Start(gctx, "enricher.geoip.Lookup")
+				geoSpan.SetAttributes(attribute.String("enricher.ip", ip))
 				eu.Geo = e.geo.Lookup(ip)
+				geoSpan.SetAttributes(
+					attribute.String("enricher.country", eu.Geo.Country),
+					attribute.Int64("enricher.asn", int64(eu.Geo.ASN)),
+				)
+				geoSpan.End()
 			}
 		case <-gctx.Done():
 		}

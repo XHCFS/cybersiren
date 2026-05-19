@@ -91,12 +91,15 @@ func main() {
 			phishingMetrics := phclient.NewMetrics(deps.Registry)
 
 			// Layer-2 ML phishing detector (fail-open: missing GeoIP or unreachable
-			// sidecar should not prevent the service from starting).
+			// sidecar should not prevent the service from starting). When GeoIPDir
+			// loads, the detector enriches in-process and uses /score-features;
+			// otherwise it falls back to /score (sidecar-side enrichment).
 			det, detErr := phishing.NewDetector(phishing.Config{
 				SidecarURL: deps.Cfg.Phishing.SidecarURL,
 				GeoIPDir:   deps.Cfg.Phishing.GeoIPDir,
 				Threshold:  deps.Cfg.Phishing.Threshold,
 				Metrics:    phishingMetrics,
+				Log:        log,
 			})
 			if detErr != nil {
 				log.Warn().Err(detErr).Msg("phishing ML detector init failed; Layer-2 scoring disabled")
@@ -105,6 +108,7 @@ func main() {
 				log.Info().
 					Str("sidecar", deps.Cfg.Phishing.SidecarURL).
 					Str("geoip_dir", deps.Cfg.Phishing.GeoIPDir).
+					Bool("go_enricher", det.UsesGoEnricher()).
 					Msg("phishing ML detector ready")
 			}
 			return nil
@@ -128,6 +132,9 @@ type urlScan struct {
 	TIMatch      bool    `json:"ti_match"`
 	TIThreatType string  `json:"ti_threat_type,omitempty"`
 	TIRiskScore  int     `json:"ti_risk_score"`
+	// GuardHit is set when the domain guard short-circuits scoring.
+	// "allowlisted" / "typosquat:<brand>" / "brand-in-subdomain:<brand>".
+	GuardHit string `json:"guard_hit,omitempty"`
 	// Layer-2 ML fields — populated only on TI-feed misses.
 	MLDeployP  float64 `json:"ml_deploy_p,omitempty"`
 	MLVerdict  string  `json:"ml_verdict,omitempty"`
@@ -223,6 +230,67 @@ func scanOne(ctx context.Context, raw string, log zerolog.Logger) urlScan {
 	}
 	out.Normalized = normalized
 	span.SetAttributes(attribute.String("scan.url", normalized))
+
+	// Domain guard fast-path. Mirrors the /scan handler: allowlist short-
+	// circuits to legitimate (skip L1+TI+L2 entirely); typosquat and
+	// brand-in-subdomain short-circuit to phishing. Without this, the
+	// Kafka pipeline that processes email-extracted URLs (the production
+	// path) would bypass the Cisco-top-10K + brand checks that /scan
+	// already enjoys.
+	guardCtx, guardSpan := pipelineTracer.Start(ctx, "svc-03.pipeline.guard.CheckDomain")
+	apex := url.ApexFromURL(normalized)
+	guard := url.CheckDomain(apex)
+	guardSpan.SetAttributes(
+		attribute.String("guard.apex", apex),
+		attribute.String("guard.verdict", guard.Verdict),
+	)
+	guardSpan.End()
+	switch guard.Verdict {
+	case "real":
+		scanMetrics.IncGuard("allowlisted")
+		scanMetrics.IncOutcome("guard_allowlisted")
+		out.GuardHit = "allowlisted"
+		out.Label = "legitimate"
+		span.SetAttributes(
+			attribute.String("scan.outcome", "guard_allowlisted"),
+			attribute.String("scan.label", out.Label),
+		)
+		return out
+	case "typosquat":
+		scanMetrics.IncGuard("typosquat")
+		scanMetrics.IncOutcome("guard_typosquat")
+		out.GuardHit = "typosquat:" + guard.MatchedBrand
+		out.Score = 100
+		out.Probability = 1.0
+		out.Label = "phishing"
+		span.SetAttributes(
+			attribute.String("scan.outcome", "guard_typosquat"),
+			attribute.String("guard.matched_brand", guard.MatchedBrand),
+			attribute.String("scan.label", out.Label),
+		)
+		return out
+	}
+
+	_, subSpan := pipelineTracer.Start(guardCtx, "svc-03.pipeline.guard.CheckSubdomainBrand")
+	hostname := url.HostnameFromURL(normalized)
+	sub := url.CheckSubdomainBrand(hostname)
+	subSpan.SetAttributes(attribute.String("guard.verdict", sub.Verdict))
+	subSpan.End()
+	if sub.Verdict == "brand-in-subdomain" {
+		scanMetrics.IncGuard("brand_in_subdomain")
+		scanMetrics.IncOutcome("guard_brand")
+		out.GuardHit = "brand-in-subdomain:" + sub.MatchedBrand
+		out.Score = 100
+		out.Probability = 1.0
+		out.Label = "phishing"
+		span.SetAttributes(
+			attribute.String("scan.outcome", "guard_brand"),
+			attribute.String("guard.matched_brand", sub.MatchedBrand),
+			attribute.String("scan.label", out.Label),
+		)
+		return out
+	}
+	scanMetrics.IncGuard("none")
 
 	predCtx, cancel := context.WithTimeout(ctx, predictTimeout)
 	defer cancel()

@@ -8,6 +8,8 @@ import (
 	"net"
 	"strings"
 	"time"
+
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // TLSResult holds the TLS certificate inspection result.
@@ -27,6 +29,10 @@ func GetTLSCert(ctx context.Context, hostname string, port int) TLSResult {
 	}
 	addr := fmt.Sprintf("%s:%d", hostname, port)
 
+	ctx, span := enricherTracer.Start(ctx, "enricher.tls.GetTLSCert")
+	defer span.End()
+	span.SetAttributes(attribute.String("enricher.hostname", hostname), attribute.Int("enricher.port", port))
+
 	dialCtx, cancel := context.WithTimeout(ctx, 2500*time.Millisecond)
 	defer cancel()
 
@@ -40,6 +46,7 @@ func GetTLSCert(ctx context.Context, hostname string, port int) TLSResult {
 
 	conn, err := dialer.DialContext(dialCtx, "tcp", addr)
 	if err != nil {
+		span.RecordError(err)
 		return TLSResult{}
 	}
 	defer conn.Close()
@@ -53,6 +60,7 @@ func GetTLSCert(ctx context.Context, hostname string, port int) TLSResult {
 	if len(certs) == 0 {
 		return TLSResult{}
 	}
+	span.SetAttributes(attribute.Bool("enricher.tls_enabled", true), attribute.Int("enricher.cert_chain_len", len(certs)))
 
 	leaf := certs[0]
 

@@ -8,6 +8,7 @@ import (
 
 	"github.com/likexian/whois"
 	whoisparser "github.com/likexian/whois-parser"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // WHOISResult holds parsed WHOIS data for a domain.
@@ -51,9 +52,15 @@ var globalWHOISCache = &whoisCacheStore{cache: make(map[string]whoisEntry)}
 // Results are cached in-process with a 24h TTL.
 // Returns zero-value WHOISResult on any failure — never propagates the error.
 func LookupWHOIS(ctx context.Context, domain string) WHOISResult {
+	ctx, span := enricherTracer.Start(ctx, "enricher.whois.LookupWHOIS")
+	defer span.End()
+	span.SetAttributes(attribute.String("enricher.domain", domain))
+
 	if r, ok := globalWHOISCache.get(domain); ok {
+		span.SetAttributes(attribute.Bool("enricher.cache_hit", true))
 		return r
 	}
+	span.SetAttributes(attribute.Bool("enricher.cache_hit", false))
 
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()

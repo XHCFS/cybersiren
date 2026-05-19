@@ -5,6 +5,8 @@ import (
 	"net"
 	"sync"
 	"time"
+
+	"go.opentelemetry.io/otel/attribute"
 )
 
 type dnsCache struct {
@@ -30,15 +32,24 @@ var globalDNSCache = &dnsCache{cache: make(map[string]string)}
 // ResolveIP resolves hostname to an IPv4 address (preferred) or IPv6 address.
 // Results are cached in-process for the binary lifetime. Returns empty string on failure.
 func ResolveIP(ctx context.Context, hostname string) string {
+	ctx, span := enricherTracer.Start(ctx, "enricher.dns.ResolveIP")
+	defer span.End()
+	span.SetAttributes(attribute.String("enricher.hostname", hostname))
+
 	if ip, ok := globalDNSCache.get(hostname); ok {
+		span.SetAttributes(attribute.Bool("enricher.cache_hit", true), attribute.String("enricher.ip", ip))
 		return ip
 	}
+	span.SetAttributes(attribute.Bool("enricher.cache_hit", false))
 
 	lookupCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
 	defer cancel()
 
 	addrs, err := net.DefaultResolver.LookupHost(lookupCtx, hostname)
 	if err != nil || len(addrs) == 0 {
+		if err != nil {
+			span.RecordError(err)
+		}
 		globalDNSCache.set(hostname, "")
 		return ""
 	}
@@ -59,5 +70,6 @@ func ResolveIP(ctx context.Context, hostname string) string {
 	}
 
 	globalDNSCache.set(hostname, result)
+	span.SetAttributes(attribute.String("enricher.ip", result))
 	return result
 }

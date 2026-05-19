@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
 	"golang.org/x/net/publicsuffix"
 )
 
@@ -120,12 +121,18 @@ const browserUA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 
 // Returns zero-value HTTPResult (StatusCode=0) on error, including refusal
 // to fetch non-http(s) schemes and non-public IPs (SSRF guard).
 func FetchHTTP(ctx context.Context, rawURL string) HTTPResult {
+	ctx, span := enricherTracer.Start(ctx, "enricher.http.FetchHTTP")
+	defer span.End()
+
 	parsed, err := url.Parse(rawURL)
 	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
 		return HTTPResult{}
 	}
+	span.SetAttributes(attribute.String("enricher.host", parsed.Host), attribute.String("enricher.scheme", parsed.Scheme))
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
+		span.RecordError(err)
 		return HTTPResult{}
 	}
 	req.Header.Set("User-Agent", browserUA)
@@ -133,9 +140,11 @@ func FetchHTTP(ctx context.Context, rawURL string) HTTPResult {
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
+		span.RecordError(err)
 		return HTTPResult{}
 	}
 	defer resp.Body.Close()
+	span.SetAttributes(attribute.Int("enricher.http_status", resp.StatusCode))
 
 	finalURL := resp.Request.URL.String()
 

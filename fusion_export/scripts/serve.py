@@ -123,6 +123,56 @@ _MODELS_LOADED = Gauge(
     **({"registry": _metric_registry} if _PROM_AVAILABLE else {}),
 )
 
+
+# ── OTEL tracing (OTLP/HTTP to Jaeger) ───────────────────────────────────
+# Optional dependency stack — falls back to a no-op tracer if any of the
+# OTEL packages are missing or OTEL_SDK_DISABLED=true. Endpoint is taken
+# from OTEL_EXPORTER_OTLP_ENDPOINT (set on the compose service to
+# http://jaeger:4318).
+import os as _os  # noqa: E402  - kept local to keep the OTEL block isolated
+
+_OTEL_ENABLED = False
+try:  # pragma: no cover - import guard
+    from opentelemetry import trace as _otel_trace  # type: ignore
+    from opentelemetry.exporter.otlp.proto.http.trace_exporter import (  # type: ignore
+        OTLPSpanExporter as _OTLPSpanExporter,
+    )
+    from opentelemetry.sdk.resources import Resource as _OTELResource  # type: ignore
+    from opentelemetry.sdk.trace import TracerProvider as _TracerProvider  # type: ignore
+    from opentelemetry.sdk.trace.export import (  # type: ignore
+        BatchSpanProcessor as _BatchSpanProcessor,
+    )
+
+    _otel_endpoint = _os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT", "").strip()
+    if _otel_endpoint and _os.environ.get("OTEL_SDK_DISABLED", "").lower() != "true":
+        _resource = _OTELResource.create({"service.name": "fusion-sidecar"})
+        _provider = _TracerProvider(resource=_resource)
+        _exporter = _OTLPSpanExporter(endpoint=_otel_endpoint.rstrip("/") + "/v1/traces")
+        _provider.add_span_processor(_BatchSpanProcessor(_exporter))
+        _otel_trace.set_tracer_provider(_provider)
+        _OTEL_ENABLED = True
+    _tracer = _otel_trace.get_tracer("fusion-sidecar")
+except ImportError:  # pragma: no cover - import guard
+    class _NoopSpan:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def set_attribute(self, *_a, **_kw):
+            pass
+
+        def record_exception(self, *_a, **_kw):
+            pass
+
+    class _NoopTracer:
+        def start_as_current_span(self, *_args, **_kw):
+            return _NoopSpan()
+
+    _tracer = _NoopTracer()
+
+
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -406,7 +456,11 @@ class Handler(BaseHTTPRequestHandler):
             if len(urls) > 500:
                 self._send_json(400, {"error": "max 500 URLs per request"})
                 return
-            results = _scorer.score(urls)
+            with _tracer.start_as_current_span("fusion.score") as sp:
+                sp.set_attribute("fusion.batch_size", len(urls))
+                sp.set_attribute("fusion.path", "score")
+                results = _scorer.score(urls)
+                self._annotate_span_with_first_result(sp, results)
             self._count_verdicts("/score", results)
             self._send_json(200, {
                 "results": results,
@@ -419,7 +473,11 @@ class Handler(BaseHTTPRequestHandler):
             if not url:
                 self._send_json(400, {"error": "'url' is required"})
                 return
-            results = _scorer.score([url])
+            with _tracer.start_as_current_span("fusion.score_one") as sp:
+                sp.set_attribute("fusion.path", "score_one")
+                sp.set_attribute("fusion.url", url)
+                results = _scorer.score([url])
+                self._annotate_span_with_first_result(sp, results)
             self._count_verdicts("/score_one", results)
             self._send_json(200, results[0] if results else {})
 
@@ -431,7 +489,11 @@ class Handler(BaseHTTPRequestHandler):
             if len(reqs) > 500:
                 self._send_json(400, {"error": "max 500 requests per call"})
                 return
-            results = _scorer.score_features(reqs)
+            with _tracer.start_as_current_span("fusion.score_features") as sp:
+                sp.set_attribute("fusion.batch_size", len(reqs))
+                sp.set_attribute("fusion.path", "score-features")
+                results = _scorer.score_features(reqs)
+                self._annotate_span_with_first_result(sp, results)
             self._count_verdicts("/score-features", results)
             self._send_json(200, {
                 "results": results,
@@ -441,6 +503,17 @@ class Handler(BaseHTTPRequestHandler):
 
         else:
             self._send_json(404, {"error": "not found"})
+
+    @staticmethod
+    def _annotate_span_with_first_result(sp, results) -> None:
+        if not results:
+            return
+        first = results[0] if isinstance(results[0], dict) else None
+        if first is None:
+            return
+        for key in ("verdict", "url_p", "op_p", "deploy_p"):
+            if key in first:
+                sp.set_attribute(f"fusion.{key}", first[key])
 
     @staticmethod
     def _count_verdicts(route: str, results: list[dict]) -> None:
