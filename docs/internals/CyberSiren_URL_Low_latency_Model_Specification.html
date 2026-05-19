@@ -418,7 +418,20 @@ The deployed artifact in <code>services/svc-03-url-analysis/ml/config.json</code
 <!-- ============================================================ -->
 <h2>8. Production Integration — SVC-03 Interface</h2>
 
-<h3>8.1 Inference Flow</h3>
+<div class="note">
+  This model executes <em>after</em> the upstream domain guard in the deployed runtime. Most user-submitted URLs short-circuit at the guard and never reach the L1 inference step described below — only URLs whose apex is neither on the allowlist nor matched as a typosquat/brand-in-subdomain fall through to feature extraction. See the dedicated <code>CyberSiren_URL_Domain_Guard_and_L2_Fusion_Specification.html</code> for the full guard implementation, Cisco top-10K allowlist sourcing, and downstream L2 fusion sidecar.
+</div>
+
+<h3>8.1 Upstream Domain Guard (fast-path, runs before this model)</h3>
+<table class="compact-table" style="width:700px;">
+  <tr><th>Stage</th><th>Source</th><th>Latency (i7-10750H)</th><th>Outcome</th></tr>
+  <tr><td>Cisco top-10K allowlist hit</td><td><code>services/svc-03-url-analysis/internal/url/data/top10k_domains.txt</code> (<code>go:embed</code>'d, 9,978 lines)</td><td>~43 ns</td><td>Short-circuit verdict <span class="svc">legitimate</span>; this model is skipped.</td></tr>
+  <tr><td>Levenshtein d=1 typosquat</td><td><code>CheckDomain</code> in <code>internal/url/domainguard.go</code> (length-gap short-circuit)</td><td>~51 µs worst case</td><td>Short-circuit verdict <span class="svc">phishing</span> (<code>guard_hit = "typosquat:&lt;brand&gt;"</code>); this model is skipped.</td></tr>
+  <tr><td>Brand-in-subdomain scan</td><td><code>CheckSubdomainBrand</code> in <code>internal/url/domainguard.go</code> (20-entry curated brand list, <code>len(label) ≥ 4</code> gate)</td><td>~157 ns</td><td>Short-circuit verdict <span class="svc">phishing</span> (<code>guard_hit = "brand-in-subdomain:&lt;brand&gt;"</code>); this model is skipped.</td></tr>
+  <tr><td>No guard hit</td><td>—</td><td>—</td><td>Fall through to <strong>§8.2 Inference Flow</strong> below.</td></tr>
+</table>
+
+<h3>8.2 Inference Flow</h3>
 <div class="pipeline-step">
   <div class="step-header">
     <div class="step-num">1</div>
@@ -452,9 +465,9 @@ The deployed artifact in <code>services/svc-03-url-analysis/ml/config.json</code
   </div>
 </div>
 
-<h3>8.2 Classification Logic (<code>/scan</code> endpoint)</h3>
+<h3>8.3 Classification Logic (<code>/scan</code> endpoint)</h3>
 <div class="note">
-  The Python subprocess (<code>inference_script.py</code>) returns <code>score</code> (0–100) and <code>probability</code> (0.0–1.0). The Go <code>/scan</code> handler in <code>main.go</code> combines the ML score with a TI (threat-intelligence) lookup via <code>classifyLabel(mlScore, tiResult)</code>. Enrichment routing is target-state behavior (enricher is a TODO stub).
+  The Python subprocess (<code>inference_script.py</code>) returns <code>score</code> (0–100) and <code>probability</code> (0.0–1.0). The Go <code>/scan</code> handler in <code>main.go</code> combines the ML score with a TI (threat-intelligence) lookup via <code>classifyLabel(mlScore, tiResult)</code>. Out-of-process enrichment is live: when TI does not match (or matches with low confidence, <code>risk_score &lt; 80</code>), the handler calls the Python L2 fusion sidecar at <code>fusion_export/scripts/serve.py</code> via the Go client in <code>internal/phishing/</code>. The sidecar performs DNS / WHOIS / TLS / HTTP / GeoIP / shortener enrichment, computes <code>url_p</code> + <code>op_p</code>, and returns a fused <code>deploy_p</code>. It is fail-open — if the sidecar is unreachable, the L1 + TI verdict stands. See <code>docs/internals/CyberSiren_URL_Domain_Guard_and_L2_Fusion_Specification.html</code> for the full pipeline.
 </div>
 <table style="width:700px;">
   <tr><th>Condition</th><th>Label</th><th>Source</th></tr>
@@ -464,7 +477,7 @@ The deployed artifact in <code>services/svc-03-url-analysis/ml/config.json</code
   <tr><td><code>ml_score &lt; 40</code></td><td class="svc">legitimate</td><td>Default when no other condition triggers</td></tr>
 </table>
 
-<h3>8.3 Exported Artifacts</h3>
+<h3>8.4 Exported Artifacts</h3>
 <table class="compact-table" style="width:500px;">
   <tr><th>File</th><th>Size</th><th>Contents</th></tr>
   <tr><td><code>model.joblib</code></td><td>~1.1 MB</td><td>Trained XGBoost classifier (compress=3)</td></tr>
@@ -479,7 +492,7 @@ The deployed artifact in <code>services/svc-03-url-analysis/ml/config.json</code
 <table>
   <tr><th>Decision</th><th>Rationale</th></tr>
   <tr><td class="svc">URL-only features</td><td>[2] deliberately excluded content features "to optimize speed and responsiveness." [5] §3.1.2: URL features have high potential but cannot be sole defense — hence two-tier architecture. Content features reserved for enrichment path.</td></tr>
-  <tr><td class="svc">Deployed artifact lock</td><td>Service runtime follows the artifact declared in <code>ml/config.json</code>. Current deployed champion is XGBoost with threshold 0.85. Structural-shortcut stage-B routing is target-state behavior and is not part of the current <code>svc-03</code> runtime.</td></tr>
+  <tr><td class="svc">Deployed artifact lock</td><td>Service runtime follows the artifact declared in <code>ml/config.json</code>. Current deployed champion is XGBoost with threshold 0.85. The deployed runtime pipeline is <code>Guard → L1 (this model) → TI → L2 Fusion</code>; the structural-shortcut stage-B path now executes at the L2 sidecar (see the Domain Guard &amp; L2 Fusion spec).</td></tr>
   <tr><td class="svc">MCC for ranking</td><td>[5] uses MCC as primary metric (Eq. 7). Accounts for all four confusion matrix quadrants. F1 ignores TN. Accuracy treats all errors equally. With 45/55 class split, MCC is most informative.</td></tr>
   <tr><td class="svc">Strict hostname IP detection</td><td>Original regex matched against full URL string. False positive on <code>http://192.168.1.1.example.com</code>. Fix: anchored regex on parsed hostname only. Also guards TLD/domain/subdomain fallback parsers from treating IP octets as TLD components.</td></tr>
   <tr><td class="svc">Raw delimiter query counting</td><td><code>parse_qs</code> groups duplicate keys. <code>?id=1&amp;id=2&amp;id=3</code> returns length 1. [1] feature #11 counts total components. Raw <code>'&amp;'</code> counting preserves this intent.</td></tr>

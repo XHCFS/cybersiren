@@ -16,6 +16,10 @@ lookup **in parallel**. Results are merged into a single verdict
 (`legitimate` / `suspicious` / `phishing`) and displayed in a web UI or returned
 via the JSON API.
 
+> For the full technical specification of the domain guard and the L2 fusion
+> sidecar (char-LR `url_p` + HGB `op_p` → asymmetric fusion to `deploy_p`), see
+> [`docs/internals/CyberSiren_URL_Domain_Guard_and_L2_Fusion_Specification.html`](docs/internals/CyberSiren_URL_Domain_Guard_and_L2_Fusion_Specification.html).
+
 ---
 
 ## Prerequisites

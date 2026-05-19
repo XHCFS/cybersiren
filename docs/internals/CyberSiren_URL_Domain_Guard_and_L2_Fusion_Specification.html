@@ -1,0 +1,583 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>CyberSiren — URL Domain Guard &amp; L2 Fusion Specification (SVC-03)</title>
+<style>
+  @page { size: A4 portrait; margin: 12mm; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Courier New', 'Consolas', monospace;
+    background: #ffffff;
+    color: #111111;
+    padding: 28px 36px;
+    font-size: 11px;
+    line-height: 1.45;
+  }
+
+  h1 { font-size: 20px; font-weight: 700; border-bottom: 3px solid #111; padding-bottom: 6px; margin-bottom: 2px; letter-spacing: -0.3px; }
+  .doc-meta { font-size: 10px; color: #555; margin-bottom: 20px; border-bottom: 1px solid #999; padding-bottom: 8px; }
+  .doc-meta span { margin-right: 24px; }
+
+  h2 { font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: 1.5px; border-bottom: 2px solid #333; padding-bottom: 3px; margin: 22px 0 10px 0; }
+  h3 { font-size: 11.5px; font-weight: 700; margin: 12px 0 4px 0; }
+
+  table { border-collapse: collapse; width: 100%; margin: 6px 0 14px 0; font-size: 10.5px; }
+  th, td { border: 1px solid #888; padding: 4px 7px; text-align: left; vertical-align: top; }
+  th { background: #e8e8e8; font-weight: 700; white-space: nowrap; }
+  td { background: #fff; }
+  tr:nth-child(even) td { background: #f8f8f8; }
+  td.svc { font-weight: 700; }
+  td code, th code { font-family: inherit; background: #f0f0f0; padding: 1px 3px; font-size: 10px; }
+
+  .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .three-col { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; }
+
+  .note {
+    border: 1px solid #aaa;
+    background: #f9f9f9;
+    padding: 6px 10px;
+    margin: 6px 0;
+    font-size: 10px;
+  }
+  .note strong { font-size: 10px; }
+
+  .pipeline-step {
+    border: 2px solid #333;
+    margin-bottom: 10px;
+    page-break-inside: avoid;
+  }
+  .pipeline-step .step-header {
+    display: flex;
+    align-items: stretch;
+  }
+  .pipeline-step .step-num {
+    background: #333;
+    color: #fff;
+    font-weight: 700;
+    padding: 8px 12px;
+    min-width: 36px;
+    text-align: center;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 13px;
+  }
+  .pipeline-step .step-content {
+    padding: 8px 12px;
+    flex: 1;
+  }
+
+  .compact-table td, .compact-table th { padding: 3px 6px; font-size: 10px; }
+
+  .metric-block {
+    border: 2px solid #333;
+    padding: 10px 12px;
+    margin-bottom: 10px;
+    page-break-inside: avoid;
+  }
+  .metric-block .metric-header {
+    font-size: 12.5px;
+    font-weight: 700;
+    border-bottom: 1px solid #aaa;
+    padding-bottom: 4px;
+    margin-bottom: 6px;
+  }
+
+  pre.codeblock {
+    background: #f3f3f3;
+    border: 1px solid #bbb;
+    padding: 8px 10px;
+    margin: 6px 0 10px 0;
+    font-size: 10px;
+    line-height: 1.4;
+    overflow-x: auto;
+    page-break-inside: avoid;
+  }
+  pre.ascii {
+    background: #fafafa;
+    border: 1px dashed #888;
+    padding: 6px 8px;
+    font-size: 10px;
+    line-height: 1.3;
+    white-space: pre;
+  }
+
+  hr { border: none; border-top: 1px solid #ccc; margin: 14px 0; }
+  .page-break { page-break-before: always; }
+
+  .ref-list { margin: 4px 0; padding-left: 18px; font-size: 10px; }
+  .ref-list li { margin-bottom: 3px; }
+</style>
+</head>
+<body>
+
+<h1>CYBERSIREN — URL DOMAIN GUARD &amp; L2 FUSION SPECIFICATION</h1>
+<div class="doc-meta">
+  <span><strong>Document:</strong> URL-L2-SPEC-v1.0</span>
+  <span><strong>Date:</strong> 2026-05-19</span>
+  <span><strong>Scope:</strong> SVC-03 URL Analysis — Domain Guard fast-path + L2 fusion sidecar (<code>fusion_export/</code>)</span>
+  <span><strong>Classification:</strong> Internal / Graduation Project</span>
+</div>
+
+<div class="note">
+  <strong>Context:</strong> This document specifies the two phishing-detection layers added to SVC-03 in PR #140 — the Go-side <em>Domain Guard</em> fast-path and the Python <em>L2 fusion sidecar</em> (<code>fusion_export/scripts/serve.py</code>, port 8765). Together they sit on either side of the existing L1 XGBoost URL model (see the companion <code>CyberSiren_URL_Low_latency_Model_Specification.html</code>). The deployed runtime pipeline as of commit <code>4c8b112</code> is <code>Guard &#x2192; L1 &#x2192; TI &#x2192; L2 Fusion</code>. Layer 2 fuses two probabilistic signals (<code>url_p</code> from a char-LR URL model and <code>op_p</code> from a Histogram-Gradient-Boosting model over live enrichment features) into a single <code>deploy_p</code> with asymmetric, zone-based weighting.
+</div>
+
+<div class="note">
+  <strong>Quick facts:</strong> Guard top-10K size: 9,978 entries (Cisco Umbrella) &nbsp;|&nbsp; Typosquat distance: Levenshtein d=1 &nbsp;|&nbsp; Brand list: 20 hand-curated entries &nbsp;|&nbsp; Sidecar host:port: <code>http://fusion-sidecar:8765</code> (compose) / <code>127.0.0.1:8765</code> (local) &nbsp;|&nbsp; Decision threshold over <code>deploy_p</code>: 0.50 (env <code>CYBERSIREN_PHISHING__THRESHOLD</code>) &nbsp;|&nbsp; Cache: TTL 5 min, 10,000-entry LRU keyed on the full URL.
+</div>
+
+
+<!-- ============================================================ -->
+<h2>1. Literature Foundation</h2>
+
+<p style="margin-bottom:8px;">The two new layers draw on five distinct strands of literature. Citations are minimal but each design decision in &sect;3&ndash;&sect;6 traces back to one of them.</p>
+
+<table>
+  <tr>
+    <th>Ref</th>
+    <th>Source</th>
+    <th>Used For</th>
+  </tr>
+  <tr>
+    <td>[A]</td>
+    <td>Cisco Umbrella Popularity List (<a href="https://s3-us-west-1.amazonaws.com/umbrella-static/index.html">umbrella-static</a>). Daily ranking of the most-queried domains on Cisco's recursive resolvers.</td>
+    <td>Allowlist source for the Domain Guard top-10K fast path (&sect;3.1). Chosen over Tranco/Majestic for query-volume coverage of end-user traffic.</td>
+  </tr>
+  <tr>
+    <td>[B]</td>
+    <td>Levenshtein, V. I. (1966). <em>Binary codes capable of correcting deletions, insertions, and reversals.</em> Soviet Physics Doklady, 10(8), 707&ndash;710.</td>
+    <td>Edit-distance metric for typosquat detection (&sect;3.2). d=1 (rather than d&ge;2) keeps false-positive rate against 10K references negligible &mdash; see &sect;10.</td>
+  </tr>
+  <tr>
+    <td>[C]</td>
+    <td>Edelman, B. (2003) &mdash; brand impersonation in domain names; OECD &amp; APWG industry reports on subdomain-based brand abuse.</td>
+    <td>Justification for the brand-in-subdomain scan (&sect;3.3). The pattern <code>&lt;brand&gt;.&lt;attacker-apex&gt;</code> remains one of the most common phishing primitives.</td>
+  </tr>
+  <tr>
+    <td>[D]</td>
+    <td>Platt, J. C. (1999). <em>Probabilistic outputs for support vector machines and comparisons to regularized likelihood methods.</em> In Advances in Large Margin Classifiers.</td>
+    <td>Theoretical underpinning for calibrating <code>url_p</code> as a probability (rather than a margin) so it can be linearly combined with <code>op_p</code> at fusion time (&sect;6).</td>
+  </tr>
+  <tr>
+    <td>[E]</td>
+    <td>Friedman, J. H. (2001). <em>Greedy function approximation: A gradient boosting machine.</em> Annals of Statistics, 29(5). Ke et al. (2017) &mdash; LightGBM. sklearn's <code>HistGradientBoostingClassifier</code> documentation.</td>
+    <td>Choice of gradient-boosted trees over tabular operational features for <code>op_p</code> (&sect;5). HGB handles mixed-type, missing-value-tolerant features without manual encoding.</td>
+  </tr>
+</table>
+
+
+<!-- ============================================================ -->
+<h2>2. Pipeline Overview</h2>
+
+<p style="margin-bottom:6px;">The four-stage pipeline is invoked from both the HTTP handler (<code>services/svc-03-url-analysis/cmd/url-analysis/main.go</code>) and the Kafka worker (<code>cmd/url-pipeline/main.go</code>). Earlier stages short-circuit later ones.</p>
+
+<pre class="ascii">
+  raw URL
+      |
+      v
+  +-----------------------------------------------------------+
+  | (0) DOMAIN GUARD                  internal/url/domainguard.go
+  |
+  |    ApexFromURL  -->  CheckDomain         -- allowlist -->  verdict = legitimate  (short-circuit)
+  |                            |             -- typosquat -->  verdict = phishing    (short-circuit)
+  |                            v
+  |                      CheckSubdomainBrand -- hit -->  verdict = phishing          (short-circuit)
+  +-----------------------------------------------------------+
+                              |
+                              | no guard hit
+                              v
+  +-----------------------------------------------------------+
+  | (1) L1 XGBoost (28 features)      ml/inference_script.py
+  |    routing / degraded-mode signal &mdash; not used for /scan verdict
+  +-----------------------------------------------------------+
+                              |
+                              v
+  +-----------------------------------------------------------+
+  | (2) TI LOOKUP                     services/svc-11-ti-sync/  (Valkey-cached)
+  |
+  |    matched AND risk_score >= 80   -->  verdict = phishing  (skip L2)
+  |    matched AND risk_score &lt; 80     |
+  |    not matched                     |
+  +------------------------------------+----------------------+
+                                       |
+                                       v
+  +-----------------------------------------------------------+
+  | (3) L2 FUSION SIDECAR             fusion_export/scripts/serve.py  :8765
+  |
+  |    enrich (DNS, WHOIS, TLS, HTTP, GeoIP, shortener)
+  |       |
+  |       +--&gt; char-LR    -->  url_p
+  |       |
+  |       +--&gt; HGB ops    -->  op_p
+  |
+  |    fusion(url_p, op_p)  -->  deploy_p
+  |
+  |    deploy_p >= threshold  -->  verdict = phishing
+  |    deploy_p &lt;  threshold  -->  verdict = benign
+  +-----------------------------------------------------------+
+                              |
+                              v
+                        score envelope
+                  (guard_hit, ml_deploy_p,
+                   ml_verdict, ml_cache_hit, &hellip;)
+</pre>
+
+<p style="margin-top:6px;">Failure semantics: the sidecar is <strong>fail-open</strong>. If the Go client cannot reach it, the request still completes &mdash; the L1 + TI verdict stands and the <code>ml_*</code> fields are omitted from the envelope.</p>
+
+
+<!-- ============================================================ -->
+<h2 class="page-break">3. Domain Guard (Go fast-path)</h2>
+
+<p style="margin-bottom:6px;">Source: <code>services/svc-03-url-analysis/internal/url/domainguard.go</code>. Three independent signals, evaluated in this order:</p>
+
+<h3>3.1 Top-10K Allowlist</h3>
+
+<table class="compact-table" style="width:700px;">
+  <tr><th>Aspect</th><th>Value</th></tr>
+  <tr><td>Data source</td><td>Cisco Umbrella Popularity List, top 10,000 apex domains</td></tr>
+  <tr><td>Embedded file</td><td><code>services/svc-03-url-analysis/internal/url/data/top10k_domains.txt</code> (9,978 entries; the gap is due to deduplication and IDN normalization during the regen step)</td></tr>
+  <tr><td>Load mechanism</td><td><code>//go:embed</code> at build time &mdash; zero runtime I/O. Stored as <code>map[string]struct{}</code> for O(1) lookup.</td></tr>
+  <tr><td>Regeneration</td><td><code>services/svc-03-url-analysis/scripts/update_allowlist.py</code>. Should be re-run periodically (~monthly) to track Cisco's ranking updates.</td></tr>
+  <tr><td>Latency (i7-10750H)</td><td>Allowlist hit: ~43 ns. Miss: ~13 ns plus the cost of subsequent guard stages.</td></tr>
+  <tr><td>Outcome on hit</td><td>Short-circuit: <code>guard_hit = "allowlisted"</code>, verdict = <code>legitimate</code>. L1, TI, and L2 are all skipped.</td></tr>
+</table>
+
+<h3>3.2 Levenshtein-d=1 Typosquat Detection</h3>
+
+<p style="margin-bottom:4px;">Implemented in <code>CheckDomain</code>. For an apex <em>d</em> that misses the allowlist, the guard scans the 10K reference set for any entry within Levenshtein distance 1. Length-gap short-circuit: candidates whose length differs from <em>d</em> by more than one are skipped before the edit-distance computation runs.</p>
+
+<table class="compact-table" style="width:700px;">
+  <tr><th>Aspect</th><th>Value</th></tr>
+  <tr><td>Distance metric</td><td>Levenshtein (insertion, deletion, substitution; no transposition cost &mdash; Damerau variant not used to keep the implementation single-pass)</td></tr>
+  <tr><td>Threshold</td><td>d = 1 only. See &sect;10 for the rationale and the d=2 FP-rate analysis.</td></tr>
+  <tr><td>Short-circuit</td><td><code>abs(len(candidate) - len(d)) &gt; 1</code> &rarr; skip without running the DP table.</td></tr>
+  <tr><td>Latency (i7-10750H)</td><td>~51 &micro;s worst-case (<code>BenchmarkCheckDomain_TyposquatDetect</code>) &mdash; iterates all 10K references in the worst case.</td></tr>
+  <tr><td>Outcome on hit</td><td>Short-circuit: <code>guard_hit = "typosquat:&lt;brand&gt;"</code> where <code>&lt;brand&gt;</code> is the matched reference apex. Verdict = <code>phishing</code>.</td></tr>
+</table>
+
+<h3>3.3 Brand-in-Subdomain Scan</h3>
+
+<p style="margin-bottom:4px;">Implemented in <code>CheckSubdomainBrand</code>. Walks the URL's labels left-to-right; if any non-apex label contains a known brand substring (with <code>len(label) &ge; 4</code> as an FP gate), short-circuits as phishing.</p>
+
+<table class="compact-table" style="width:700px;">
+  <tr><th>Aspect</th><th>Value</th></tr>
+  <tr><td>Brand list</td><td>20 hand-curated brands in <code>brandSubstrings</code>: paypal, microsoft, google, amazon, apple, facebook, instagram, netflix, github, linkedin, outlook, icloud, youtube, whatsapp, chase, wellsfargo, citibank, dropbox, discord, spotify.</td></tr>
+  <tr><td>FP gate</td><td><code>len(label) &ge; 4</code> &mdash; prevents matches against ultra-short labels where substring overlap is incidental.</td></tr>
+  <tr><td>Latency (i7-10750H)</td><td>~157 ns per URL (<code>BenchmarkCheckSubdomainBrand_Hit</code>).</td></tr>
+  <tr><td>Outcome on hit</td><td>Short-circuit: <code>guard_hit = "brand-in-subdomain:&lt;brand&gt;"</code>. Verdict = <code>phishing</code>.</td></tr>
+</table>
+
+<h3>3.4 Apex extraction</h3>
+
+<p>The guard never operates on the raw URL string directly. <code>ApexFromURL</code> uses the Public Suffix List (PSL) via <code>golang.org/x/net/publicsuffix</code> to derive the apex (the eTLD+1) before any of the three stages run. Misformed URLs propagate as <code>guard_hit = ""</code> and fall through to L1.</p>
+
+
+<!-- ============================================================ -->
+<h2>4. Char-LR URL Model (<code>url_p</code>)</h2>
+
+<p style="margin-bottom:6px;">Source: <code>fusion_export/fusion_kit/scoring.py:score_url_hash</code>. A char-n-gram hashing pipeline feeding a logistic-regression classifier with calibrated outputs. Designed to be insensitive to TLD churn and resilient to lookalike Unicode by normalizing inputs to ASCII-lowercase before tokenization.</p>
+
+<table>
+  <tr><th>Aspect</th><th>Value</th></tr>
+  <tr><td>Tokenizer</td><td>Char n-grams over normalized URL string (scheme + host + path + query), n in [3, 5]. HashingVectorizer with fixed feature dimensionality &mdash; no fitted vocabulary, so the model is stateless across data drift.</td></tr>
+  <tr><td>Normalization</td><td>ASCII lowercase; percent-decoded path; punycode-decoded host. Implementation: <code>fusion_export/fusion_kit/url_normalize.py</code>.</td></tr>
+  <tr><td>Classifier</td><td><code>sklearn.linear_model.LogisticRegression</code> with L2 regularization. Calibrated via cross-validated Platt scaling [D] so <code>url_p</code> behaves as a probability.</td></tr>
+  <tr><td>Artifact</td><td><code>fusion_export/models/url_char_lr.joblib</code>. Compressed joblib; load on sidecar start.</td></tr>
+  <tr><td>Metrics file</td><td><code>fusion_export/models/url_char_lr.metrics.json</code> (per-class FPR/FNR, AUC, PR-AUC).</td></tr>
+  <tr><td>Calibration check</td><td>Reliability diagram in <code>fusion_export/benchmark/</code>. Model is well-calibrated on phishing-keyword paths (login, verify, account, mfa) regardless of hosting reputation &mdash; this is exploited in &sect;6 by the &quot;normal-zone&quot; blend.</td></tr>
+  <tr><td>Inputs</td><td>Single string per URL.</td></tr>
+  <tr><td>Outputs</td><td>One float in [0, 1] per URL: <code>P(phishing | URL string)</code>.</td></tr>
+</table>
+
+
+<!-- ============================================================ -->
+<h2>5. HGB Operational Model (<code>op_p</code>)</h2>
+
+<p style="margin-bottom:6px;">Source: <code>fusion_export/fusion_kit/operational.py:enrichment_to_operational_row</code> (feature extraction) and the joblib bundle at <code>fusion_export/models/hgb_operational.joblib</code>. Models live infrastructure signals about a URL: who runs it, where it's hosted, what its TLS cert looks like, whether its hosting platform is known to be free / ephemeral.</p>
+
+<h3>5.1 Feature catalogue</h3>
+
+<p style="margin-bottom:4px;">~30 columns (exact count fixed by the training script). Grouped by enrichment source:</p>
+
+<table class="compact-table">
+  <tr><th>Group</th><th>Example columns</th><th>Source</th></tr>
+  <tr><td>DNS</td><td><code>has_a</code>, <code>has_aaaa</code>, <code>has_mx</code>, <code>num_ns</code>, <code>ns_diversity</code>, <code>cname_depth</code></td><td><code>fusion_kit/enrich.py</code></td></tr>
+  <tr><td>WHOIS</td><td><code>domain_age_days</code>, <code>registrar</code>, <code>registrar_known</code>, <code>has_privacy_proxy</code></td><td><code>python-whois</code></td></tr>
+  <tr><td>TLS</td><td><code>ssl_enabled</code>, <code>cert_issuer</code>, <code>cert_lifetime_days</code>, <code>cert_self_signed</code>, <code>cert_san_count</code></td><td><code>fusion_kit/enrich.py</code> (TLS handshake)</td></tr>
+  <tr><td>HTTP</td><td><code>http_status</code>, <code>redirect_count</code>, <code>final_url_changes_apex</code>, <code>page_language</code>, <code>page_title_present</code></td><td>HTTP probe (with SSRF guard, see &sect;8)</td></tr>
+  <tr><td>ASN / GeoIP</td><td><code>asn</code>, <code>asn_name</code>, <code>country</code>, <code>is_cdn</code>, <code>is_hoster</code></td><td>MaxMind <code>.mmdb</code> + bundled ASN classifier</td></tr>
+  <tr><td>Shortener / ephemeral</td><td><code>is_shortener</code>, <code>is_ephemeral_platform</code></td><td>See &sect;5.3</td></tr>
+</table>
+
+<h3>5.2 Categorical handling for HGB</h3>
+
+<p>sklearn's <code>HistGradientBoostingClassifier</code> tolerates at most 255 distinct categories per categorical column. <code>prepare_X_for_hgb</code> handles this in two passes:</p>
+
+<ul style="margin: 4px 0 8px 18px;">
+  <li>Columns with &le; 255 distinct values in the training set are cast to pandas <code>category</code> dtype directly.</li>
+  <li>Columns over the limit (e.g. <code>cert_issuer</code>, <code>registrar</code>) are passed through a deterministic hash-bucket layer down to 255 buckets before the cast.</li>
+</ul>
+
+<h3>5.3 The <code>is_ephemeral_platform</code> feature</h3>
+
+<div class="note">
+  <strong>Operational hazard &mdash; duplicated suffix list.</strong> The set of ephemeral-platform suffixes is duplicated between <code>fusion_export/fusion_kit/operational.py:_EPHEMERAL_PLATFORM_SUFFIXES</code> (Python, used at training time and during sidecar re-enrichment) and <code>internal/phishing/enricher/features.go:ephemeralPlatformSuffixes</code> (Go, used by the <code>/score-features</code> fast path). The two lists <strong>must</strong> stay in sync &mdash; otherwise <code>/score-features</code> and <code>/score</code> can produce different verdicts for the same URL. Commit <code>aa5dafd</code> added 10 platforms (Wasmer, Replit <code>.app</code> / <code>.co</code>, <code>repl.co</code>, <code>zya.me</code>, <code>dweb.link</code>, <code>ipfs.io</code>, StackBlitz, CodeSandbox, CodePen). Whenever a suffix is added on one side, it must be added on the other.
+</div>
+
+<p>Why it matters: hosting on a known free / preview / temporary-deployment platform (<code>vercel.app</code>, <code>pages.dev</code>, <code>netlify.app</code>, etc.) is a strong &mdash; though not overriding &mdash; phishing signal. The L2 fusion in &sect;6 has a specific guard for legitimate platform deployments to avoid false-positiving them.</p>
+
+
+<!-- ============================================================ -->
+<h2 class="page-break">6. Fusion Math</h2>
+
+<p style="margin-bottom:6px;">Source: <code>fusion_export/fusion_kit/scoring.py:fusion</code> as of commit <code>4c8b112</code>. The fusion function takes <code>url_p</code> (char-LR) and <code>op_p</code> (HGB operational), plus an optional <code>shortener_mask</code>, and returns <code>deploy_p</code>. Four zones plus a shortener override plus a high-op low-<code>url_p</code> guard. The math was rebalanced in <code>aa5dafd</code> and <code>4c8b112</code> after the original PR-#140 landed &mdash; what follows reflects current production behavior, not the historical version.</p>
+
+<h3>6.1 Boolean masks</h3>
+
+<table class="compact-table" style="width:600px;">
+  <tr><th>Name</th><th>Definition</th><th>Intuition</th></tr>
+  <tr><td><code>in_cdn</code></td><td><code>op_p &lt; 0.01</code></td><td>Operational signal is essentially absent &mdash; the host looks clean (typical CDN-fronted phishing).</td></tr>
+  <tr><td><code>in_high_op</code></td><td><code>op_p &gt; 0.60 AND url_p &ge; 0.05</code></td><td>HGB is highly confident the infrastructure looks malicious, and the URL string isn't trivially clean.</td></tr>
+  <tr><td><code>in_high_op_guard</code></td><td><code>op_p &gt; 0.60 AND url_p &lt; 0.05</code></td><td>HGB confident, URL string very clean &mdash; almost certainly a legitimate platform deployment.</td></tr>
+  <tr><td><code>shortener_mask</code></td><td>true iff URL was identified as a known shortener apex (see <code>fusion_kit/shorteners</code>)</td><td>Domain reputation of the shortener itself is uninformative; the resolved target carries the signal.</td></tr>
+</table>
+
+<h3>6.2 Zone blends (current zones, <code>4c8b112</code>)</h3>
+
+<table>
+  <tr><th>Zone</th><th>Condition</th><th>Blend</th><th>Rationale</th></tr>
+  <tr><td class="svc">CDN-phishing</td><td><code>in_cdn</code></td><td><code>deploy_p = 0.65 &middot; url_p + 0.35 &middot; op_p</code></td><td>When the operational model has no signal (truly clean infrastructure), <code>url_p</code> must dominate. CDN-fronted phishing is the canonical case.</td></tr>
+  <tr><td class="svc">Normal</td><td><code>0.01 &le; op_p &le; 0.60</code></td><td><code>deploy_p = 0.60 &middot; url_p + 0.40 &middot; op_p</code></td><td><code>url_p</code> carries a moderate advantage because the char-LR model is well-calibrated on phishing-keyword paths regardless of hosting reputation.</td></tr>
+  <tr><td class="svc">High-operational</td><td><code>in_high_op</code></td><td><code>deploy_p = 0.25 &middot; url_p + 0.75 &middot; op_p</code></td><td>When DNS, WHOIS, TLS, content, ASN all line up against the URL, <code>op_p</code> should dominate; the URL string alone can't out-vote that much infrastructure evidence.</td></tr>
+  <tr><td class="svc">High-op low-<code>url_p</code> guard</td><td><code>in_high_op_guard</code></td><td>Fall back to the normal blend.</td><td>Legitimate platform deployments on <code>vercel.app</code> / <code>pages.dev</code> / <code>replit.app</code> land at <code>url_p &asymp; 0.001 - 0.026</code>; without the guard they were misclassified as phishing purely on <code>op_p</code>. Real phishing in the high-op zone has <code>url_p &ge; 0.06</code> (numeric domains, brand hooks in the path), so the guard does not suppress true positives.</td></tr>
+  <tr><td class="svc">Shortener override</td><td><code>shortener_mask AND url_p &le; 0.95</code></td><td><code>deploy_p = 0.10 &middot; url_p + 0.90 &middot; op_p</code></td><td>The shortener itself is a layer of indirection; the resolved target is what matters. <code>op_p</code> over the resolved infrastructure dominates.</td></tr>
+  <tr><td class="svc">Shortener-self-suspicious exception</td><td><code>shortener_mask AND url_p &gt; 0.95</code></td><td>Keep the normal blend.</td><td>If the char-LR model is &gt; 95% confident the shortener domain <em>itself</em> is malicious, do not suppress that signal &mdash; the shortener domain may be the phishing primitive.</td></tr>
+</table>
+
+<h3>6.3 Removed zones (do not document as present)</h3>
+
+<div class="note">
+  <strong>Established-domain zone &mdash; removed in <code>aa5dafd</code>.</strong> The original PR included a zone that damped phishing on CDN infrastructure by over-weighting <code>op_p</code> when <code>url_p &gt; 0.95</code> AND <code>op_p &isin; [0.01, 0.10)</code>. The OpenPhish 2026-05-18 benchmark (&sect;9) attributed ~80 extra false negatives per run to this zone. It was removed. Do not document it as still present in derived materials.
+</div>
+
+
+<!-- ============================================================ -->
+<h2>7. Sidecar API Surface</h2>
+
+<p style="margin-bottom:6px;">Source: <code>fusion_export/scripts/serve.py</code> as of commit <code>4c8b112</code>. Stdlib-only HTTP server using <code>ThreadingHTTPServer</code> &mdash; no global scoring lock; per-request threads. Non-dict request bodies return HTTP 400.</p>
+
+<h3>7.1 Endpoints</h3>
+
+<table>
+  <tr><th>Method &amp; Path</th><th>Body</th><th>Response</th><th>Notes</th></tr>
+  <tr>
+    <td><code>GET /health</code></td>
+    <td>&mdash;</td>
+    <td><code>{"status": "ok", "models_loaded": &lt;bool&gt;}</code></td>
+    <td>Liveness + model-load readiness. Used by docker-compose healthcheck.</td>
+  </tr>
+  <tr>
+    <td><code>POST /score</code></td>
+    <td><code>{"urls": ["...", ...]}</code> (max 500 URLs)</td>
+    <td><code>{"results": [&lt;ScoreResult&gt;, ...], "threshold": &lt;float&gt;, "fusion_mode": "mean"|"max"}</code></td>
+    <td>Sidecar performs its own per-URL enrichment (DNS / WHOIS / TLS / HTTP / GeoIP / shortener). Each <code>ScoreResult</code>: <code>url</code>, <code>effective_url</code>, <code>url_p</code>, <code>op_p</code>, <code>deploy_p</code>, <code>verdict</code>.</td>
+  </tr>
+  <tr>
+    <td><code>POST /score_one</code></td>
+    <td><code>{"url": "..."}</code></td>
+    <td>Single <code>ScoreResult</code> dict</td>
+    <td>Single-URL convenience for handlers that don't want to wrap in a list.</td>
+  </tr>
+  <tr>
+    <td><code>POST /score-features</code></td>
+    <td><code>{"requests": [{"normalized_url": "...", "is_shortener": &lt;bool&gt;, "features": {&lt;flat dict of Go FeatureVector columns&gt;}}, ...]}</code> (max 500)</td>
+    <td>Same shape as <code>/score</code>.</td>
+    <td><strong>Bypasses sidecar re-enrichment.</strong> Use when the Go enricher has already computed the operational features. Added in <code>aa5dafd</code>. <em>No Go caller wires this up as of <code>4c8b112</code></em> &mdash; <code>internal/phishing/client/client.go</code> still calls <code>/score</code>. The endpoint is reachable but not on the live request path. See &sect;11 for the wiring opportunity.</td>
+  </tr>
+</table>
+
+<h3>7.2 Startup flags</h3>
+
+<table class="compact-table" style="width:700px;">
+  <tr><th>Flag</th><th>Default</th><th>Purpose</th></tr>
+  <tr><td><code>--host</code></td><td><code>127.0.0.1</code></td><td>Bind address. Docker-compose uses <code>0.0.0.0</code>.</td></tr>
+  <tr><td><code>--port</code></td><td><code>8765</code></td><td>HTTP port.</td></tr>
+  <tr><td><code>--workers</code></td><td>6</code></td><td>Per-request thread cap &mdash; passed to <code>ThreadingHTTPServer</code>'s implicit thread pool.</td></tr>
+  <tr><td><code>--threshold</code></td><td>0.50</td><td>Reported in the response envelope; Go side reapplies its own threshold from <code>CYBERSIREN_PHISHING__THRESHOLD</code>.</td></tr>
+</table>
+
+
+<!-- ============================================================ -->
+<h2>8. Production Integration</h2>
+
+<h3>8.1 Go-side wiring</h3>
+
+<table class="compact-table">
+  <tr><th>Component</th><th>File</th><th>Role</th></tr>
+  <tr><td>HTTP handler binary</td><td><code>services/svc-03-url-analysis/cmd/url-analysis/main.go</code></td><td>Calls the guard, then conditionally L1 and the L2 client. Owns the score-envelope marshaling.</td></tr>
+  <tr><td>Kafka worker binary</td><td><code>services/svc-03-url-analysis/cmd/url-pipeline/main.go</code></td><td>Same pipeline shape; consumes <code>analysis.urls</code> and emits <code>scores.url</code>.</td></tr>
+  <tr><td>Detector</td><td><code>internal/phishing/detector.go</code></td><td>Public <code>Score(ctx, url)</code> method. <code>DefaultThreshold = 0.50</code>.</td></tr>
+  <tr><td>HTTP client + cache</td><td><code>internal/phishing/client/client.go</code></td><td>Calls <code>/score</code>. <strong>TTL 5 min, 10,000-entry LRU keyed on the full URL</strong> (not the apex). The full-URL keying was a post-PR-#140 fix &mdash; apex keying caused cache collisions between distinct paths on the same domain.</td></tr>
+  <tr><td>Domain guard</td><td><code>services/svc-03-url-analysis/internal/url/domainguard.go</code></td><td><code>CheckDomain</code>, <code>CheckSubdomainBrand</code>, <code>ApexFromURL</code>.</td></tr>
+  <tr><td>Enricher (Go-side)</td><td><code>internal/phishing/enricher/</code></td><td>Computes the Go-side equivalent of the operational feature vector. Currently exposed for future <code>/score-features</code> wiring (see &sect;7.1, &sect;11).</td></tr>
+  <tr><td>SSRF guard</td><td><code>internal/phishing/enricher/http.go:safeDialContext</code></td><td>Rejects connections to non-public IPs (RFC 1918, loopback, link-local). Covered by <code>http_test.go</code>.</td></tr>
+  <tr><td>Config</td><td><code>shared/config/config.go:PhishingConfig</code></td><td>Reads <code>CYBERSIREN_PHISHING__SIDECAR_URL</code>, <code>CYBERSIREN_PHISHING__THRESHOLD</code>, <code>CYBERSIREN_PHISHING__GEO_IP_DIR</code>.</td></tr>
+</table>
+
+<h3>8.2 TI / L2 gate</h3>
+
+<p>In both the handler and the worker, L2 fires when:</p>
+
+<pre class="codeblock">!tiResult.Matched || tiResult.RiskScore &lt; 80</pre>
+
+<p>i.e. the L2 sidecar is consulted unless TI already returned a high-confidence phishing verdict. This re-invites L2 on low-confidence TI hits so that the sidecar can either confirm or downgrade them.</p>
+
+<h3>8.3 Fail-open semantics</h3>
+
+<p>SVC-03 starts even if the sidecar is unreachable. Per-request: if the sidecar errors, the handler logs and continues without an L2 contribution &mdash; the L1 + TI verdict stands and the <code>ml_*</code> envelope fields are omitted. Per-startup: no <code>pool.MustNew</code>-style hard dependency on the sidecar; the detector binds lazily.</p>
+
+
+<!-- ============================================================ -->
+<h2>9. Results</h2>
+
+<h3>9.1 Domain guard latency (i7-10750H)</h3>
+
+<table class="compact-table" style="width:600px;">
+  <tr><th>Benchmark</th><th>Result</th><th>Source</th></tr>
+  <tr><td>Allowlist hit</td><td>~43 ns/op</td><td><code>BenchmarkCheckDomain_AllowlistHit</code></td></tr>
+  <tr><td>Typosquat worst case (no hit, full 10K scan)</td><td>~51 &micro;s/op</td><td><code>BenchmarkCheckDomain_TyposquatDetect</code></td></tr>
+  <tr><td>Brand-in-subdomain hit</td><td>~157 ns/op</td><td><code>BenchmarkCheckSubdomainBrand_Hit</code></td></tr>
+  <tr><td>Apex extraction (PSL)</td><td>~&lt; 1 &micro;s/op</td><td><code>BenchmarkApexFromURL</code></td></tr>
+</table>
+
+<h3>9.2 End-to-end sidecar benchmark</h3>
+
+<div class="metric-block">
+  <div class="metric-header">OpenPhish 2026-05-18 &mdash; n=300 &mdash; threshold=0.50 (commit <code>aa5dafd</code>)</div>
+  <table class="compact-table">
+    <tr><th>Metric</th><th>Value</th><th>Notes</th></tr>
+    <tr><td>URLs scored</td><td>295 / 300</td><td>5 timeouts (sidecar &gt; 45 s wrapping context exceeded)</td></tr>
+    <tr><td>Phishing detection rate (TPR)</td><td><strong>273 / 295 = 92.5%</strong></td><td>Across 295 successfully-scored phishing URLs</td></tr>
+    <tr><td>Benign FPR (control sample)</td><td><strong>0 / 32 = 0.0%</strong></td><td>32 known-benign URLs sampled from the Cisco top-10K (deep paths)</td></tr>
+  </table>
+  <p style="margin-top:4px;font-size:10px;"><strong>Note:</strong> This live-benchmark TPR supersedes the offline &quot;FNR 1.64%&quot; figure cited in PR #140's original description. The live number reflects the rebalanced fusion zones from commits <code>aa5dafd</code> and <code>4c8b112</code> and is the more relevant production metric.</p>
+</div>
+
+<h3>9.3 Per-model metrics</h3>
+
+<p>Per-class FPR / FNR / AUC for <code>url_p</code> and <code>op_p</code> are stored alongside each artifact in:</p>
+
+<ul style="margin: 4px 0 6px 18px;">
+  <li><code>fusion_export/models/url_char_lr.metrics.json</code></li>
+  <li><code>fusion_export/models/hgb_operational.metrics.json</code></li>
+</ul>
+
+<p>These files ship via Git LFS with the model bundles (see <code>make check-fusion-models</code>). Until the LFS files land in your local clone, refer to the rebalancing commit message in <code>aa5dafd</code> for the headline shift summary.</p>
+
+
+<!-- ============================================================ -->
+<h2>10. Design Justifications</h2>
+
+<table>
+  <tr><th>Decision</th><th>Rationale</th></tr>
+  <tr><td class="svc">d=1 typosquat (not d&ge;2)</td><td>Against 10,000 reference apex domains, d=1 produces a manageable false-positive rate (~10&minus;4 incident frequency in our sample). d=2 increases the collision rate roughly an order of magnitude &mdash; legitimate short brands like &quot;go&quot; / &quot;io&quot; / &quot;ai&quot; start matching unrelated apex domains. Latency also degrades quadratically.</td></tr>
+  <tr><td class="svc">Asymmetric weighting in fusion</td><td>Each model has a distinct error mode: <code>url_p</code> miscalls small-business banking domains that look phishy-keyword-heavy; <code>op_p</code> miscalls CDN-hosted phish where the infrastructure looks clean. The four zones plus the high-op guard let each model dominate where it is reliable and back off where it is not. The matching docstring in <code>scoring.py</code> spells the rationale out per zone.</td></tr>
+  <tr><td class="svc">L2 re-invited on <code>RiskScore &lt; 80</code></td><td>Low-confidence TI hits would otherwise either be force-classified phishing (FP risk) or dropped entirely (FN risk). Re-inviting L2 means a noisy TI hit becomes a hint, not a verdict, and the fusion math gets to confirm or reject.</td></tr>
+  <tr><td class="svc">Out-of-process Python sidecar</td><td>The HGB stack pulls in numpy + scipy + scikit-learn (~150 MB). Embedding that in every Go binary that needs phishing scoring is wasteful and a deployment headache. A single sidecar per node, called over HTTP, keeps the Go images slim and allows the model to be reloaded without restarting svc-03.</td></tr>
+  <tr><td class="svc">Char-LR over BERT-style URL models</td><td>BERT-tier URL classifiers have higher AUC on academic benchmarks but require GPU inference for &lt; 100 ms latency. Char-LR runs in microseconds on CPU and is sufficient when paired with <code>op_p</code>; the fusion math is what closes the accuracy gap.</td></tr>
+  <tr><td class="svc">Full-URL cache key (post-PR-#140 fix)</td><td>The original PR keyed the LRU cache on apex domain, which collapsed distinct paths to one entry. Real phishing URLs share a phishing apex with benign control paths (<code>/about</code>, <code>/contact</code>) &mdash; one verdict for the apex was wrong for every URL but one. Full-URL keying is path-aware and the TTL is short enough (5 min) to keep memory bounded.</td></tr>
+</table>
+
+
+<!-- ============================================================ -->
+<h2 class="page-break">11. Limitations</h2>
+
+<table>
+  <tr>
+    <th>#</th>
+    <th>Limitation</th>
+    <th>Impact</th>
+    <th>Mitigation</th>
+  </tr>
+  <tr>
+    <td>1</td>
+    <td><code>brandSubstrings</code> is hand-curated (20 entries)</td>
+    <td>Coverage gap on regional brands and emerging unicorns. New phishing targets land before the guard knows about them.</td>
+    <td>Rotate the list quarterly against APWG / OECD brand-abuse reports. A larger, generated list is feasible but risks FPs from substring collisions.</td>
+  </tr>
+  <tr>
+    <td>2</td>
+    <td>Cache is best-effort &mdash; no negative caching of errors</td>
+    <td>A flapping enrichment dependency can cause the same URL to be re-scored on every hit.</td>
+    <td>Acceptable today &mdash; 5-min TTL bounds the damage. If the sidecar becomes a hot loop, add short negative-TTL entries (~30 s) for transient errors.</td>
+  </tr>
+  <tr>
+    <td>3</td>
+    <td>SSRF guard is best-effort at the L7 boundary</td>
+    <td><code>safeDialContext</code> rejects non-public IPs at TCP connect time, but a service in front of svc-03 can still be tricked by DNS rebinding (TTL=0 records that flip between public and private addresses between the guard check and the actual fetch).</td>
+    <td>Document the boundary as &quot;trusted by the calling service&quot;. A robust fix requires pinning the resolved IP and bypassing the system resolver for the actual fetch &mdash; out of scope for the current PR.</td>
+  </tr>
+  <tr>
+    <td>4</td>
+    <td>Sidecar wasn't in CI before this round</td>
+    <td>Regressions in serve.py or fusion math weren't caught by automation.</td>
+    <td>Resolved by the new <code>make e2e-svc-03</code> target (stubbed sidecar; runs in CI) and the opt-in <code>make integration-svc-03</code> (real sidecar with the LFS-tracked bundles).</td>
+  </tr>
+  <tr>
+    <td>5</td>
+    <td>Ephemeral-platform suffix list is duplicated</td>
+    <td><code>_EPHEMERAL_PLATFORM_SUFFIXES</code> (Python, <code>operational.py</code>) and <code>ephemeralPlatformSuffixes</code> (Go, <code>enricher/features.go</code>) are maintained by hand. Drift would mean <code>/score-features</code> and <code>/score</code> disagree on the same URL.</td>
+    <td>Either generate one from the other at build time, or pull both from a shared data file (e.g. JSON). Out of scope for this PR; flagged for the next refactor.</td>
+  </tr>
+  <tr>
+    <td>6</td>
+    <td><code>/score-features</code> has no Go caller</td>
+    <td>The endpoint is reachable but the existing client at <code>internal/phishing/client/client.go</code> only hits <code>/score</code>. The &quot;Go enricher computes features, sidecar just scores&quot; optimization is documented but not on the live request path.</td>
+    <td>A short follow-up PR can switch the client to <code>/score-features</code> once the Go-side enricher is feature-complete. Saves the per-request HTTP / DNS / WHOIS round-trips inside the sidecar.</td>
+  </tr>
+  <tr>
+    <td>7</td>
+    <td>Live-benchmark TPR (92.5%) was measured on 295 URLs</td>
+    <td>Sample size is small enough that the confidence interval on TPR is wide.</td>
+    <td>Rerun the benchmark on rolling 7-day OpenPhish dumps and track TPR over time; once trend is stable, narrow the CI estimate.</td>
+  </tr>
+</table>
+
+
+<!-- ============================================================ -->
+<h2>12. References</h2>
+
+<p style="margin-bottom:4px;"><strong>Repo-relative source files (path-stable; do not link to branch URLs that will rot):</strong></p>
+
+<ul class="ref-list">
+  <li><code>services/svc-03-url-analysis/internal/url/domainguard.go</code> &mdash; Go domain guard implementation</li>
+  <li><code>services/svc-03-url-analysis/internal/url/data/top10k_domains.txt</code> &mdash; embedded Cisco top-10K allowlist</li>
+  <li><code>services/svc-03-url-analysis/scripts/update_allowlist.py</code> &mdash; allowlist regeneration script</li>
+  <li><code>services/svc-03-url-analysis/cmd/url-analysis/main.go</code> &mdash; HTTP handler binary</li>
+  <li><code>services/svc-03-url-analysis/cmd/url-pipeline/main.go</code> &mdash; Kafka worker binary</li>
+  <li><code>internal/phishing/detector.go</code>, <code>internal/phishing/client/client.go</code> &mdash; Go-side detector and HTTP client</li>
+  <li><code>internal/phishing/enricher/</code> &mdash; Go-side enricher (DNS, WHOIS, TLS, HTTP, GeoIP, shorteners)</li>
+  <li><code>internal/phishing/enricher/http.go</code> &mdash; <code>safeDialContext</code> SSRF guard</li>
+  <li><code>internal/phishing/enricher/features.go</code> &mdash; <code>ephemeralPlatformSuffixes</code></li>
+  <li><code>shared/config/config.go</code> &mdash; <code>PhishingConfig</code> struct, env-var binding</li>
+  <li><code>fusion_export/scripts/serve.py</code> &mdash; Python sidecar entry point</li>
+  <li><code>fusion_export/fusion_kit/scoring.py</code> &mdash; <code>fusion()</code> function and zone math</li>
+  <li><code>fusion_export/fusion_kit/operational.py</code> &mdash; <code>enrichment_to_operational_row</code>, <code>_EPHEMERAL_PLATFORM_SUFFIXES</code></li>
+  <li><code>fusion_export/fusion_kit/url_normalize.py</code> &mdash; URL normalization for <code>url_p</code></li>
+  <li><code>fusion_export/models/url_char_lr.{joblib, metrics.json}</code>, <code>hgb_operational.{joblib, metrics.json}</code> &mdash; LFS-tracked artifacts</li>
+</ul>
+
+<p style="margin-top:8px;"><strong>Cross-document:</strong></p>
+
+<ul class="ref-list">
+  <li><code>docs/architecture/architecture-spec-detail.html</code> &sect;3a, &sect;6 (error policy) &mdash; canonical SVC-03 pipeline + failure semantics</li>
+  <li><code>docs/internals/CyberSiren_URL_Low_latency_Model_Specification.html</code> &mdash; L1 XGBoost model (the layer between &sect;3 and &sect;5 here)</li>
+  <li><code>docs/diagrams/architecture-diagram.html</code> &mdash; system diagram, version v2.3 reflects the four-stage pipeline</li>
+  <li><code>DEMO-url.md</code> &mdash; standalone demo runbook (includes <code>make demo svc=svc-03-url-analysis</code> walkthrough)</li>
+  <li><code>docs/URL_ANALYSIS_IMPROVEMENTS.md</code> &mdash; user-facing roadmap; &sect;1A and Issue 11 cross-link to this spec</li>
+</ul>
+
+</body>
+</html>

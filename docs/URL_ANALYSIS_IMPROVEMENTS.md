@@ -219,6 +219,12 @@ url_p ≈ 0.95, low op_p ≈ 0.001) still scores above the 0.5 threshold, while 
 domain guard prevents the high url_p weight from producing FPs on known-good
 domains. Benchmark: 93.6% detection (280/299 live OpenPhish URLs), 0/46 FPR.
 
+> See [`docs/internals/CyberSiren_URL_Domain_Guard_and_L2_Fusion_Specification.html`](internals/CyberSiren_URL_Domain_Guard_and_L2_Fusion_Specification.html)
+> §6 for the full current fusion math (CDN-phishing 65/35, normal 60/40,
+> high-op 25/75 with the `url_p ≥ 0.05` guard against platform-deployment
+> false positives, shortener 10/90). The zone layout above is the original
+> PR-#140 version; commits `aa5dafd` and `4c8b112` rebalanced it.
+
 ML and TI in the Go handler (demo mode, no sidecar) still use simple if/else.
 Weighted signal fusion across all three signals (ML, TI, enrichment) is P2 work:
 
@@ -265,6 +271,11 @@ Three layers implemented:
 **Impact achieved:** Eliminates all FPs for known top-10K domains and their subdomains.
 The domain guard is the reason the 60/40 fusion weights can be aggressive (high url_p
 weight) without FPs on known-good domains — those domains never reach the sidecar.
+
+> See [`docs/internals/CyberSiren_URL_Domain_Guard_and_L2_Fusion_Specification.html`](internals/CyberSiren_URL_Domain_Guard_and_L2_Fusion_Specification.html)
+> §3 for the full guard implementation, latency benchmarks (43 ns allowlist hit /
+> 51 µs typosquat worst case / 157 ns brand-in-subdomain), and the 20-entry
+> brand list.
 
 #### 1B. TI Domain Walking ⭐ P0
 
