@@ -1,0 +1,15 @@
+{
+  "train_rows": 304181,
+  "augment_benign_rows": 1875,
+  "augment_benign_unique": 625,
+  "augment_phish_rows": 3000,
+  "augment_phish_unique": 300,
+  "train_roc_auc": 0.9762781442668265,
+  "train_accuracy_at_0_5": 0.932333051702769,
+  "n_features_bits": 18,
+  "ngram_range": [
+    2,
+    4
+  ],
+  "C": 2.0
+}
