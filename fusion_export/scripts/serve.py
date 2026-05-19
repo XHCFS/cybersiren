@@ -46,6 +46,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -53,6 +54,74 @@ from typing import Any
 
 import joblib
 import numpy as np
+
+# Prometheus instrumentation. Optional dependency — when the package is
+# unavailable (lightweight sidecar builds, the e2e stub) the module falls back
+# to no-op stand-ins so the rest of the server still works.
+try:  # pragma: no cover - import guard
+    from prometheus_client import (  # type: ignore
+        CONTENT_TYPE_LATEST,
+        CollectorRegistry,
+        Counter,
+        Gauge,
+        Histogram,
+        generate_latest,
+    )
+    _PROM_AVAILABLE = True
+except ImportError:  # pragma: no cover - import guard
+    CONTENT_TYPE_LATEST = "text/plain"
+
+    class _NoopMetric:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def labels(self, *_a, **_kw):
+            return self
+
+        def inc(self, *_a, **_kw):
+            pass
+
+        def set(self, *_a, **_kw):
+            pass
+
+        def observe(self, *_a, **_kw):
+            pass
+
+    Counter = Gauge = Histogram = _NoopMetric  # type: ignore[misc,assignment]
+    CollectorRegistry = object  # type: ignore[misc,assignment]
+
+    def generate_latest(_registry=None):  # type: ignore[misc]
+        return b"# prometheus_client not installed in this image\n"
+
+    _PROM_AVAILABLE = False
+
+
+_metric_registry = CollectorRegistry() if _PROM_AVAILABLE else None
+
+_REQUESTS_TOTAL = Counter(
+    "fusion_sidecar_requests_total",
+    "Total HTTP requests handled by the L2 fusion sidecar.",
+    ["method", "route", "code"],
+    **({"registry": _metric_registry} if _PROM_AVAILABLE else {}),
+)
+_REQUEST_DURATION = Histogram(
+    "fusion_sidecar_request_duration_seconds",
+    "Per-request wall-clock duration handled by the L2 fusion sidecar.",
+    ["route"],
+    buckets=(0.005, 0.025, 0.1, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 45.0),
+    **({"registry": _metric_registry} if _PROM_AVAILABLE else {}),
+)
+_SCORE_OUTCOMES = Counter(
+    "fusion_sidecar_scores_total",
+    "Total per-URL scoring outcomes produced by the sidecar (sum across batch calls).",
+    ["route", "verdict"],
+    **({"registry": _metric_registry} if _PROM_AVAILABLE else {}),
+)
+_MODELS_LOADED = Gauge(
+    "fusion_sidecar_models_loaded",
+    "1 when the Scorer initialised cleanly (models + content gate ready), 0 otherwise.",
+    **({"registry": _metric_registry} if _PROM_AVAILABLE else {}),
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -264,13 +333,57 @@ class Handler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", 0))
         return json.loads(self.rfile.read(length))
 
+    def _route_label(self) -> str:
+        # Bound label cardinality: only known endpoints are reported by name,
+        # everything else collapses to "other" so a 404 flood can't blow up
+        # Prometheus's series count.
+        known = {"/health", "/metrics", "/score", "/score_one", "/score-features"}
+        return self.path if self.path in known else "other"
+
+    def _send_metrics(self) -> None:
+        body = generate_latest(_metric_registry) if _PROM_AVAILABLE else generate_latest(None)
+        self.send_response(200)
+        self.send_header("Content-Type", CONTENT_TYPE_LATEST)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _record(self, route: str, code: int, started_at: float) -> None:
+        _REQUESTS_TOTAL.labels(self.command, route, str(code)).inc()
+        _REQUEST_DURATION.labels(route).observe(time.perf_counter() - started_at)
+
+    def _send_json(self, code: int, obj: Any) -> None:  # type: ignore[override]
+        body = json.dumps(obj).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+        # Remember the last status code so dispatchers can record metrics
+        # without threading the value back through the call site.
+        self._last_status = code
+
     def do_GET(self):
+        started = time.perf_counter()
+        route = self._route_label()
         if self.path == "/health":
             self._send_json(200, {"status": "ok", "models_loaded": _scorer is not None})
+        elif self.path == "/metrics":
+            self._send_metrics()
+            self._last_status = 200
         else:
             self._send_json(404, {"error": "not found"})
+        self._record(route, getattr(self, "_last_status", 200), started)
 
     def do_POST(self):
+        started = time.perf_counter()
+        route = self._route_label()
+        try:
+            self._handle_post()
+        finally:
+            self._record(route, getattr(self, "_last_status", 500), started)
+
+    def _handle_post(self) -> None:
         try:
             body = self._read_json()
         except Exception:
@@ -294,6 +407,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(400, {"error": "max 500 URLs per request"})
                 return
             results = _scorer.score(urls)
+            self._count_verdicts("/score", results)
             self._send_json(200, {
                 "results": results,
                 "threshold": _scorer.threshold,
@@ -306,6 +420,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(400, {"error": "'url' is required"})
                 return
             results = _scorer.score([url])
+            self._count_verdicts("/score_one", results)
             self._send_json(200, results[0] if results else {})
 
         elif self.path == "/score-features":
@@ -317,6 +432,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(400, {"error": "max 500 requests per call"})
                 return
             results = _scorer.score_features(reqs)
+            self._count_verdicts("/score-features", results)
             self._send_json(200, {
                 "results": results,
                 "threshold": _scorer.threshold,
@@ -325,6 +441,13 @@ class Handler(BaseHTTPRequestHandler):
 
         else:
             self._send_json(404, {"error": "not found"})
+
+    @staticmethod
+    def _count_verdicts(route: str, results: list[dict]) -> None:
+        for r in results:
+            verdict = r.get("verdict") if isinstance(r, dict) else None
+            if verdict in ("phishing", "benign"):
+                _SCORE_OUTCOMES.labels(route, verdict).inc()
 
 
 def main() -> int:
@@ -344,15 +467,20 @@ def main() -> int:
 
     global _scorer
     print(f"Loading models from {args.models_dir} ...", flush=True)
-    _scorer = Scorer(
-        models_dir=args.models_dir,
-        fusion_mode=args.fusion,
-        threshold=args.threshold,
-        content_gate=args.content_gate,
-        workers=args.workers,
-        feed_tag=args.feed_tag,
-        url_model=args.url_model,
-    )
+    try:
+        _scorer = Scorer(
+            models_dir=args.models_dir,
+            fusion_mode=args.fusion,
+            threshold=args.threshold,
+            content_gate=args.content_gate,
+            workers=args.workers,
+            feed_tag=args.feed_tag,
+            url_model=args.url_model,
+        )
+    except Exception:
+        _MODELS_LOADED.set(0)
+        raise
+    _MODELS_LOADED.set(1)
     print(f"Models loaded. url_model={_scorer.url_model} threshold={args.threshold} "
           f"fusion={args.fusion} content_gate={args.content_gate}", flush=True)
 

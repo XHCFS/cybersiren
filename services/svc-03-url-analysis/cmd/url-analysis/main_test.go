@@ -89,7 +89,7 @@ func (f *fakeScorer) callCount() int {
 func newTestEngine(model urlPredictor, ti tiLookup, scorer phishingScorer) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	srv := sharedhttp.NewServer()
-	srv.POST("/scan", scanHandler(model, ti, scorer, zerolog.Nop()))
+	srv.POST("/scan", scanHandler(model, ti, scorer, nil, zerolog.Nop()))
 	return srv.Engine()
 }
 

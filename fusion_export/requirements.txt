@@ -13,6 +13,10 @@ ipwhois
 geoip2
 langdetect
 
+# Observability — Prometheus scrape endpoint (/metrics on the sidecar port).
+# Optional: serve.py degrades to no-op metrics if the import fails.
+prometheus_client>=0.20
+
 # Optional: MaxMind GeoLite2 .mmdb files are NOT on PyPI — place GeoLite2-City.mmdb,
 # GeoLite2-ASN.mmdb (and optionally Country) in fusion_kit/ next to enrich.py, or adjust
 # paths inside enrich.py if you relocate them.

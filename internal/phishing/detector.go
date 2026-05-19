@@ -17,10 +17,16 @@ import (
 	"net/url"
 	"strings"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/net/publicsuffix"
 
 	phclient "github.com/saif/cybersiren/internal/phishing/client"
 )
+
+var detectorTracer = otel.Tracer("svc-03-url-analysis/phishing-detector")
 
 // DefaultThreshold is the canonical deploy_p cutoff used across the Go
 // detector, the Python sidecar default, and the UI red-band threshold.
@@ -37,6 +43,10 @@ type Config struct {
 	// sidecar verdict as "phishing" (default DefaultThreshold). Allows the
 	// Go side to apply a stricter or laxer cutoff than the sidecar.
 	Threshold float64
+	// Metrics, if non-nil, is passed to the underlying client so cache and
+	// sidecar-call counters are recorded. Score increments verdict / cache
+	// counters via this holder.
+	Metrics *phclient.Metrics
 }
 
 func (c *Config) withDefaults() {
@@ -61,18 +71,19 @@ type Result struct {
 
 // Detector orchestrates sidecar scoring.
 type Detector struct {
-	cfg    Config
-	client *phclient.Client
+	cfg     Config
+	client  *phclient.Client
+	metrics *phclient.Metrics
 }
 
 // NewDetector creates a Detector from cfg.
 func NewDetector(cfg Config) (*Detector, error) {
 	cfg.withDefaults()
-	c, err := phclient.NewClient(cfg.SidecarURL)
+	c, err := phclient.NewClientWithMetrics(cfg.SidecarURL, cfg.Metrics)
 	if err != nil {
 		return nil, fmt.Errorf("create phishing sidecar client: %w", err)
 	}
-	return &Detector{cfg: cfg, client: c}, nil
+	return &Detector{cfg: cfg, client: c, metrics: cfg.Metrics}, nil
 }
 
 // Close is a no-op; kept for interface compatibility.
@@ -82,10 +93,18 @@ func (d *Detector) Close() {}
 // Returns from the apex-domain LRU cache when available.
 // On error the caller should fail-open (treat as benign) for Layer 2.
 func (d *Detector) Score(ctx context.Context, rawURL string) (Result, error) {
+	ctx, span := detectorTracer.Start(ctx, "phishing.detector.Score",
+		trace.WithAttributes(attribute.String("phishing.url", rawURL)),
+	)
+	defer span.End()
+
 	apexKey := apexFromRawURL(rawURL)
 
 	scored, cacheHit, err := d.client.CachedScore(ctx, rawURL, apexKey)
 	if err != nil {
+		d.metrics.IncScore("error", "miss")
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return Result{}, fmt.Errorf("sidecar score: %w", err)
 	}
 
@@ -96,6 +115,17 @@ func (d *Detector) Score(ctx context.Context, rawURL string) (Result, error) {
 	if scored.DeployP >= d.cfg.Threshold {
 		verdict = "phishing"
 	}
+
+	cacheLabel := "miss"
+	if cacheHit {
+		cacheLabel = "hit"
+	}
+	d.metrics.IncScore(verdict, cacheLabel)
+	span.SetAttributes(
+		attribute.String("phishing.verdict", verdict),
+		attribute.Float64("phishing.deploy_p", scored.DeployP),
+		attribute.Bool("phishing.cache_hit", cacheHit),
+	)
 
 	return Result{
 		URL:          rawURL,

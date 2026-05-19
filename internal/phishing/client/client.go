@@ -7,7 +7,14 @@ import (
 	"fmt"
 	"net/http"
 	"time"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
+
+var clientTracer = otel.Tracer("svc-03-url-analysis/phishing-client")
 
 // ScoreRequest is a URL to score via the v2 sidecar.
 type ScoreRequest struct {
@@ -29,10 +36,17 @@ type Client struct {
 	baseURL    string
 	httpClient *http.Client
 	cache      *Cache
+	metrics    *Metrics
 }
 
-// NewClient creates a Client pointing at baseURL.
+// NewClient creates a Client pointing at baseURL with no metrics reporting.
 func NewClient(baseURL string) (*Client, error) {
+	return NewClientWithMetrics(baseURL, nil)
+}
+
+// NewClientWithMetrics is like NewClient but bumps Prometheus counters on
+// cache hits/misses, sidecar errors, and score durations.
+func NewClientWithMetrics(baseURL string, m *Metrics) (*Client, error) {
 	cache, err := NewCache(0, 0)
 	if err != nil {
 		return nil, err
@@ -42,7 +56,8 @@ func NewClient(baseURL string) (*Client, error) {
 		httpClient: &http.Client{
 			Timeout: 45 * time.Second,
 		},
-		cache: cache,
+		cache:   cache,
+		metrics: m,
 	}, nil
 }
 
@@ -64,6 +79,11 @@ func (c *Client) ScoreBatch(ctx context.Context, reqs []ScoreRequest) ([]ScoreRe
 	if len(reqs) == 0 {
 		return nil, nil
 	}
+
+	ctx, span := clientTracer.Start(ctx, "phishing.client.ScoreBatch",
+		trace.WithAttributes(attribute.Int("phishing.batch_size", len(reqs))),
+	)
+	defer span.End()
 
 	type wirePayload struct {
 		URLs []string `json:"urls"`
@@ -87,29 +107,49 @@ func (c *Client) ScoreBatch(ctx context.Context, reqs []ScoreRequest) ([]ScoreRe
 
 	body, err := json.Marshal(wirePayload{URLs: urls})
 	if err != nil {
+		c.metrics.incSidecarError("encode")
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("marshal score request: %w", err)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/score", bytes.NewReader(body))
 	if err != nil {
+		c.metrics.incSidecarError("encode")
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 
+	start := time.Now()
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
+		c.metrics.incSidecarError("http")
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("sidecar request: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("sidecar returned status %d", resp.StatusCode)
+		c.metrics.incSidecarError("status")
+		statusErr := fmt.Errorf("sidecar returned status %d", resp.StatusCode)
+		span.SetStatus(codes.Error, statusErr.Error())
+		return nil, statusErr
 	}
 
 	var wireResp wireResponse
 	if err := json.NewDecoder(resp.Body).Decode(&wireResp); err != nil {
+		c.metrics.incSidecarError("decode")
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("decode sidecar response: %w", err)
 	}
+
+	// Only observe latency on success — error paths above already counted
+	// distinct failure modes and would skew the duration histogram.
+	c.metrics.observeDuration(time.Since(start).Seconds())
 
 	results := make([]ScoreResult, len(wireResp.Results))
 	for i, r := range wireResp.Results {
@@ -135,6 +175,7 @@ func (c *Client) CachedScore(ctx context.Context, url, apexKey string) (ScoreRes
 		return result, false, nil
 	}
 	if hit, ok := c.cache.Get(url); ok {
+		c.metrics.setCacheItems(c.cache.Len())
 		return hit, true, nil
 	}
 	result, err := c.Score(ctx, ScoreRequest{URL: url})
@@ -142,5 +183,6 @@ func (c *Client) CachedScore(ctx context.Context, url, apexKey string) (ScoreRes
 		return ScoreResult{}, false, err
 	}
 	c.cache.Set(url, result)
+	c.metrics.setCacheItems(c.cache.Len())
 	return result, false, nil
 }

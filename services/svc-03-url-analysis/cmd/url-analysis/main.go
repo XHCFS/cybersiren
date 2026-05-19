@@ -13,8 +13,11 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/rs/zerolog"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 
 	"github.com/saif/cybersiren/internal/phishing"
+	phclient "github.com/saif/cybersiren/internal/phishing/client"
 	urlpkg "github.com/saif/cybersiren/services/svc-03-url-analysis/internal/url"
 	"github.com/saif/cybersiren/shared/config"
 	sharedhttp "github.com/saif/cybersiren/shared/http"
@@ -26,6 +29,8 @@ import (
 	"github.com/saif/cybersiren/shared/postgres/repository"
 	sharedvalkey "github.com/saif/cybersiren/shared/valkey"
 )
+
+var scanHandlerTracer = otel.Tracer("svc-03-url-analysis/scan-handler")
 
 // urlPredictor abstracts the URL model so the handler is testable without a
 // real Python worker.
@@ -143,11 +148,18 @@ func main() {
 	}
 	defer model.Close()
 
+	// Service-specific Prometheus collectors. ScanMetrics covers /scan
+	// stage counters; phishingMetrics covers the sidecar client (cache,
+	// HTTP errors, score duration, verdict counts).
+	scanMetrics := urlpkg.NewScanMetrics(reg)
+	phishingMetrics := phclient.NewMetrics(reg)
+
 	// Layer-2 ML phishing detector (fail-open: starts even if GeoIP unavailable).
 	det, detErr := phishing.NewDetector(phishing.Config{
 		SidecarURL: cfg.Phishing.SidecarURL,
 		GeoIPDir:   cfg.Phishing.GeoIPDir,
 		Threshold:  cfg.Phishing.Threshold,
+		Metrics:    phishingMetrics,
 	})
 	var scorer phishingScorer
 	if detErr != nil {
@@ -171,7 +183,7 @@ func main() {
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
 	})
 
-	srv.POST("/scan", scanHandler(model, tiLookupInst, scorer, log))
+	srv.POST("/scan", scanHandler(model, tiLookupInst, scorer, scanMetrics, log))
 
 	go func() {
 		if srvErr := srv.Start(fmt.Sprintf(":%d", cfg.Server.Port)); srvErr != nil {
@@ -274,31 +286,60 @@ type scanResponse struct {
 	MLCacheHit bool    `json:"ml_cache_hit,omitempty"`
 }
 
-func scanHandler(model urlPredictor, ti tiLookup, scorer phishingScorer, log zerolog.Logger) sharedhttp.HandlerFunc {
+func scanHandler(
+	model urlPredictor,
+	ti tiLookup,
+	scorer phishingScorer,
+	sm *urlpkg.ScanMetrics,
+	log zerolog.Logger,
+) sharedhttp.HandlerFunc {
 	return func(ctx sharedhttp.Context) {
+		start := time.Now()
+		defer func() { sm.ObserveDuration(time.Since(start).Seconds()) }()
+
+		// One top-level span per /scan call. Sub-stages (TI checker, phishing
+		// detector + client) attach their own child spans via the propagated
+		// context, so the Jaeger view shows guard -> L1+TI -> L2 as a tree.
+		reqCtx, span := scanHandlerTracer.Start(ctx.Request().Context(), "svc-03.scan")
+		defer span.End()
+
 		var req scanRequest
 		if reqErr := ctx.ParseJSON(&req); reqErr != nil {
+			sm.IncStageError("parse")
 			_ = ctx.RequestError(reqErr)
 			return
 		}
 		if req.URL == "" {
+			sm.IncStageError("parse")
 			_ = ctx.Error(http.StatusBadRequest, "bad_request", "url is required")
 			return
 		}
 
 		normalized, err := normalization.NormalizeURL(req.URL)
 		if err != nil {
+			sm.IncStageError("normalize")
 			_ = ctx.Error(http.StatusBadRequest, "bad_request", fmt.Sprintf("invalid URL: %s", err.Error()))
 			return
 		}
+		span.SetAttributes(attribute.String("scan.url", normalized))
 
 		// Domain guard: fast-path known-good domains and phishing patterns before
 		// touching the ML model or sidecar. L1 score is not used for
 		// user-submitted scan labels — only TI + L2 drive the verdict.
+		_, guardSpan := scanHandlerTracer.Start(reqCtx, "svc-03.guard.CheckDomain")
 		apex := urlpkg.ApexFromURL(normalized)
 		guard := urlpkg.CheckDomain(apex)
+		guardSpan.SetAttributes(
+			attribute.String("guard.apex", apex),
+			attribute.String("guard.verdict", guard.Verdict),
+		)
+		guardSpan.End()
+
 		switch guard.Verdict {
 		case "real":
+			sm.IncGuard("allowlisted")
+			sm.IncOutcome("guard_allowlisted")
+			span.SetAttributes(attribute.String("scan.outcome", "guard_allowlisted"))
 			_ = ctx.OK(scanResponse{
 				URL:      normalized,
 				Label:    "legitimate",
@@ -306,6 +347,12 @@ func scanHandler(model urlPredictor, ti tiLookup, scorer phishingScorer, log zer
 			})
 			return
 		case "typosquat":
+			sm.IncGuard("typosquat")
+			sm.IncOutcome("guard_typosquat")
+			span.SetAttributes(
+				attribute.String("scan.outcome", "guard_typosquat"),
+				attribute.String("guard.matched_brand", guard.MatchedBrand),
+			)
 			_ = ctx.OK(scanResponse{
 				URL:         normalized,
 				Score:       100,
@@ -319,8 +366,18 @@ func scanHandler(model urlPredictor, ti tiLookup, scorer phishingScorer, log zer
 		// Brand-in-subdomain check: fires before ML when apex is unknown.
 		// Catches patterns like "paypal-security.verify-login.com" where the
 		// brand appears in a subdomain label but the registered domain is foreign.
+		_, subSpan := scanHandlerTracer.Start(reqCtx, "svc-03.guard.CheckSubdomainBrand")
 		hostname := urlpkg.HostnameFromURL(normalized)
-		if sub := urlpkg.CheckSubdomainBrand(hostname); sub.Verdict == "brand-in-subdomain" {
+		sub := urlpkg.CheckSubdomainBrand(hostname)
+		subSpan.SetAttributes(attribute.String("guard.verdict", sub.Verdict))
+		subSpan.End()
+		if sub.Verdict == "brand-in-subdomain" {
+			sm.IncGuard("brand_in_subdomain")
+			sm.IncOutcome("guard_brand")
+			span.SetAttributes(
+				attribute.String("scan.outcome", "guard_brand"),
+				attribute.String("guard.matched_brand", sub.MatchedBrand),
+			)
 			_ = ctx.OK(scanResponse{
 				URL:         normalized,
 				Score:       100,
@@ -330,6 +387,7 @@ func scanHandler(model urlPredictor, ti tiLookup, scorer phishingScorer, log zer
 			})
 			return
 		}
+		sm.IncGuard("none")
 
 		var (
 			rawScore int
@@ -347,12 +405,19 @@ func scanHandler(model urlPredictor, ti tiLookup, scorer phishingScorer, log zer
 			// L1 model still called for degraded-mode detection and routing
 			// transparency, but its score is NOT used in classifyLabel for
 			// user-submitted URLs (it was calibrated on feed data, not live scans).
-			rawScore, rawProb, routed, reason, _ = model.PredictWithRoute(ctx.Request().Context(), normalized)
+			l1Ctx, l1Span := scanHandlerTracer.Start(reqCtx, "svc-03.l1.PredictWithRoute")
+			rawScore, rawProb, routed, reason, _ = model.PredictWithRoute(l1Ctx, normalized)
+			l1Span.SetAttributes(
+				attribute.Int("l1.score", rawScore),
+				attribute.Float64("l1.probability", rawProb),
+				attribute.Bool("l1.routed_to_enrichment", routed),
+			)
+			l1Span.End()
 		}()
 
 		go func() {
 			defer wg.Done()
-			tiResult, _ = ti.Check(ctx.Request().Context(), normalized)
+			tiResult, _ = ti.Check(reqCtx, normalized)
 		}()
 
 		wg.Wait()
@@ -373,21 +438,52 @@ func scanHandler(model urlPredictor, ti tiLookup, scorer phishingScorer, log zer
 		// matched with low confidence (< 80 risk). A low-confidence TI hit
 		// alone is not enough to label phishing in classifyLabel, so we still
 		// want L2 to weigh in.
+		ranL2 := false
+		l2Verdict := ""
 		if (!tiResult.Matched || tiResult.RiskScore < 80) && scorer != nil {
-			mlCtx, mlCancel := context.WithTimeout(ctx.Request().Context(), 45*time.Second)
+			reasonLabel := "ti_miss"
+			if tiResult.Matched {
+				reasonLabel = "ti_low_confidence"
+			}
+			sm.IncL2(reasonLabel)
+			ranL2 = true
+
+			mlCtx, mlCancel := context.WithTimeout(reqCtx, 45*time.Second)
 			defer mlCancel()
 			if phishResult, phishErr := scorer.Score(mlCtx, normalized); phishErr != nil {
+				sm.IncStageError("l2")
+				span.RecordError(phishErr)
 				log.Warn().Err(phishErr).Str("url", normalized).Msg("phishing ML check failed")
 			} else {
 				resp.MLDeployP = phishResult.DeployP
 				resp.MLVerdict = phishResult.Verdict
 				resp.MLCacheHit = phishResult.CacheHit
+				l2Verdict = phishResult.Verdict
 			}
 		}
-
 		// L1 score overridden to 0 for user-submitted scans — label is driven
 		// by TI match and L2 fusion verdict only.
 		resp.Label = classifyLabel(0, tiResult, false, resp.MLVerdict)
+
+		// Final outcome bookkeeping: pick a single label that explains which
+		// stage produced the verdict — useful as a Prometheus axis for a
+		// stacked-bar view of where verdicts come from.
+		outcome := "fallback_legitimate"
+		switch {
+		case tiResult.Matched && tiResult.RiskScore >= 80:
+			outcome = "ti_phishing"
+		case ranL2 && l2Verdict == "phishing":
+			outcome = "ml_phishing"
+		case ranL2 && l2Verdict == "benign":
+			outcome = "ml_benign"
+		case tiResult.Matched:
+			outcome = "ti_low_confidence"
+		}
+		sm.IncOutcome(outcome)
+		span.SetAttributes(
+			attribute.String("scan.outcome", outcome),
+			attribute.String("scan.label", resp.Label),
+		)
 
 		log.Debug().
 			Str("url", normalized).

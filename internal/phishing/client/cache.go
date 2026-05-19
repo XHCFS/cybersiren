@@ -57,3 +57,11 @@ func (c *Cache) Set(key string, result ScoreResult) {
 	defer c.mu.Unlock()
 	c.lru.Add(key, cacheEntry{result: result, expiresAt: time.Now().Add(c.ttl)})
 }
+
+// Len returns the number of entries currently in the LRU. Reports both fresh
+// and expired entries (lazy-expiry); good enough for a metric gauge.
+func (c *Cache) Len() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.lru.Len()
+}
