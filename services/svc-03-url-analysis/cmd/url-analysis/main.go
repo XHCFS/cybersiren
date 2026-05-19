@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"os/signal"
 	"sync"
 	"syscall"
@@ -116,6 +118,22 @@ func main() {
 		log.Info().Msg("TI checker ready")
 	}
 
+	// Dev-only TI override: when CYBERSIREN_DEV_MODE=true and
+	// CYBERSIREN_TI__OVERRIDE_JSON points to a readable file, swap the live TI
+	// checker for one that returns hardcoded results from that file. Used by
+	// the e2e test harness (services/svc-03-url-analysis/tests/e2e/run.sh).
+	if os.Getenv("CYBERSIREN_DEV_MODE") == "true" {
+		if path := os.Getenv("CYBERSIREN_TI__OVERRIDE_JSON"); path != "" {
+			override, overrideErr := newJSONTILookup(path)
+			if overrideErr != nil {
+				log.Fatal().Err(overrideErr).Str("path", path).Msg("failed to load TI override fixture")
+				return
+			}
+			tiLookupInst = override
+			log.Warn().Str("path", path).Int("entries", override.size()).Msg("TI checker overridden by dev-only JSON fixture")
+		}
+	}
+
 	model, err := urlpkg.NewURLModel(cfg.ML.URLModelPath, cfg.ML.URLModelPoolSize, func(msg string, modelErr error) {
 		log.Error().Err(modelErr).Str("component", "url_model").Msg(msg)
 	})
@@ -148,6 +166,9 @@ func main() {
 	srv.Engine().Static("/static", "./static")
 	srv.Engine().GET("/", func(c *gin.Context) {
 		c.File("./static/index.html")
+	})
+	srv.Engine().GET("/healthz", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"status": "ok"})
 	})
 
 	srv.POST("/scan", scanHandler(model, tiLookupInst, scorer, log))
@@ -183,6 +204,50 @@ type noopTILookup struct{}
 func (n *noopTILookup) Check(_ context.Context, _ string) (urlpkg.TIResult, error) {
 	return urlpkg.TIResult{}, nil
 }
+
+// jsonTILookup is a dev-only tiLookup that returns hardcoded TIResult values
+// loaded from a JSON fixture file. URLs absent from the fixture return
+// no-match (same as noopTILookup). Gated behind CYBERSIREN_DEV_MODE=true.
+type jsonTILookup struct {
+	entries map[string]urlpkg.TIResult
+}
+
+type jsonTILookupEntry struct {
+	Matched    bool   `json:"matched"`
+	Domain     string `json:"domain"`
+	RiskScore  int    `json:"risk_score"`
+	ThreatType string `json:"threat_type"`
+}
+
+func newJSONTILookup(path string) (*jsonTILookup, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read ti override fixture: %w", err)
+	}
+	var rawEntries map[string]jsonTILookupEntry
+	if jsonErr := json.Unmarshal(raw, &rawEntries); jsonErr != nil {
+		return nil, fmt.Errorf("parse ti override fixture: %w", jsonErr)
+	}
+	entries := make(map[string]urlpkg.TIResult, len(rawEntries))
+	for url, e := range rawEntries {
+		entries[url] = urlpkg.TIResult{
+			Matched:    e.Matched,
+			Domain:     e.Domain,
+			RiskScore:  e.RiskScore,
+			ThreatType: e.ThreatType,
+		}
+	}
+	return &jsonTILookup{entries: entries}, nil
+}
+
+func (j *jsonTILookup) Check(_ context.Context, url string) (urlpkg.TIResult, error) {
+	if r, ok := j.entries[url]; ok {
+		return r, nil
+	}
+	return urlpkg.TIResult{}, nil
+}
+
+func (j *jsonTILookup) size() int { return len(j.entries) }
 
 type scanRequest struct {
 	URL string `json:"url"`

@@ -444,6 +444,19 @@ smoke: check-docker check-compose-env check-nlp-model
 smoke-stop:
 	@./scripts/dev/run_pipeline.sh stop
 
+## e2e-svc-03: End-to-end test of svc-03 /scan with a stubbed L2 sidecar
+##            and injected TI fixture. Exercises guard short-circuits, L2
+##            escalation, and the TI re-invitation path. Postgres must be
+##            reachable (CYBERSIREN_DB__* env or local docker compose).
+e2e-svc-03:
+	@bash services/svc-03-url-analysis/tests/e2e/run.sh
+
+## integration-svc-03: Opt-in live integration test of the phishing detector
+##                    against the real fusion sidecar. Pulls the LFS-tracked
+##                    bundles first via check-fusion-models. Not run by CI.
+integration-svc-03: check-fusion-models
+	REPO_ROOT=$(PWD) go test -tags=integration -count=1 ./internal/phishing/...
+
 ## open: Open all available web UIs in the default browser
 open:
 	@$(MAKE) _open-url url=http://localhost:16686
