@@ -103,6 +103,15 @@ except ImportError:
     AIOHTTP_AVAILABLE = False
     # Not critical - we have requests fallback
 
+# SSRF guard for outbound fetches (sidecar enrichment of user-submitted URLs).
+# Mirrors internal/phishing/enricher/http.go safeDialContext.
+from fusion_kit.safe_http import (
+    SSRFGuardedAdapter,
+    SSRFGuardedConnector,
+    mount_ssrf_guard,
+    safe_create_connection,
+)
+
 try:
     import geoip2.database
     import geoip2.errors
@@ -596,7 +605,7 @@ def resolve_short_url(url: str, *, timeout: float = 5.0) -> Optional[str]:
         return None
     try:
         import requests as _req
-        sess = _req.Session()
+        sess = mount_ssrf_guard(_req.Session())
         sess.max_redirects = 10
         headers = {"User-Agent": "Mozilla/5.0 (compatible; phishing-detector/1.0)"}
         try:
@@ -653,14 +662,14 @@ def get_http_session():
                 status_forcelist=(429, 502, 503, 504),
                 allowed_methods=("GET", "HEAD"),
             )
-            adapter = requests.adapters.HTTPAdapter(
+            adapter = SSRFGuardedAdapter(
                 max_retries=retry,
                 pool_connections=200,
                 pool_maxsize=200,
                 pool_block=False,
             )
         else:
-            adapter = requests.adapters.HTTPAdapter(
+            adapter = SSRFGuardedAdapter(
                 pool_connections=200,
                 pool_maxsize=200,
                 max_retries=0,
@@ -1082,7 +1091,10 @@ def get_ssl_info(domain: str) -> Dict[str, Any]:
 
     try:
         context = ssl.create_default_context()
-        with socket.create_connection(
+        # SSRF-guarded: resolves + filters non-public IPs, dials literal IP.
+        # server_hostname=domain preserves SNI / cert validation against the
+        # caller's intended name.
+        with safe_create_connection(
                 (domain, 443), timeout=SSL_TIMEOUT) as sock:
             with context.wrap_socket(sock, server_hostname=domain) as ssock:
                 cert = ssock.getpeercert()
@@ -1224,95 +1236,6 @@ def get_page_content(url: str) -> Dict[str, Any]:
         return {'online': 'unknown', 'http_status_code': None, '_fetch_error': 'error'}
 
 
-def get_page_content_headless(url: str, timeout_ms: int = 12000) -> Dict[str, Any]:
-    """Render page with headless Chromium to capture JS-rendered content and DOM signals."""
-    try:
-        from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
-    except ImportError:
-        return {}
-
-    try:
-        with sync_playwright() as pw:
-            browser = pw.chromium.launch(
-                headless=True,
-                args=['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu'],
-            )
-            ctx = browser.new_context(
-                user_agent=_DEFAULT_BROWSER_UA,
-                ignore_https_errors=True,
-            )
-            page = ctx.new_page()
-            try:
-                resp = page.goto(url, timeout=timeout_ms, wait_until='domcontentloaded')
-                try:
-                    page.wait_for_load_state('networkidle', timeout=5000)
-                except PWTimeout:
-                    pass
-
-                status = resp.status if resp else None
-                content = page.content()
-                title = page.title()
-
-                result: Dict[str, Any] = {
-                    'online': 'yes' if status and status < 400 else 'no',
-                    'http_status_code': status,
-                    '_source': 'headless',
-                }
-
-                if title:
-                    result['page_title'] = title.strip()[:200]
-                elif content:
-                    title_match = _TITLE_REGEX.search(content)
-                    if title_match:
-                        result['page_title'] = title_match.group(1).strip()[:200]
-
-                if content:
-                    pw_matches = _PASSWORD_FIELD_REGEX.findall(content)
-                    result['password_field_count'] = len(pw_matches)
-
-                    hidden_match = _HIDDEN_REDIRECT_REGEX.search(content)
-                    result['has_hidden_redirect'] = 1 if hidden_match else 0
-
-                    favicon_match = _FAVICON_REGEX.search(content)
-                    if favicon_match:
-                        fav_url = favicon_match.group(1) or favicon_match.group(2)
-                        if fav_url:
-                            result['favicon_url'] = fav_url.strip()[:200]
-
-                    form_match = _FORM_ACTION_REGEX.search(content)
-                    if form_match:
-                        action = form_match.group(1).strip()
-                        try:
-                            parsed_action = urlparse(
-                                action if '://' in action
-                                else f'https:{action}' if action.startswith('//')
-                                else action
-                            )
-                            action_host = parsed_action.hostname
-                            if action_host:
-                                result['form_action_domain'] = action_host
-                        except Exception:
-                            pass
-
-                    lang_match = _LANG_REGEX.search(content)
-                    if lang_match:
-                        result['page_language'] = lang_match.group(1)
-
-                return result
-
-            except PWTimeout:
-                return {'online': 'unknown', '_fetch_error': 'headless_timeout'}
-            except Exception:
-                return {'online': 'unknown', '_fetch_error': 'headless_error'}
-            finally:
-                try:
-                    browser.close()
-                except Exception:
-                    pass
-    except Exception:
-        return {}
-
-
 def check_online_status(url: str) -> Tuple[Optional[str], Optional[int]]:
     """Check if URL is online and get HTTP status (lightweight HEAD request)."""
     if not REQUESTS_AVAILABLE or not url:
@@ -1335,10 +1258,10 @@ def check_online_status(url: str) -> Tuple[Optional[str], Optional[int]]:
         )
         return 'yes', response.status_code
     except requests.exceptions.SSLError:
-        # Try without SSL
+        # Try without SSL — reuse the SSRF-guarded shared session.
         try:
             url = url.replace('https://', 'http://')
-            response = requests.head(
+            response = session.head(
                 url, timeout=HTTP_TIMEOUT, allow_redirects=True)
             return 'yes', response.status_code
         except Exception:
@@ -1369,8 +1292,11 @@ async def check_online_status_async(url: str) -> Tuple[Optional[str], Optional[i
                 connect=0.5,  # Fast connection timeout
                 sock_read=0.5  # Fast read timeout
             )
-            # Reuse connector for better performance
-            connector = aiohttp.TCPConnector(
+            # Reuse connector for better performance.
+            # SSRFGuardedConnector overrides _resolve_host to reject resolved
+            # IPs in loopback/link-local/private/multicast/reserved blocks
+            # (incl. 169.254.169.254 cloud metadata) before the dial.
+            connector = SSRFGuardedConnector(
                 limit=200,  # High connection limit
                 ttl_dns_cache=300,  # Cache DNS for 5 min
                 force_close=False,  # Keep connections alive
@@ -1508,21 +1434,6 @@ def enrich_url(
                 data.notes = (
                     (data.notes + ';') if data.notes else ''
                 ) + f'page_fetch:{err}'
-
-        # If static fetch yielded no title, try headless JS rendering
-        if not data.page_title:
-            headless_info = get_page_content_headless(url)
-            if headless_info:
-                data.online = data.online or headless_info.get('online')
-                data.http_status_code = data.http_status_code or headless_info.get('http_status_code')
-                data.page_title = headless_info.get('page_title')
-                data.page_language = data.page_language or headless_info.get('page_language')
-                data.form_action_domain = data.form_action_domain or headless_info.get('form_action_domain')
-                data.favicon_url = data.favicon_url or headless_info.get('favicon_url')
-                if data.password_field_count is None:
-                    data.password_field_count = headless_info.get('password_field_count')
-                if data.has_hidden_redirect is None:
-                    data.has_hidden_redirect = headless_info.get('has_hidden_redirect')
 
     # Fallback lightweight online check if still no status
     if not data.online:
@@ -1829,21 +1740,6 @@ async def enrich_url_async(
     # ========================================================================
     # PHASE 6: Post-processing and inference
     # ========================================================================
-
-    # If static fetch yielded no title, try headless JS rendering
-    if not data.page_title:
-        headless_info = get_page_content_headless(url)
-        if headless_info:
-            data.online = data.online or headless_info.get('online')
-            data.http_status_code = data.http_status_code or headless_info.get('http_status_code')
-            data.page_title = headless_info.get('page_title')
-            data.page_language = data.page_language or headless_info.get('page_language')
-            data.form_action_domain = data.form_action_domain or headless_info.get('form_action_domain')
-            data.favicon_url = data.favicon_url or headless_info.get('favicon_url')
-            if data.password_field_count is None:
-                data.password_field_count = headless_info.get('password_field_count')
-            if data.has_hidden_redirect is None:
-                data.has_hidden_redirect = headless_info.get('has_hidden_redirect')
 
     # Fill ISP from ASN name if not already set
     if not data.isp and data.asn_name:
