@@ -1,0 +1,31 @@
+# Inference + eval (minimal)
+numpy>=1.24
+pandas>=2.0
+scikit-learn>=1.3
+joblib>=1.3
+tldextract>=3.4
+# Levenshtein backs fusion_kit/url_struct.py — required at sidecar import time.
+Levenshtein>=0.20
+
+# Enrichment stack (install what you use; enrich.py degrades gracefully)
+requests>=2.28
+aiohttp>=3.9
+python-whois
+ipwhois
+geoip2
+langdetect
+
+# Observability — Prometheus scrape endpoint (/metrics on the sidecar port).
+# Optional: serve.py degrades to no-op metrics if the import fails.
+prometheus_client>=0.20
+
+# Observability — OTLP/HTTP trace export to Jaeger:4318 (set via
+# OTEL_EXPORTER_OTLP_ENDPOINT on the compose service). Optional: serve.py
+# degrades to no-op spans if any of these imports fail.
+opentelemetry-api>=1.20
+opentelemetry-sdk>=1.20
+opentelemetry-exporter-otlp-proto-http>=1.20
+
+# Optional: MaxMind GeoLite2 .mmdb files are NOT on PyPI — place GeoLite2-City.mmdb,
+# GeoLite2-ASN.mmdb (and optionally Country) in fusion_kit/ next to enrich.py, or adjust
+# paths inside enrich.py if you relocate them.

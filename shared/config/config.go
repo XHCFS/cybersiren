@@ -43,6 +43,7 @@ type Config struct {
 	Storage    StorageConfig    `koanf:"storage"`
 	Embedding  EmbeddingConfig  `koanf:"embedding"`
 	Header     HeaderConfig     `koanf:"header"`
+	Phishing   PhishingConfig   `koanf:"phishing"`
 }
 
 // HeaderConfig holds configuration for SVC-04 Header Analysis Service.
@@ -366,6 +367,12 @@ func Load() (*Config, error) {
 			Dimension: 1536,
 			BaseURL:   "https://api.openai.com/v1",
 		},
+		Phishing: PhishingConfig{
+			SidecarURL: "http://127.0.0.1:8765",
+			GeoIPDir:   "../../fusion_export/fusion_kit",
+			// Matches internal/phishing.DefaultThreshold and the sidecar default.
+			Threshold: 0.50,
+		},
 		Header: HeaderConfig{
 			RuleCacheTTLSeconds:     60,
 			HopCountThreshold:       15,
@@ -570,6 +577,29 @@ func (c *Config) Validate() error {
 
 func validate(cfg *Config) error {
 	return cfg.Validate()
+}
+
+// PhishingConfig holds configuration for the Layer-2 ML phishing detector.
+// Validation is opt-in — services that do not use the detector skip Validate().
+type PhishingConfig struct {
+	// SidecarURL is the base URL of the Python fusion-scorer sidecar.
+	SidecarURL string `koanf:"sidecar_url"`
+	// GeoIPDir is the directory containing GeoLite2-City.mmdb and GeoLite2-ASN.mmdb.
+	GeoIPDir string `koanf:"geoip_dir"`
+	// Threshold is the deploy_p cutoff above which a URL is classified as phishing (0–1).
+	Threshold float64 `koanf:"threshold"`
+}
+
+// Validate sanity-checks PhishingConfig fields. Called explicitly by svc-03 during
+// startup; not called in the global Config.Validate() pass.
+func (p PhishingConfig) Validate() error {
+	if strings.TrimSpace(p.SidecarURL) == "" {
+		return errors.New("phishing.sidecar_url is required (CYBERSIREN_PHISHING__SIDECAR_URL)")
+	}
+	if p.Threshold <= 0 || p.Threshold >= 1 {
+		return fmt.Errorf("phishing.threshold must be in (0, 1), got %v", p.Threshold)
+	}
+	return nil
 }
 
 // Validate sanity-checks SVC-04 Header Analysis configuration. It does NOT run

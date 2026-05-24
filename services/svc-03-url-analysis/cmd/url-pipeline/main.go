@@ -21,7 +21,11 @@ import (
 	"time"
 
 	"github.com/rs/zerolog"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 
+	"github.com/saif/cybersiren/internal/phishing"
+	phclient "github.com/saif/cybersiren/internal/phishing/client"
 	"github.com/saif/cybersiren/services/svc-03-url-analysis/internal/url"
 	contracts "github.com/saif/cybersiren/shared/contracts/kafka"
 	kafkaconsumer "github.com/saif/cybersiren/shared/kafka/consumer"
@@ -37,8 +41,11 @@ const (
 )
 
 var (
-	urlModel  *url.URLModel
-	tiChecker *url.TIChecker
+	urlModel         *url.URLModel
+	tiChecker        *url.TIChecker
+	phishingDetector *phishing.Detector
+	scanMetrics      *url.ScanMetrics
+	pipelineTracer   = otel.Tracer("svc-03-url-pipeline/scan-one")
 )
 
 func main() {
@@ -77,6 +84,33 @@ func main() {
 			}
 			tiChecker = url.NewTIChecker(tiCache, log)
 			log.Info().Msg("TI checker ready")
+
+			// Per-service Prometheus collectors covering the L1/TI/L2 stages plus
+			// the phishing client's cache + sidecar HTTP path.
+			scanMetrics = url.NewScanMetrics(deps.Registry)
+			phishingMetrics := phclient.NewMetrics(deps.Registry)
+
+			// Layer-2 ML phishing detector (fail-open: missing GeoIP or unreachable
+			// sidecar should not prevent the service from starting). When GeoIPDir
+			// loads, the detector enriches in-process and uses /score-features;
+			// otherwise it falls back to /score (sidecar-side enrichment).
+			det, detErr := phishing.NewDetector(phishing.Config{
+				SidecarURL: deps.Cfg.Phishing.SidecarURL,
+				GeoIPDir:   deps.Cfg.Phishing.GeoIPDir,
+				Threshold:  deps.Cfg.Phishing.Threshold,
+				Metrics:    phishingMetrics,
+				Log:        log,
+			})
+			if detErr != nil {
+				log.Warn().Err(detErr).Msg("phishing ML detector init failed; Layer-2 scoring disabled")
+			} else {
+				phishingDetector = det
+				log.Info().
+					Str("sidecar", deps.Cfg.Phishing.SidecarURL).
+					Str("geoip_dir", deps.Cfg.Phishing.GeoIPDir).
+					Bool("go_enricher", det.UsesGoEnricher()).
+					Msg("phishing ML detector ready")
+			}
 			return nil
 		},
 		Handler: handle,
@@ -98,7 +132,14 @@ type urlScan struct {
 	TIMatch      bool    `json:"ti_match"`
 	TIThreatType string  `json:"ti_threat_type,omitempty"`
 	TIRiskScore  int     `json:"ti_risk_score"`
-	Label        string  `json:"label"`
+	// GuardHit is set when the domain guard short-circuits scoring.
+	// "allowlisted" / "typosquat:<brand>" / "brand-in-subdomain:<brand>".
+	GuardHit string `json:"guard_hit,omitempty"`
+	// Layer-2 ML fields — populated only on TI-feed misses.
+	MLDeployP  float64 `json:"ml_deploy_p,omitempty"`
+	MLVerdict  string  `json:"ml_verdict,omitempty"`
+	MLCacheHit bool    `json:"ml_cache_hit,omitempty"`
+	Label      string  `json:"label"`
 }
 
 func handle(ctx context.Context, msg kafkaconsumer.Message, deps svckit.Deps) error {
@@ -169,14 +210,87 @@ func handle(ctx context.Context, msg kafkaconsumer.Message, deps svckit.Deps) er
 // scanOne mirrors the standalone /scan handler: normalise, run ML + TI in
 // parallel, classify into a label.
 func scanOne(ctx context.Context, raw string, log zerolog.Logger) urlScan {
+	start := time.Now()
+	defer func() { scanMetrics.ObserveDuration(time.Since(start).Seconds()) }()
+
+	// Raw URL on the span attribute is high-cardinality but invaluable in
+	// Jaeger when diagnosing a single bad classification.
+	ctx, span := pipelineTracer.Start(ctx, "svc-03.pipeline.scanOne")
+	defer span.End()
+	span.SetAttributes(attribute.String("scan.url_raw", raw))
+
 	out := urlScan{URL: raw, Label: "legitimate"}
 
 	normalized, err := normalization.NormalizeURL(raw)
 	if err != nil {
+		scanMetrics.IncStageError("normalize")
+		span.RecordError(err)
 		log.Warn().Err(err).Str("url", raw).Msg("URL normalisation failed; skipping")
 		return out
 	}
 	out.Normalized = normalized
+	span.SetAttributes(attribute.String("scan.url", normalized))
+
+	// Domain guard fast-path. Mirrors the /scan handler: allowlist short-
+	// circuits to legitimate (skip L1+TI+L2 entirely); typosquat and
+	// brand-in-subdomain short-circuit to phishing. Without this, the
+	// Kafka pipeline that processes email-extracted URLs (the production
+	// path) would bypass the Cisco-top-10K + brand checks that /scan
+	// already enjoys.
+	guardCtx, guardSpan := pipelineTracer.Start(ctx, "svc-03.pipeline.guard.CheckDomain")
+	apex := url.ApexFromURL(normalized)
+	guard := url.CheckDomain(apex)
+	guardSpan.SetAttributes(
+		attribute.String("guard.apex", apex),
+		attribute.String("guard.verdict", guard.Verdict),
+	)
+	guardSpan.End()
+	switch guard.Verdict {
+	case "real":
+		scanMetrics.IncGuard("allowlisted")
+		scanMetrics.IncOutcome("guard_allowlisted")
+		out.GuardHit = "allowlisted"
+		out.Label = "legitimate"
+		span.SetAttributes(
+			attribute.String("scan.outcome", "guard_allowlisted"),
+			attribute.String("scan.label", out.Label),
+		)
+		return out
+	case "typosquat":
+		scanMetrics.IncGuard("typosquat")
+		scanMetrics.IncOutcome("guard_typosquat")
+		out.GuardHit = "typosquat:" + guard.MatchedBrand
+		out.Score = 100
+		out.Probability = 1.0
+		out.Label = "phishing"
+		span.SetAttributes(
+			attribute.String("scan.outcome", "guard_typosquat"),
+			attribute.String("guard.matched_brand", guard.MatchedBrand),
+			attribute.String("scan.label", out.Label),
+		)
+		return out
+	}
+
+	_, subSpan := pipelineTracer.Start(guardCtx, "svc-03.pipeline.guard.CheckSubdomainBrand")
+	hostname := url.HostnameFromURL(normalized)
+	sub := url.CheckSubdomainBrand(hostname)
+	subSpan.SetAttributes(attribute.String("guard.verdict", sub.Verdict))
+	subSpan.End()
+	if sub.Verdict == "brand-in-subdomain" {
+		scanMetrics.IncGuard("brand_in_subdomain")
+		scanMetrics.IncOutcome("guard_brand")
+		out.GuardHit = "brand-in-subdomain:" + sub.MatchedBrand
+		out.Score = 100
+		out.Probability = 1.0
+		out.Label = "phishing"
+		span.SetAttributes(
+			attribute.String("scan.outcome", "guard_brand"),
+			attribute.String("guard.matched_brand", sub.MatchedBrand),
+			attribute.String("scan.label", out.Label),
+		)
+		return out
+	}
+	scanMetrics.IncGuard("none")
 
 	predCtx, cancel := context.WithTimeout(ctx, predictTimeout)
 	defer cancel()
@@ -192,10 +306,18 @@ func scanOne(ctx context.Context, raw string, log zerolog.Logger) urlScan {
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		mlScore, mlProb, routed, reason, _ = urlModel.PredictWithRoute(predCtx, normalized)
+		l1Ctx, l1Span := pipelineTracer.Start(predCtx, "svc-03.pipeline.l1")
+		mlScore, mlProb, routed, reason, _ = urlModel.PredictWithRoute(l1Ctx, normalized)
+		l1Span.SetAttributes(
+			attribute.Int("l1.score", mlScore),
+			attribute.Float64("l1.probability", mlProb),
+			attribute.Bool("l1.routed_to_enrichment", routed),
+		)
+		l1Span.End()
 	}()
 	go func() {
 		defer wg.Done()
+		// TIChecker.Check opens its own span; no need to wrap.
 		tiRes, _ = tiChecker.Check(predCtx, normalized)
 	}()
 	wg.Wait()
@@ -207,13 +329,61 @@ func scanOne(ctx context.Context, raw string, log zerolog.Logger) urlScan {
 	out.TIMatch = tiRes.Matched
 	out.TIThreatType = tiRes.ThreatType
 	out.TIRiskScore = tiRes.RiskScore
-	out.Label = classifyLabel(mlScore, tiRes, routed)
+
+	// Layer 2: ML phishing check fires when TI didn't match OR when TI
+	// matched with low confidence (< 80 risk). classifyLabel ignores
+	// low-confidence TI matches, so we still want L2 to weigh in.
+	ranL2 := false
+	if (!tiRes.Matched || tiRes.RiskScore < 80) && phishingDetector != nil {
+		reasonLabel := "ti_miss"
+		if tiRes.Matched {
+			reasonLabel = "ti_low_confidence"
+		}
+		scanMetrics.IncL2(reasonLabel)
+		ranL2 = true
+
+		mlCtx, mlCancel := context.WithTimeout(ctx, 15*time.Second)
+		defer mlCancel()
+		if phishResult, phishErr := phishingDetector.Score(mlCtx, normalized); phishErr != nil {
+			scanMetrics.IncStageError("l2")
+			span.RecordError(phishErr)
+			log.Warn().Err(phishErr).Str("url", normalized).Msg("phishing ML check failed")
+		} else {
+			out.MLDeployP = phishResult.DeployP
+			out.MLVerdict = phishResult.Verdict
+			out.MLCacheHit = phishResult.CacheHit
+		}
+	}
+
+	out.Label = classifyLabel(mlScore, tiRes, routed, out.MLVerdict)
+
+	outcome := "fallback_legitimate"
+	switch {
+	case tiRes.Matched && tiRes.RiskScore >= 80:
+		outcome = "ti_phishing"
+	case ranL2 && out.MLVerdict == "phishing":
+		outcome = "ml_phishing"
+	case ranL2 && out.MLVerdict == "benign":
+		outcome = "ml_benign"
+	case tiRes.Matched:
+		outcome = "ti_low_confidence"
+	}
+	scanMetrics.IncOutcome(outcome)
+	span.SetAttributes(
+		attribute.String("scan.outcome", outcome),
+		attribute.String("scan.label", out.Label),
+	)
+
 	return out
 }
 
-// classifyLabel mirrors the rule set in cmd/url-analysis/main.go.
-func classifyLabel(mlScore int, ti url.TIResult, routed bool) string {
+// classifyLabel maps ML + TI + Layer-2 signals to a label.
+// mlVerdict is the fusion scorer verdict ("phishing" | "benign" | "").
+func classifyLabel(mlScore int, ti url.TIResult, routed bool, mlVerdict string) string {
 	if ti.Matched && ti.RiskScore >= 80 {
+		return "phishing"
+	}
+	if mlVerdict == "phishing" {
 		return "phishing"
 	}
 	if routed {

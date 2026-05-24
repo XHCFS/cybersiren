@@ -26,6 +26,16 @@ scrape_configs:
         labels:
           service: "svc-11-ti-sync"
 
+  # Fusion sidecar (L2 phishing scorer). Exposes /metrics on the same port
+  # it serves /score on. Down when the demo isn't running — that's expected.
+  - job_name: "cybersiren-fusion-sidecar"
+    scrape_timeout: 5s
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["fusion-sidecar:8765"]
+        labels:
+          service: "fusion-sidecar"
+
   # Pipeline-spine v0 stubs. These run natively (not in compose) via
   # `make smoke` / scripts/dev/run_pipeline.sh, each on a distinct host
   # port. host.docker.internal is the standard Linux/Mac shim that resolves

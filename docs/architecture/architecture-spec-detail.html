@@ -351,13 +351,13 @@
   <div class="step-header">
     <div class="step-num">3a</div>
     <div class="step-content">
-      <strong>URL ANALYSIS SERVICE</strong> (Go + Python subprocess) — <em>SVC-03</em><br/>
-      Consumes <code>analysis.urls</code>. For each URL in the message:<br/>
-      <strong>(i)</strong> Redis cache check: key <code>url_score:{sha256(url)}</code> TTL 6h → if hit, reuse score, skip remaining steps.<br/>
-      <strong>(ii)</strong> TI feed match: lookup URL domain against <code>ti_indicators</code> table (indexed on <code>indicator_value</code>, <code>indicator_type</code>). If exact match with <code>risk_score ≥ 80</code> → emit score 95, <code>ti_matched=true</code>, skip ML. Also checks <code>enriched_threats</code> to see if this URL was observed and enriched in a prior email.<br/>
-      <strong>(iii)</strong> Enrichment (concurrency limit: 5 goroutines): WHOIS (registrar, creation_date, expiry_date, name_servers), SSL cert (issuer, subject, valid_from, valid_to, self-signed check), DNS (A/MX/NS/CNAME), HTTP probe (status_code, redirect_count, final_url, response_time_ms), IP geo (country, asn, asn_name, isp, city).<br/>
-      <strong>(iv)</strong> ML inference: Enriched features → XGBoost model via Python subprocess (JSON stdin/stdout). Timeout: 5s. On timeout: score=50.<br/>
-      <strong>Per-email URL score = max(individual URL scores).</strong> Each URL gets its own entry in enrichment tables.
+      <strong>URL ANALYSIS SERVICE</strong> (Go handler + Python L2 fusion sidecar) — <em>SVC-03</em><br/>
+      Consumes <code>analysis.urls</code> (Kafka worker <code>cmd/url-pipeline</code>) and exposes <code>POST /scan</code> (HTTP handler <code>cmd/url-analysis</code>). For each URL, four stages run in order — earlier stages short-circuit later ones:<br/>
+      <strong>(0) Domain Guard</strong> (Go, <code>internal/url/domainguard.go</code>): Cisco Umbrella top-10K allowlist (<code>go:embed</code>'d, 9,978 entries), Levenshtein-d=1 typosquat detection, and 20-brand brand-in-subdomain scan. Allowlist hit → verdict <code>legitimate</code>; typosquat or brand-in-subdomain hit → verdict <code>phishing</code>; both short-circuit the remaining stages. Latency: ~43 ns allowlist hit, ~51 µs typosquat worst case, ~157 ns brand scan.<br/>
+      <strong>(1) L1 XGBoost</strong> (Python subprocess, <code>ml/inference_script.py</code>): 28-feature URL char/n-gram model. Used today for routing/degraded-mode signalling on user-submitted scans; not used in the L2 fusion path.<br/>
+      <strong>(2) TI feed match</strong>: lookup URL apex against <code>ti_indicators</code> (Valkey-cached). If <code>risk_score ≥ 80</code> → verdict <code>phishing</code>, skip L2. Also reads <code>enriched_threats</code> for prior-email URL lookups.<br/>
+      <strong>(3) L2 Fusion Sidecar</strong> (Python, <code>fusion_export/scripts/serve.py</code> on port 8765): runs when TI did not match, or matched with <code>risk_score &lt; 80</code>. Sidecar performs its own DNS / WHOIS / TLS / HTTP / GeoIP / shortener enrichment, computes <code>url_p</code> (char-LR) and <code>op_p</code> (HGB over operational features), and returns a fused <code>deploy_p</code> with asymmetric zone-based weighting. Go side applies <code>DefaultThreshold = 0.50</code> (env <code>CYBERSIREN_PHISHING__THRESHOLD</code>) to <code>deploy_p</code>. Fail-open: if the sidecar is unreachable, the L1 + TI verdict stands. Go client at <code>internal/phishing/client/client.go</code> has a TTL-5min LRU cache keyed on the full URL.<br/>
+      <strong>Per-email URL score = max(individual URL scores).</strong> Each URL is recorded in <code>enriched_threats</code> for cross-email correlation.
     </div>
   </div>
   <div class="step-footer">
@@ -366,21 +366,22 @@
       <div class="topic-meta">Key: email_id · 6 partitions · 24h retention</div>
     </div>
     <div class="step-db">
-      <strong>R</strong> <code>ti_indicators</code> (TI feed match)<br/>
+      <strong>R</strong> <code>ti_indicators</code> (TI feed match, Valkey-cached)<br/>
       <strong>R</strong> <code>enriched_threats</code> (prior-email URL lookup)<br/>
-      <strong>R</strong> Redis: <code>url_score:{hash}</code><br/>
+      <strong>R</strong> Valkey: <code>url_score:{hash}</code>, <code>ti_domain:{domain}</code><br/>
       <strong>W</strong> <code>enriched_threats</code> (new URLs)<br/>
       <strong>W</strong> <code>email_url_ti_matches</code> (feed match audit trail)<br/>
-      <strong>W</strong> <code>enrichment_results</code> (raw responses)<br/>
-      <strong>W</strong> <code>enrichment_jobs</code> (job tracking)<br/>
-      <strong>W</strong> Redis: <code>url_score:{hash}</code>
+      <strong>W</strong> Valkey: <code>url_score:{hash}</code><br/>
+      <em>Note:</em> L2 sidecar reads no DB tables — it does its own live enrichment per request. <code>deploy_p</code> is consumed in-process by the Go handler and never persisted.
     </div>
   </div>
 </div>
 
 <div class="note">
   <strong>Message schema — <code>scores.url</code>:</strong><br/>
-  <code>{ email_id, org_id, component: "url", score: int 0-100, url_count: int, ti_blocked_count: int, ml_scored_count: int, cache_hit_count: int, riskiest_url: string, url_details: [{ url, domain, ti_matched: bool, ti_source: string|null, domain_age_days: int|null, has_ssl: bool, ssl_issuer: string|null, redirect_count: int, ml_score: int|null, is_shortened: bool, enrichment_available: bool }], processing_time_ms: int }</code>
+  <code>{ email_id, org_id, component: "url", score: int 0-100, url_count: int, ti_blocked_count: int, ml_scored_count: int, cache_hit_count: int, riskiest_url: string, url_details: [{ url, domain, ti_matched: bool, ti_source: string|null, domain_age_days: int|null, has_ssl: bool, ssl_issuer: string|null, redirect_count: int, ml_score: int|null, is_shortened: bool, enrichment_available: bool, guard_hit: string|null, ml_deploy_p: float|null, ml_verdict: "phishing"|"benign"|null, ml_cache_hit: bool }], processing_time_ms: int }</code>
+  <br/><br/>
+  <strong>New fields (PR #140):</strong> <code>guard_hit</code> set when the domain guard short-circuits (<code>"allowlisted"</code>, <code>"typosquat:&lt;brand&gt;"</code>, or <code>"brand-in-subdomain:&lt;brand&gt;"</code>). <code>ml_deploy_p</code> / <code>ml_verdict</code> / <code>ml_cache_hit</code> populated only when the L2 fusion sidecar runs (i.e. TI did not match with high confidence). See <code>docs/internals/CyberSiren_URL_Domain_Guard_and_L2_Fusion_Specification.html</code> for the full sidecar API and fusion math.
 </div>
 
 <!-- Step 3b -->
@@ -800,9 +801,11 @@
   <tr><td>SVC-01</td><td>Adapter fetch failure</td><td>Log error, retry on next poll cycle</td><td>Exponential backoff, max 3 retries per cycle</td><td>N/A (no score)</td></tr>
   <tr><td>SVC-01</td><td>Kafka publish failure</td><td>Retry with backoff, dead-letter after 5 attempts</td><td>1s, 2s, 4s, 8s, 16s</td><td>N/A</td></tr>
   <tr><td>SVC-02</td><td>MIME parse failure</td><td>Log error, publish with empty URLs/attachments, body_plain = raw text extraction attempt</td><td>No retry (deterministic failure)</td><td>N/A</td></tr>
-  <tr><td>SVC-03</td><td>WHOIS/SSL/DNS timeout (per URL)</td><td><em>Target-state behavior.</em> Current code keeps enrichment as a TODO stub and does not execute this path yet.</td><td>Target-state: 3 retries, 2s timeout each</td><td>score = 50</td></tr>
-  <tr><td>SVC-03</td><td>URL-model subprocess timeout (5s)</td><td>Return neutral score, log model timeout</td><td>No retry (latency-critical)</td><td>score = 50</td></tr>
-  <tr><td>SVC-03</td><td>URL-model subprocess crash</td><td>Respawn process in pool asynchronously; current request returns neutral score</td><td>No synchronous retry of the same request</td><td>score = 50</td></tr>
+  <tr><td>SVC-03</td><td>L2 sidecar WHOIS/SSL/DNS/HTTP timeout (per step)</td><td>Per-step 5s timeout inside the Python sidecar; outer 45s wrapping context from Go client (<code>internal/phishing/client/client.go</code>). Missing enrichment fields produce conservative defaults in the HGB feature vector.</td><td>No retry — partial enrichment is accepted; sidecar still returns a <code>deploy_p</code></td><td><code>deploy_p</code> from partial features (compared against <code>CYBERSIREN_PHISHING__THRESHOLD</code>, default 0.50)</td></tr>
+  <tr><td>SVC-03</td><td>L2 fusion sidecar unreachable</td><td><strong>Fail-open.</strong> Go handler logs the error and continues with the L1 + TI verdict. No L2 contribution; <code>ml_*</code> fields omitted from the score envelope.</td><td>Caller does not block svc-03 startup or per-request handling</td><td>L1 + TI verdict</td></tr>
+  <tr><td>SVC-03</td><td>L1 URL-model subprocess timeout (5s)</td><td>Return neutral score, log model timeout</td><td>No retry (latency-critical)</td><td>score = 50</td></tr>
+  <tr><td>SVC-03</td><td>L1 URL-model subprocess crash</td><td>Respawn process in pool asynchronously; current request returns neutral score</td><td>No synchronous retry of the same request</td><td>score = 50</td></tr>
+  <tr><td>SVC-03</td><td>Domain guard short-circuit</td><td>Allowlist hit → verdict <code>legitimate</code>. Typosquat or brand-in-subdomain hit → verdict <code>phishing</code>. L1/TI/L2 are all skipped.</td><td>N/A (deterministic)</td><td>Verdict from guard; <code>guard_hit</code> field set in score envelope</td></tr>
   <tr><td>SVC-04</td><td>Rule evaluation error</td><td>Skip malformed rule, log, continue with remaining rules</td><td>No retry (skip rule)</td><td>Rule impact = 0</td></tr>
   <tr><td>SVC-05</td><td>VirusTotal API rate limit (429)</td><td>Use local hash lookup only, skip VT enrichment</td><td>Backoff until next rate window</td><td>Use local-only score</td></tr>
   <tr><td>SVC-06</td><td>NLP inference timeout (10s)</td><td>Return neutral score, flag partial_analysis</td><td>No retry (latency-critical)</td><td>score = 50</td></tr>
@@ -1340,13 +1343,12 @@ INPUT: email plain_text body
 
 <div class="note">
   <strong>Kafka <code>scores.url</code> output → data provenance:</strong><br/>
-  <code>score</code> → computed from XGBoost ML on features extracted from <code>enriched_threats</code> columns (domain_age = NOW()-<code>creation_date</code>, <code>ssl_enabled</code>, <code>registrar</code>, <code>country</code>, etc.).<br/>
+  <code>score</code> → derived from the four-stage pipeline (domain guard short-circuit, L1 XGBoost, TI feed match, L2 fusion sidecar). When the L2 sidecar runs, <code>deploy_p</code> (fused <code>url_p</code> + <code>op_p</code>) is compared against <code>CYBERSIREN_PHISHING__THRESHOLD</code> (default 0.50) to set the verdict; scaled into 0–100 for the envelope's <code>score</code> field.<br/>
   <code>ti_matched</code> → true if <code>ti_indicators.risk_score</code> ≥ 80 at lookup time, or <code>enriched_threats.risk_score</code> ≥ 80 from a prior email.<br/>
-  <code>domain_age_days</code> → NOW() - <code>enriched_threats.creation_date</code>.<br/>
-  <code>has_ssl</code> → <code>enriched_threats.ssl_enabled</code>.<br/>
-  <code>ssl_issuer</code> → <code>enriched_threats.cert_issuer</code>.<br/>
-  <code>redirect_count</code> → from HTTP probe, stored in <code>enrichment_results.raw_response</code> JSONB.<br/>
-  None of these score fields are written to DB at this stage — they flow via Kafka to SVC-07 (Aggregator) then SVC-08 (Decision Engine) which writes the final <code>emails.url_risk_score</code>.
+  <code>guard_hit</code> → set when the upstream domain guard short-circuits: <code>"allowlisted"</code>, <code>"typosquat:&lt;brand&gt;"</code>, or <code>"brand-in-subdomain:&lt;brand&gt;"</code>. Both L1 and L2 are skipped in this case.<br/>
+  <code>ml_deploy_p</code>, <code>ml_verdict</code>, <code>ml_cache_hit</code> → populated only when the L2 fusion sidecar runs (TI did not match with high confidence). The sidecar reads no DB tables; it performs its own per-request DNS / WHOIS / TLS / HTTP / GeoIP / shortener enrichment in-process. <code>deploy_p</code> is consumed by the Go handler and never persisted.<br/>
+  <code>domain_age_days</code>, <code>has_ssl</code>, <code>ssl_issuer</code>, <code>redirect_count</code> → continue to flow from <code>enriched_threats</code> columns for prior-email URLs; for first-seen URLs they are populated from L2 sidecar enrichment payloads via the Go client.<br/>
+  None of these score fields are written to DB at this stage — they flow via Kafka to SVC-07 (Aggregator) then SVC-08 (Decision Engine) which writes the final <code>emails.url_risk_score</code>. See <code>docs/internals/CyberSiren_URL_Domain_Guard_and_L2_Fusion_Specification.html</code> for the full sidecar API surface and fusion math.
 </div>
 
 <!-- ======== STEP 3b ======== -->

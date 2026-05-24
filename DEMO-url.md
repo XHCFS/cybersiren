@@ -7,12 +7,18 @@ Paste any URL and get an instant phishing risk assessment powered by:
 
 | Engine | How it works |
 |--------|-------------|
-| **ML model** | A LightGBM classifier scores the URL (0–100) based on 28 lexical/structural features extracted from the URL itself — no network requests needed. |
+| **Domain Guard** | Fast-path check before ML. Verifies the apex domain against the embedded Cisco Umbrella top-10K allowlist (known-good domains), screens for Levenshtein d=1 typosquats of major brands, and detects brand keywords in subdomain labels. Allowlisted domains skip ML entirely; typosquats and brand-in-subdomain hits are immediately flagged as phishing. |
+| **ML model** | An XGBoost classifier scores the URL (0–100) based on 28 lexical/structural features extracted from the URL string — no network requests needed. Only runs if the domain guard did not fire. |
 | **Threat Intelligence** | The URL's domain is checked against a Valkey (Redis-compatible) cache populated from the `ti_indicators` Postgres table. Matches return the threat type and risk score. |
 
-Both checks run **in parallel**; results are merged into a single verdict
+The Domain Guard runs first; remaining URLs then fan out to the ML model and TI
+lookup **in parallel**. Results are merged into a single verdict
 (`legitimate` / `suspicious` / `phishing`) and displayed in a web UI or returned
 via the JSON API.
+
+> For the full technical specification of the domain guard and the L2 fusion
+> sidecar (char-LR `url_p` + HGB `op_p` → asymmetric fusion to `deploy_p`), see
+> [`docs/internals/CyberSiren_URL_Domain_Guard_and_L2_Fusion_Specification.html`](docs/internals/CyberSiren_URL_Domain_Guard_and_L2_Fusion_Specification.html).
 
 ---
 
@@ -21,8 +27,38 @@ via the JSON API.
 | Requirement | Notes |
 |-------------|-------|
 | **Docker** + **Docker Compose v2** | `docker compose version` should print v2.x |
-| **~2 GB disk** | Python ML dependencies (NumPy, LightGBM, joblib) + model file |
-| **Free ports** | `5432` (Postgres), `6379` (Valkey), `8083` (svc-03 HTTP), `9091` (svc-03 metrics), `19090` (Prometheus), `3001` (Grafana), `16686` (Jaeger UI), `4318` (OTLP) |
+| **~2 GB disk** | Python ML dependencies (NumPy, LightGBM, joblib) + model files |
+| **Free ports** | `5432` (Postgres), `6379` (Valkey), `8083` (svc-03 HTTP), `9091` (svc-03 metrics), `8765` (fusion sidecar), `19090` (Prometheus), `3001` (Grafana), `16686` (Jaeger UI), `4318` (OTLP) |
+| **Git LFS** | Required for the L2 fusion bundles (`url_char_lr.joblib`, `hgb_operational.joblib`). `make demo svc=svc-03-url-analysis` runs `git lfs pull` for them automatically (see `make check-fusion-models`). |
+
+### L2 Fusion sidecar
+
+`make demo svc=svc-03-url-analysis` now also starts the Python L2 fusion sidecar
+(container `fusion-sidecar`, port `8765` on the host). Verify it's up:
+
+```bash
+curl http://localhost:8765/health
+# {"status":"ok","models_loaded":true}
+```
+
+The `/scan` UI exposes the fusion fields when a URL bypasses TI but reaches L2:
+`ml_deploy_p`, `ml_verdict`, `ml_cache_hit`. The deploy threshold is `0.50` by
+default (env `CYBERSIREN_PHISHING__THRESHOLD` on the svc-03 container). Override
+at compose time without rebuilding:
+
+```bash
+CYBERSIREN_PHISHING__THRESHOLD=0.30 make demo svc=svc-03-url-analysis
+```
+
+**Fail-open:** if you stop just the fusion-sidecar container, svc-03 keeps
+serving `/scan` and falls back to domain guard + L1 + TI only:
+
+```bash
+docker compose --profile svc-03 stop fusion-sidecar
+curl -s -X POST -H "Content-Type: application/json" \
+     -d '{"url":"https://google.com/"}' http://localhost:8083/scan | jq .
+# guard_hit=allowlisted; verdict=legitimate; ml_* fields absent.
+```
 
 ---
 
@@ -143,30 +179,44 @@ mode.
 
 Open **<http://localhost:8083>** and try these six tests in order:
 
-### Test 1 — Legitimate domain (www.google.com)
+### Test 1 — Legitimate domain (domain guard — allowlist)
 
 Paste `https://www.google.com` and click **Scan**.
 
 ![Legitimate scan — www.google.com](docs/screenshots/13-www-google-legitimate.png)
 
-- **ML Score** = 0, **Probability** ≈ 0.001, **Label** = legitimate.
-- **TI Match** = No (google.com is not in the seed data).
-- The `www.` prefix matters — see [Known Limitations](#known-limitations) for why
-  naked `google.com` scores differently.
+- **Domain Guard** = Allowlisted (Cisco top-10K) — the apex domain `google.com` is
+  in the embedded top-10K list, so the service returns immediately.
+- **ML Score** = N/A (model was not called — bypassed by domain guard).
+- **Label** = legitimate.
 
-### Test 2 — ML-only phishing detection (no TI match)
+This demonstrates the domain guard: well-known domains are fast-pathed without
+consuming ML or TI resources.
+
+### Test 2 — Domain guard: typosquat detection
+
+Paste `https://paypa1.com/signin` (note the `1` instead of `l`) and click **Scan**.
+
+- **Domain Guard** = Typosquat detected — paypal (Levenshtein d=1 match).
+- **Score** = 100, **Label** = phishing — immediately flagged, no ML needed.
+
+This demonstrates the typosquat layer: the guard computes edit distance against
+a list of major brand domains and fires before any ML or TI lookup.
+
+### Test 3 — ML-only phishing detection (no TI match)
 
 Paste `https://secure-login-paypal-verification.com/account/verify` and click **Scan**.
 
 ![ML phishing detection — no TI](docs/screenshots/14-ml-phishing-no-ti.png)
 
+- **Domain Guard** = no match (domain not in top-10K, no typosquat match).
 - **ML Score** = 100, **Probability** ≈ 1.00, **Label** = phishing.
 - **TI Match** = No — this domain is **not** in the TI seed data.
 - The ML model flags it purely on lexical features: sensitive keywords (`login`,
   `verification`, `account`), excessive hyphens, long hostname, and deep path.
 - This demonstrates the ML engine catching phishing URLs **independently** of TI.
 
-### Test 3 — Phishing TI match + ML
+### Test 4 — Phishing TI match + ML
 
 Paste `https://dpd.parcelstahdu.bond` and click **Scan**.
 
@@ -178,7 +228,7 @@ Paste `https://dpd.parcelstahdu.bond` and click **Scan**.
 - The verdict is **PHISHING** because the TI risk (95) is ≥ 80, even though the
   ML score alone is low.
 
-### Test 4 — Malware TI match
+### Test 5 — Malware TI match
 
 Paste `https://adobe-viewer.iziliang.com` and click **Scan**.
 
@@ -188,7 +238,7 @@ Paste `https://adobe-viewer.iziliang.com` and click **Scan**.
 - **Threat Type** = malware.
 - The verdict badge turns red regardless of ML score.
 
-### Test 5 — Error handling
+### Test 6 — Error handling
 
 Leave the input field **empty** and click Scan (or type random junk like
 `not a url`).
@@ -236,9 +286,10 @@ Analyse a single URL.
 | Field | Type | Description |
 |-------|------|-------------|
 | `url` | string | The URL that was scanned |
-| `score` | int | 0–100 phishing risk score from the ML model |
+| `score` | int | 0–100 phishing risk score from the ML model (0 if guard bypassed ML) |
 | `probability` | float | Raw model probability (0.0–1.0) |
 | `label` | string | `legitimate`, `suspicious`, or `phishing` |
+| `guard_hit` | string | Set when the domain guard fires. `"allowlisted"` = Cisco top-10K match; `"typosquat:<brand>"` = edit-distance match; `"brand-in-subdomain:<brand>"` = brand keyword in subdomain. Absent if guard did not fire. |
 | `ti_match` | bool | Whether the domain matched a TI indicator |
 | `ti_threat_type` | string | `phishing`, `malware`, `botnet_cc`, or `""` |
 | `ti_risk_score` | int | 0–100 risk score from the TI feed (0 if no match) |
@@ -497,7 +548,10 @@ docker compose -f deploy/compose/docker-compose.yml --profile demo logs -f
 Each scan emits a DEBUG-level line with all result fields:
 
 ```
-03:30:48 DBG scan complete degraded=false label=phishing ml_prob=0.9018710388347376 ml_score=90 service=cybersiren ti_match=false ti_risk=0 ti_threat= url=https://google.com
+# Domain guard fast-path (google.com allowlisted — ML not called)
+03:30:48 DBG scan complete degraded=false guard_hit=allowlisted label=legitimate ml_score=0 service=cybersiren ti_match=false ti_risk=0 ti_threat= url=https://www.google.com
+
+# Unknown phishing domain — ML + TI both fire
 03:30:48 DBG scan complete degraded=false label=phishing ml_prob=0.16677812442809192 ml_score=17 service=cybersiren ti_match=true ti_risk=95 ti_threat=phishing url=https://dpd.parcelstahdu.bond
 ```
 
@@ -750,65 +804,86 @@ Now scanning URLs from real phishing campaigns will produce TI matches.
 └────┬─────┘
      │  POST /scan  { "url": "..." }
      ▼
-┌──────────────────────────────────────┐
-│         svc-03-url-analysis          │
-│           (Go + Gin HTTP)            │
-│                                      │
-│  ┌─────────────┐  ┌──────────────┐  │
-│  │ ML Scoring   │  │ TI Checker   │  │  ◄── parallel goroutines
-│  │              │  │              │  │
-│  │  Extract 28  │  │ Domain from  │  │
-│  │  URL features│  │ normalized   │  │
-│  │  → Python    │  │ URL → Valkey │  │
-│  │  subprocess  │  │ HGET lookup  │  │
-│  └──────┬───────┘  └──────┬───────┘  │
-│         │                 │          │
-│         ▼                 ▼          │
-│    score + prob      matched?        │
-│    (0-100)           threat_type     │
-│                      risk_score      │
-│                                      │
-│   ─── merge into verdict ────────►   │
-│   label: legitimate/suspicious/      │
-│          phishing                    │
-└──────────────────────────────────────┘
-     │                          │
-     ▼                          ▼
-┌──────────┐            ┌────────────┐
-│  Python  │            │   Valkey   │
-│ LightGBM │            │  TI cache  │
-│ (subproc)│            │ (HSET/HGET)│
-└──────────┘            └─────┬──────┘
-                              │ populated at svc-03 startup
-                              ▼
-                        ┌────────────┐
-                        │ PostgreSQL │
-                        │ti_indicators│
-                        └─────┬──────┘
-                              │ seeded by
-                    ┌─────────┴──────────┐
-                    │                    │
-              ┌─────┴─────┐    ┌─────────┴──────┐
-              │ demo-seed  │    │ svc-11-ti-sync │
-              │ (20 real   │    │ (real feeds:   │
-              │  domains)  │    │  PhishTank,    │
-              └────────────┘    │  URLhaus, etc.)│
-                                └────────────────┘
+┌──────────────────────────────────────────┐
+│           svc-03-url-analysis            │
+│             (Go + Gin HTTP)              │
+│                                          │
+│  ┌────────────────────────────────────┐  │
+│  │          Domain Guard              │  │  ◄── fires FIRST
+│  │  • Cisco top-10K allowlist         │  │
+│  │  • Levenshtein d=1 typosquat check │  │
+│  │  • Brand keyword in subdomain      │  │
+│  └──────────────┬─────────────────────┘  │
+│                 │                        │
+│        ┌────────┴──────────┐             │
+│        │ allowlisted?       │             │
+│        │ typosquat?         │             │
+│        │ brand-in-sub?      │             │
+│        └─────┬──────────────┘             │
+│              │ no match — continue        │
+│              ▼                           │
+│  ┌───────────────┐  ┌────────────────┐   │
+│  │  ML Scoring   │  │  TI Checker    │   │  ◄── parallel goroutines
+│  │               │  │                │   │
+│  │  28 lexical   │  │ Domain from    │   │
+│  │  URL features │  │ normalized URL │   │
+│  │  → XGBoost    │  │ → Valkey HGET  │   │
+│  │  subprocess   │  │ lookup         │   │
+│  └──────┬────────┘  └───────┬────────┘   │
+│         │                   │            │
+│         ▼                   ▼            │
+│    score + prob         matched?         │
+│    (0-100)              threat_type      │
+│                         risk_score       │
+│                                          │
+│   ─── merge into verdict ─────────────►  │
+│   label: legitimate / suspicious /       │
+│          phishing                        │
+└──────────────────────────────────────────┘
+     │                            │
+     ▼                            ▼
+┌──────────┐              ┌────────────┐
+│  Python  │              │   Valkey   │
+│ XGBoost  │              │  TI cache  │
+│ (subproc)│              │ (HSET/HGET)│
+└──────────┘              └─────┬──────┘
+                                │ populated at svc-03 startup
+                                ▼
+                          ┌────────────┐
+                          │ PostgreSQL │
+                          │ti_indicators│
+                          └─────┬──────┘
+                                │ seeded by
+                      ┌─────────┴──────────┐
+                      │                    │
+                ┌─────┴─────┐    ┌─────────┴──────┐
+                │ demo-seed  │    │ svc-11-ti-sync │
+                │ (20 real   │    │ (real feeds:   │
+                │  domains)  │    │  PhishTank,    │
+                └────────────┘    │  URLhaus, etc.)│
+                                  └────────────────┘
 ```
 
 ### Data flow summary
 
 1. **Browser** sends `POST /scan` with a URL.
-2. **svc-03** normalizes the URL and launches two goroutines in parallel:
+2. **svc-03** normalizes the URL and runs the **domain guard**:
+   - If the apex domain is in the Cisco Umbrella top-10K embedded list → returns
+     `"legitimate"` immediately (no ML or TI invoked).
+   - If the apex is a Levenshtein d=1 typosquat of a known brand → returns
+     `"phishing"` immediately with `guard_hit="typosquat:<brand>"`.
+   - If a brand keyword appears in a subdomain of an unrelated apex → returns
+     `"phishing"` with `guard_hit="brand-in-subdomain:<brand>"`.
+3. If the guard does not fire, two goroutines run **in parallel**:
    - **ML scoring** — extracts 28 lexical features from the URL string and sends
-     them to a pre-spawned Python subprocess running a LightGBM model. Returns a
-     0–100 score and probability.
+     them to a pre-spawned Python subprocess running the XGBoost model. Returns
+     a 0–100 score and probability.
    - **TI lookup** — extracts the domain, queries the Valkey hash
      (`ti:domains`). If the domain exists, returns the threat type and risk
      score.
-3. Results are merged: a TI match with risk ≥ 80 **or** an ML score ≥ 70
+4. Results are merged: a TI match with risk ≥ 80 **or** an ML score ≥ 70
    overrides the label to `"phishing"`.
-4. JSON response is returned in the standard CyberSiren envelope.
+5. JSON response is returned in the standard CyberSiren envelope.
 
 ---
 
@@ -862,22 +937,34 @@ See the full reference in
 
 ## Known Limitations
 
-### ML false positives for well-known domains
+### ML false positives for well-known domains (mitigated by domain guard)
 
-The LightGBM model may flag well-known legitimate domains like `google.com` as
-phishing (score ≈ 90). This is a **training data bias**, not a code bug:
+The XGBoost model may assign high scores to well-known legitimate domains like
+`google.com` (score ≈ 90). This is a **training data bias**: the model was trained
+on ~300K URLs where legitimate samples predominantly include a `www.` subdomain
+prefix sourced from Cisco Umbrella. Naked apex domains deviate from that
+distribution.
 
-- The model was trained on ~300 K URLs where legitimate samples predominantly
-  include a `www.` subdomain prefix (sourced from Cisco Umbrella).
-- Naked domains without `www.` (like `google.com`) appear as outliers to the
-  model because features like `num_subdomains=0` and high
-  `char_continuation_rate` deviate from the training distribution.
-- The proper fix is model retraining with balanced data including naked domains
-  and major brands.
+The **domain guard eliminates this class of FP** for the Cisco Umbrella top-10K:
+these domains are allowlisted at the Go layer before the ML subprocess is invoked,
+so the XGBoost score is never computed or surfaced. Top-10K domains and all their
+subdomains always receive `label: "legitimate"` with `guard_hit: "allowlisted"`.
 
-**For the demo**, this actually demonstrates an important point: ML-only
-detection has blind spots, which is why the TI engine exists as a complementary
-signal. A TI match with risk ≥ 80 overrides ML scoring.
+### ML false positives for non-top-10K legitimate sites with phishing-like paths
+
+Legitimate small-business sites with deep auth-style paths (e.g.,
+`smallbank.com/login/verify/account`) can produce high ML scores because the
+XGBoost model flags keywords like `login`, `verify`, `account`, and `secure` as
+phishing signals. These domains are not in the top-10K allowlist, so the domain
+guard does not fire.
+
+This is a known limitation. The proper mitigations are:
+- Expanding the allowlist with a broader curated set (e.g., top-100K).
+- Adding a domain-reputation feature (domain age, popularity rank) to the ML
+  model so it learns that established but unpopular domains with auth paths are
+  not inherently suspicious.
+- Running a second-stage enrichment model (DNS, WHOIS, TLS age) that would give
+  a very low operational score to legitimate registered domains.
 
 ### Exact-domain TI matching only
 

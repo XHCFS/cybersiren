@@ -89,3 +89,6 @@ __pycache__/
 tmp/
 temp/
 .pytest_cache/
+
+# MaxMind GeoIP databases and trained ML model artifacts are now Git-LFS
+# tracked (see .gitattributes). Pull on demand via `make check-fusion-models`.

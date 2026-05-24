@@ -1,0 +1,58 @@
+{
+  "cases": [
+    {
+      "name": "guard allowlisted",
+      "url": "https://google.com/",
+      "expect": {
+        "label": "legitimate",
+        "guard_hit": "allowlisted"
+      }
+    },
+    {
+      "name": "guard typosquat",
+      "url": "https://goog1e.com/",
+      "expect": {
+        "label": "phishing",
+        "guard_hit_prefix": "typosquat:"
+      }
+    },
+    {
+      "name": "guard brand-in-subdomain",
+      "url": "https://paypal-security.verify-login.xyz/",
+      "expect": {
+        "label": "phishing",
+        "guard_hit_prefix": "brand-in-subdomain:"
+      }
+    },
+    {
+      "name": "L2 benign clears unknown apex",
+      "url": "https://random-clean.xyz/about",
+      "expect": {
+        "label": "legitimate",
+        "ml_verdict": "benign"
+      }
+    },
+    {
+      "name": "L2 phishing escalates unknown apex",
+      "url": "https://evil-phish.xyz/login",
+      "expect": {
+        "label": "phishing",
+        "ml_verdict": "phishing"
+      }
+    },
+    {
+      "name": "low-risk TI plus L2 phishing -> phishing",
+      "url": "https://looks-bad.xyz/account",
+      "ti_inject": {
+        "matched": true,
+        "domain": "looks-bad.xyz",
+        "risk_score": 30,
+        "threat_type": "informational"
+      },
+      "expect": {
+        "label": "phishing",
+        "ml_verdict": "phishing"
+      }
+    }
+  ]
+}

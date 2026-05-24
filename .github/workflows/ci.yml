@@ -121,10 +121,73 @@ jobs:
           VALKEY_ADDR: localhost:6379
         run: go test -race -timeout 120s ./...
 
+  e2e-svc-03:
+    name: E2E SVC-03 (/scan, stubbed sidecar + TI fixture)
+    runs-on: ubuntu-latest
+    needs: [build-and-test]
+
+    services:
+      postgres:
+        image: pgvector/pgvector:pg15
+        env:
+          POSTGRES_USER: cybersiren
+          POSTGRES_PASSWORD: cybersiren
+          POSTGRES_DB: cybersiren_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends jq
+
+      - name: Install L1 model Python deps
+        # svc-03 spawns the L1 inference subprocess on startup; mirrors
+        # deploy/docker/Dockerfile.url_analysis line 20. Without these the
+        # service fatals before the e2e runner can hit /healthz.
+        run: pip install --no-cache-dir joblib numpy scikit-learn xgboost lightgbm tldextract
+
+      - name: Install migrate
+        run: |
+          curl -L https://github.com/golang-migrate/migrate/releases/download/v4.18.1/migrate.linux-amd64.tar.gz | tar xz
+          sudo mv migrate /usr/local/bin/migrate
+
+      - name: Run migrations
+        env:
+          DATABASE_URL: postgres://cybersiren:cybersiren@localhost:5432/cybersiren_test?sslmode=disable
+        run: migrate -path db/migrations -database "$DATABASE_URL" up
+
+      - name: Run e2e
+        env:
+          CYBERSIREN_DB__HOST: localhost
+          CYBERSIREN_DB__PORT: "5432"
+          CYBERSIREN_DB__NAME: cybersiren_test
+          CYBERSIREN_DB__USER: cybersiren
+          CYBERSIREN_DB__PASSWORD: cybersiren
+          CYBERSIREN_DB__SSLMODE: disable
+        run: make e2e-svc-03
+
   release:
     name: Publish Docker Images
     runs-on: ubuntu-latest
-    needs: [build-and-test, lint, integration]
+    needs: [build-and-test, lint, integration, e2e-svc-03]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
 
     permissions:

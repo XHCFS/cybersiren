@@ -1,0 +1,27 @@
+# ── fusion-sidecar (L2 phishing scorer used by svc-03) ───────────────────────
+# Python HTTP server on port 8765. Fuses url_p (char-LR) and op_p (HGB over
+# live DNS/WHOIS/TLS/HTTP/GeoIP/shortener enrichment) into deploy_p. Fail-open
+# from the Go side — svc-03 starts and serves without it. Requires the trained
+# bundles at fusion_export/models/{url_char_lr,hgb_operational}.joblib (pulled
+# via `make check-fusion-models` / Git LFS).
+
+FROM python:3.12-slim
+
+# libgomp1 is needed for sklearn HistGradientBoostingClassifier (OpenMP runtime).
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates tzdata libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY fusion_export/requirements.txt /app/fusion_export/requirements.txt
+RUN pip install --no-cache-dir -r /app/fusion_export/requirements.txt
+
+COPY fusion_export/ /app/fusion_export/
+
+ENV PYTHONPATH=/app/fusion_export
+ENV PYTHONUNBUFFERED=1
+
+EXPOSE 8765
+
+ENTRYPOINT ["python", "/app/fusion_export/scripts/serve.py", "--host", "0.0.0.0", "--port", "8765"]

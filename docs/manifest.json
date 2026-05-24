@@ -37,6 +37,10 @@
           "title": "CyberSiren — Threat Intelligence Sync Module Specification (SVC-11)"
         },
         {
+          "file": "internals/CyberSiren_URL_Domain_Guard_and_L2_Fusion_Specification.html",
+          "title": "CyberSiren — URL Domain Guard &amp; L2 Fusion Specification (SVC-03)"
+        },
+        {
           "file": "internals/CyberSiren_URL_Low_latency_Model_Specification.html",
           "title": "CyberSiren — ML Model Specification (SVC-03 URL Analysis)"
         }

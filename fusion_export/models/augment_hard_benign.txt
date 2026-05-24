@@ -1,0 +1,772 @@
+# Hard benign URLs for URL char model augmentation
+# These are legitimate brand auth / login pages the URL model incorrectly flags.
+# Pattern: real apex domain + login/security/verify path.
+# The model must learn that these EXACT character sequences on real domains = benign.
+
+# Bank of America
+https://secure.bankofamerica.com/login/sign-in/signOnV2Screen.go
+https://secure.bankofamerica.com/auth/login.go
+https://secure.bankofamerica.com/myaccounts/brain/flow.go
+https://secure.bankofamerica.com/login/sign-in/entry/
+https://bankofamerica.com/login/sign-in/
+https://olb.bankofamerica.com/olb/m/login/signIn
+
+# Wells Fargo
+https://connect.secure.wellsfargo.com/auth/login/present
+https://connect.secure.wellsfargo.com/login/
+https://wellsfargo.com/signin
+
+# Chase
+https://secure01b.chase.com/web/auth/dashboard
+https://chase.com/sign-in
+https://auth.chase.com/login/auth
+
+# Citibank
+https://www.online.citibank.com/US/JRS/portal/login.do
+https://idp.citi.com/idp/login
+
+# Google
+https://accounts.google.com/signin/v2/identifier?flowName=GlifWebSignIn
+https://accounts.google.com/o/oauth2/v2/auth?response_type=code&scope=email
+https://accounts.google.com/ServiceLogin?continue=https://mail.google.com/
+https://accounts.google.com/v3/signin/identifier?flowEntry=ServiceLogin
+https://www.google.com/accounts/Login?continue=https://drive.google.com
+https://myaccount.google.com/security-checkup/2
+
+# Microsoft / Azure AD / O365
+https://login.microsoftonline.com/common/oauth2/v2.0/authorize?client_id=xyz
+https://login.microsoftonline.com/tenant-id/saml2
+https://login.live.com/login.srf?wa=wsignin1.0&rpsnv=13
+https://account.microsoft.com/security
+https://outlook.office365.com/owa/?realm=company.com&exsvurl=1
+https://outlook.office.com/mail/deeplink/compose
+https://portal.azure.com/#blade/Microsoft_AAD_IAM/SignInPoliciesMenu
+
+# Apple
+https://appleid.apple.com/auth/authorize?client_id=com.apple.icloud&response_type=code
+https://appleid.apple.com/account/manage
+https://appleid.apple.com/sign-in
+https://idmsa.apple.com/IDMSWebAuth/signin?appIdKey=xyz&path=%2Fauth%2Fauthorize
+
+# Amazon / AWS
+https://www.amazon.com/ap/signin?openid.return_to=https://www.amazon.com/
+https://signin.aws.amazon.com/signin?redirect_uri=https://console.aws.amazon.com/
+https://console.aws.amazon.com/iam/home#/security_credentials
+https://aws.amazon.com/console/
+
+# PayPal (legitimate)
+https://www.paypal.com/signin
+https://www.paypal.com/myaccount/security/
+https://www.paypal.com/auth?sessionID=xyz&flowID=abc&rceToken=def
+https://www.paypal.com/cgi-bin/webscr?cmd=_login-run
+
+# Facebook / Meta
+https://www.facebook.com/login/?next=https://www.facebook.com/
+https://www.facebook.com/login/
+https://business.facebook.com/login/
+https://developers.facebook.com/login/
+
+# Twitter / X
+https://twitter.com/i/flow/login
+https://x.com/i/flow/login
+https://twitter.com/login?redirect_after_login=https://twitter.com/home
+
+# LinkedIn
+https://www.linkedin.com/login?fromSignIn=true&trk=cold_join_join_now
+https://www.linkedin.com/uas/login
+
+# Stripe
+https://dashboard.stripe.com/login
+https://checkout.stripe.com/c/pay/cs_live_a1b2c3d4e5f6g7h8i9j0
+https://billing.stripe.com/session/test_YWNjdF8xMjM0
+
+# Salesforce
+https://login.salesforce.com/?locale=US
+https://mycompany.my.salesforce.com/secur/login_portal.jsp
+
+# Okta
+https://company.okta.com/login/login.htm?fromURI=%2F
+https://myorg.okta.com/oauth2/v1/authorize?response_type=code&scope=openid
+
+# GitHub
+https://github.com/login?return_to=%2Fenterprise
+https://github.com/session
+https://api.github.com/repos/user/repo/actions/runs
+
+# Slack
+https://slack.com/signin#/
+https://myworkspace.slack.com/sign_in_with_password
+
+# Dropbox
+https://www.dropbox.com/login
+https://www.dropbox.com/oauth2/authorize?response_type=code
+
+# DocuSign
+https://account.docusign.com/oauth/auth?response_type=code
+https://sign.docusign.com/public/apps/login
+
+# Zoom
+https://zoom.us/signin
+https://us02web.zoom.us/oauth/authorize?response_type=code&client_id=xyz
+
+# IRS / Government (common phishing targets)
+https://www.irs.gov/payments/view-your-tax-account
+https://sa.www4.irs.gov/irs-application-sign-in/
+https://www.usa.gov/sign-in
+
+# Adobe
+https://auth.services.adobe.com/en_US/index.html#/signin
+https://account.adobe.com/security
+
+# Netflix
+https://www.netflix.com/login
+https://www.netflix.com/password
+https://www.netflix.com/YourAccount
+
+# Spotify
+https://accounts.spotify.com/en/login?continue=https://open.spotify.com/
+https://accounts.spotify.com/login
+
+# Legitimate Firebase (web.app) apps — model over-generalizes from phishing examples
+https://mycompany-portal.web.app/dashboard
+https://myapp-staging.web.app/
+https://team-tracker-v2.web.app/login
+https://internal-tools-2026.web.app/api/status
+https://project-board.web.app/tasks
+https://crm-demo.web.app/contacts
+https://analytics-dashboard.web.app/report
+
+# Legitimate Vercel deployments — model over-generalizes from phishing examples
+https://my-nextjs-app.vercel.app/api/health
+https://portfolio-site.vercel.app/
+https://e-commerce-demo.vercel.app/products
+https://blog-starter.vercel.app/posts/hello-world
+https://dashboard-template.vercel.app/overview
+https://company-website-v3.vercel.app/about
+
+# Legitimate Netlify sites (benign, no brand phishing)
+https://my-portfolio-2026.netlify.app/
+https://gatsby-starter-blog.netlify.app/posts/
+https://docs-site.netlify.app/getting-started
+https://react-app-demo.netlify.app/app
+
+# Legitimate blogspot blogs (tech/personal, not brand phishing)
+https://devblog-2026.blogspot.com/2026/05/python-tips.html
+https://techblog2025.blogspot.com/2025/04/machine-learning.html
+https://mycookingtips.blogspot.com/2026/01/recipe-pasta.html
+https://traveldiary-adventures.blogspot.com/2026/03/europe-trip.html
+https://photography-tips-2026.blogspot.com/
+
+# Legitimate GitHub Pages
+https://username.github.io/project-docs/
+https://myorg.github.io/product-website/
+https://developer-portfolio.github.io/blog/2026/new-post
+https://open-source-project.github.io/docs/api-reference
+
+# HaveIBeenPwned and security tools (email addresses in path look like credential harvesting)
+https://haveibeenpwned.com/account/test@gmail.com
+https://haveibeenpwned.com/account/user@outlook.com
+https://haveibeenpwned.com/account/admin@yahoo.com
+https://haveibeenpwned.com/unifiedsearch/test@gmail.com
+https://haveibeenpwned.com/api/v3/breachedaccount/test@example.com
+https://haveibeenpwned.com/passwords
+
+# Gravatar (email hash in URL)
+https://www.gravatar.com/avatar/205e460b479e2e5b48aec07710c08d50
+https://gravatar.com/emails/test@gmail.com
+
+# Security / researcher tools
+https://virustotal.com/gui/url/aHR0cHM6Ly93d3cuZ29vZ2xlLmNvbQ==/detection
+https://www.shodan.io/host/8.8.8.8
+https://urlscan.io/result/abc123def456-7890-abcd-ef12/
+
+# Deep complex auth URLs with tokens and hashes (definitely benign)
+https://login.microsoftonline.com/organizations/oauth2/v2.0/authorize?client_id=4765445b-32c6-49b0-83e6-1d93765276ca&response_type=code&redirect_uri=https%3A%2F%2Fportal.azure.com%2Fsignin%2Findex%2F&scope=openid+profile+email
+https://accounts.google.com/o/oauth2/v2/auth?client_id=407408718192.apps.googleusercontent.com&response_type=code&scope=https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fdrive.readonly&redirect_uri=urn%3Aietf%3Awg%3Aoauth%3A2.0%3Aoob
+https://secure.bankofamerica.com/login/sign-in/signOnV2Screen.go?requestContext=eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ1c2VyMTIzIn0.signature
+
+# Platform deployments — with short random project-ID suffixes (format: prefix-XXXX.platform)
+# These random 4-char hex/alnum suffixes sometimes trigger URL model phishing signal.
+https://docs-site-a1b2.vercel.app/
+https://docs-site-c3d4.vercel.app/
+https://team-tracker-e5f6.vercel.app/
+https://my-project-g7h8.vercel.app/api/status
+https://portfolio-i9j0.vercel.app/
+https://blog-starter-k1l2.vercel.app/posts/
+https://internal-tools-m3n4.vercel.app/
+https://docs-site-a1b2.netlify.app/
+https://docs-site-c3d4.netlify.app/
+https://crm-demo-e5f6.netlify.app/contacts
+https://my-project-g7h8.web.app/dashboard
+https://analytics-i9j0.web.app/report
+https://team-tracker-k1l2.web.app/
+https://username-a1b2.github.io/project/
+https://myorg-c3d4.github.io/docs/
+
+# =======================================================================
+# CONTENT URL AUGMENTATION (v1.6.0, 2026-05-15)
+# These diverse content URL patterns were causing false positives:
+# news, e-commerce, docs, social, government, security tools, academic.
+# =======================================================================
+
+# E-commerce product pages
+https://www.amazon.com/dp/B09XKQ7M5H/ref=sr_1_1?keywords=laptop&qid=1234
+https://www.amazon.com/dp/B08N5WRWNW/ref=pd_bxgy_img_sccl_1/
+https://www.amazon.com/s?k=mechanical+keyboard&rh=n%3A172282
+https://www.amazon.co.uk/dp/B09G3HRMVB/ref=sr_1_2
+https://www.ebay.com/itm/Apple-MacBook-Pro-14-inch-M1-Pro/123456789012
+https://www.ebay.com/sch/i.html?_nkw=nvidia+rtx+4090&_sacat=0
+https://www.walmart.com/ip/Samsung-65-Class-4K-Smart-TV-UN65CU8000/123456789
+https://www.walmart.com/search?q=wireless+headphones
+https://www.bestbuy.com/site/apple-macbook-pro-16-inch/1234567.p?skuId=1234
+https://www.bestbuy.com/site/searchpage.jsp?st=gaming+laptop
+https://www.homedepot.com/p/DEWALT-20V-MAX-Cordless-Drill/203507565
+https://www.target.com/p/sony-wh-1000xm5-wireless-noise-cancelling-headphones/-/A-12345678
+https://www.costco.com/samsung-55--class-q60b-qled-4k-smart-tv.product.100846352.html
+https://www.etsy.com/shop/HandmadeJewelry/listing/handcrafted-silver-necklace-1234567
+https://www.etsy.com/listing/1234567890/personalized-leather-wallet
+https://www.wayfair.com/furniture/pdp/west-elm-marble-coffee-table-abc123.html
+https://shopify.com/pricing/compare-plans
+https://shopify.com/blog/ecommerce-platforms
+https://www.chewy.com/royal-canin-size-health-nutrition-medium/dp/123456
+https://www.newegg.com/p/N82E16819113771?item=N82E16819113771
+https://store.steampowered.com/app/730/CounterStrike_2/
+
+# News articles
+https://www.nytimes.com/2024/01/15/technology/ai-safety-regulations.html
+https://www.nytimes.com/2024/02/20/science/climate-change-report.html
+https://www.bbc.com/news/world-us-canada-67890123
+https://www.bbc.com/news/technology-12345678
+https://www.theguardian.com/technology/2024/jan/15/openai-gpt-safety-report
+https://www.theguardian.com/world/2024/feb/20/climate-policy-update
+https://www.washingtonpost.com/technology/2024/01/15/ai-regulation-update/
+https://www.cnn.com/2024/01/15/politics/congress-vote-update/index.html
+https://www.bloomberg.com/news/articles/2024-01-15/markets-rally-update
+https://www.reuters.com/technology/artificial-intelligence/ai-safety-2024-01-15/
+https://techcrunch.com/2024/01/15/startup-raises-100m-funding-round/
+https://www.wired.com/story/ai-safety-researchers-2024/
+https://www.forbes.com/sites/forbestechcouncil/2024/01/15/ai-trends/
+https://arstechnica.com/information-technology/2024/01/15/new-cpu-benchmark/
+https://www.theregister.com/2024/01/15/microsoft_azure_outage/
+https://www.zdnet.com/article/best-laptops-for-programming-2024/
+https://www.pcmag.com/reviews/apple-macbook-pro-14-inch-m3
+https://www.engadget.com/best-wireless-headphones-review-2024/
+
+# Documentation and Q&A
+https://docs.python.org/3/library/json.html
+https://docs.python.org/3/tutorial/introduction.html
+https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array
+https://docs.microsoft.com/en-us/azure/virtual-machines/linux/create-upload-ubuntu
+https://learn.microsoft.com/en-us/azure/active-directory/develop/quickstart-register-app
+https://docs.aws.amazon.com/ec2/latest/userguide/EC2_GetStarted.html
+https://cloud.google.com/compute/docs/instances/create-start-instance
+https://docs.github.com/en/actions/using-workflows/workflow-syntax-for-github-actions
+https://docs.docker.com/get-started/overview/
+https://kubernetes.io/docs/concepts/workloads/pods/
+https://stackoverflow.com/questions/1234567/how-to-parse-json-in-python
+https://stackoverflow.com/questions/7654321/difference-between-list-and-tuple
+https://stackoverflow.com/a/1234567
+https://superuser.com/questions/123456/how-to-configure-ssh-key
+https://serverfault.com/questions/123456/nginx-reverse-proxy-configuration
+https://unix.stackexchange.com/questions/123456/bash-script-array-manipulation
+https://en.wikipedia.org/wiki/Machine_learning
+https://en.wikipedia.org/wiki/Artificial_intelligence
+https://en.wikipedia.org/wiki/Internet_protocol_suite
+https://arxiv.org/abs/1706.03762
+https://arxiv.org/abs/2303.08774
+https://arxiv.org/pdf/1706.03762v5
+
+# Social media and video content
+https://www.youtube.com/watch?v=dQw4w9WgXcQ
+https://www.youtube.com/watch?v=9bZkp7q19f0&list=PLDlWc9AfQBfZIkdVaZarjgs5OdO9iGhAQ
+https://www.youtube.com/@veritasium
+https://www.youtube.com/results?search_query=python+tutorial+2024
+https://twitter.com/user/status/123456789012345678
+https://x.com/user/status/987654321098765432
+https://www.reddit.com/r/programming/comments/abc123/python_tips_and_tricks/
+https://www.reddit.com/r/MachineLearning/comments/def456/paper_discussion_gpt4/
+https://www.reddit.com/r/worldnews/comments/ghi789/climate_summit_results/
+https://www.instagram.com/p/Cabcdef12345/
+https://www.instagram.com/reel/Cabcdef12345/
+https://help.instagram.com/726378387410998
+https://www.facebook.com/groups/pythonprogramming/posts/123456789012345/
+https://www.facebook.com/photo/?fbid=123456789012345
+https://www.linkedin.com/company/anthropic-ai/
+https://www.linkedin.com/in/username-12345/
+https://www.linkedin.com/posts/username_ai-safety-activity-1234567890/
+https://www.tiktok.com/@username/video/1234567890123456789
+https://discord.com/invite/python
+https://discord.com/channels/123456789012345678/987654321098765432
+https://www.twitch.tv/directory/game/Just+Chatting
+https://telegram.org/faq#q-what-is-telegram
+
+# Streaming and media
+https://www.netflix.com/title/80057187
+https://www.hulu.com/series/the-bear-abc123
+https://www.disneyplus.com/movies/encanto/3RCxdP
+https://play.max.com/movie/abc123def456
+https://www.primevideo.com/detail/The-Boys/0I0I0I0I0I
+
+# Cloud and developer services
+https://app.slack.com/client/T01234567/C01234567
+https://myworkspace.slack.com/archives/C01234567/p1234567890123456
+https://teams.microsoft.com/l/channel/19%3A123abc%40thread.tacv2/General
+https://zoom.us/j/98765432109?pwd=abc123def456xyz789
+https://meet.google.com/abc-defg-hij
+https://calendar.google.com/calendar/u/0/r/month/2024/1
+https://docs.google.com/document/d/1a2b3c4d5e6f7g8h9i/edit
+https://docs.google.com/spreadsheets/d/1a2b3c4d5e6f7g8h9i/edit
+https://drive.google.com/file/d/1a2b3c4d5e6f7g8h9i/view
+https://github.com/anthropics/anthropic-sdk-python/blob/main/README.md
+https://github.com/torvalds/linux/commit/abc123def456789
+https://github.com/topics/machine-learning
+https://gitlab.com/gitlab-org/gitlab/-/blob/master/README.md
+https://heroku.com/pricing
+https://www.cloudflare.com/learning/security/what-is-a-firewall/
+https://www.digitalocean.com/community/tutorials/how-to-install-nginx-ubuntu-22-04
+
+# Government and institutional
+https://www.usa.gov/government-agencies
+https://www.irs.gov/forms-pubs/about-form-1040
+https://www.irs.gov/filing/free-file-do-your-federal-taxes-for-free
+https://www.cdc.gov/coronavirus/2019-ncov/vaccines/effectiveness/index.html
+https://www.fbi.gov/investigate/cyber/cyber-crime
+https://www.state.gov/bureaus-offices/under-secretary-for-management
+https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&type=10-K
+https://www.ftc.gov/news-events/news/press-releases/2024/01
+https://www.treasury.gov/initiatives/fss/Pages/default.aspx
+https://www.whitehouse.gov/briefing-room/statements-releases/2024/01
+https://www.healthcare.gov/apply-and-enroll/start-marketplace-application/
+https://www.usa.gov/benefits
+https://www.va.gov/health-care/eligibility/
+https://www.medicare.gov/sign-up-change-plans/
+https://gov.uk/browse/abroad/passports
+https://www.canada.ca/en/revenue-agency/services/e-services/digital-services-businesses.html
+
+# Security tools and research
+https://virustotal.com/gui/file/abc123def456789012345678901234567890123456789012/detection
+https://virustotal.com/gui/url/aHR0cHM6Ly93d3cuZ29vZ2xlLmNvbQ==/detection
+https://www.shodan.io/host/8.8.8.8
+https://www.shodan.io/search?query=apache+port%3A80
+https://greynoise.io/viz/ip/1.2.3.4
+https://censys.io/hosts/1.2.3.4
+https://securitytrails.com/domain/google.com/history/a
+https://app.any.run/tasks/abc123def456-789012-ghijkl/
+https://www.hybrid-analysis.com/sample/abc123def456789012345678901234567890/12345
+https://urlscan.io/result/abc123def-456-789-0123-456789abcdef/
+https://haveibeenpwned.com/account/test%40gmail.com
+https://app.crowdstrike.com/activity/detections
+https://www.mandiant.com/resources/blog/threat-intelligence-update
+
+# Financial services content
+https://www.fidelity.com/learning-center/investment-products/etf/overview
+https://www.vanguard.com/us/portal/site/portalsite/investments/stocks
+https://www.schwab.com/investment-income
+https://www.schwab.com/research/stocks/overview/AAPL
+https://finance.yahoo.com/quote/AAPL/
+https://www.nasdaq.com/market-activity/stocks/aapl
+https://www.marketwatch.com/story/ai-stocks-2024
+https://venmo.com/u/johndoe
+https://cash.app/pay
+https://www.zellepay.com/how-it-works
+https://stripe.com/docs/api/charges/create
+https://stripe.com/docs/payments/accept-a-payment
+
+# Apps and app stores
+https://apps.apple.com/us/app/instagram/id389801252
+https://apps.apple.com/us/app/slack/id618783545
+https://play.google.com/store/apps/details?id=com.google.android.apps.maps
+https://play.google.com/store/apps/details?id=com.instagram.android
+
+# Academic and research
+https://www.nature.com/articles/s41586-023-06221-2
+https://science.sciencemag.org/content/371/6531/eabf4063
+https://dl.acm.org/doi/10.1145/3394486.3403241
+https://ieeexplore.ieee.org/document/9671393
+https://proceedings.mlr.press/v162/chen22ac/chen22ac.pdf
+
+# Technical blogs and tutorials
+https://www.cloudflare.com/learning/ssl/what-is-ssl/
+https://www.cloudflare.com/learning/ddos/what-is-a-ddos-attack/
+https://aws.amazon.com/what-is/api-gateway/
+https://www.redhat.com/en/topics/containers/what-is-kubernetes
+https://www.mongodb.com/docs/manual/tutorial/install-mongodb-on-ubuntu/
+
+# Health and lifestyle content
+https://www.mayoclinic.org/diseases-conditions/type-2-diabetes/symptoms-causes/syc-20351193
+https://www.webmd.com/cold-and-flu/what-is-coronavirus
+https://www.healthline.com/health/type-2-diabetes/overview
+
+# Microsoft identity platform - simple login paths (high url_p due to double 'login' pattern)
+https://login.microsoftonline.com/common/login
+https://login.microsoftonline.com/common/oauth2/authorize
+https://login.microsoftonline.com/common/login?client_id=00000002-0000-0000-c000-000000000000
+https://login.microsoftonline.com/consumers/login
+https://login.microsoftonline.com/common/login?username=user%40domain.com
+https://login.microsoftonline.com/common/login?mkt=en-US&lc=1033
+https://login.microsoftonline.com/common/userrealm/?user=user%40domain.com&api-version=2.1
+https://login.microsoftonline.com/common/GetCredentialType?mkt=en-US
+
+# Microsoft SharePoint personal sites (*-my.sharepoint.com) — legitimate corporate pattern
+# url_p near 1.0 due to '-my.' subdomain matching phishing patterns like 'paypal-my.secure.com'
+https://contoso-my.sharepoint.com/
+https://contoso-my.sharepoint.com/personal/user_contoso_com/Documents
+https://jbhunt-my.sharepoint.com/
+https://jbhunt-my.sharepoint.com/unsubscribe
+https://dktire-my.sharepoint.com/
+https://jcdecaux-my.sharepoint.com/
+https://microsoft-my.sharepoint.com/
+https://office365-my.sharepoint.com/personal/user_office365_com
+https://enterprise-my.sharepoint.com/sites/team
+https://corporate-my.sharepoint.com/
+
+# Security-keyword legitimate domains (url_p elevated due to 'secure','mail','pro' n-grams)
+https://securemail.pro/
+https://securelink.net/
+https://securebox.io/
+https://protonmail.com/login
+https://tutanota.com/login
+
+# Ephemeral hosting platforms — legitimate developer/portfolio/SaaS sites.
+# Entries are intentionally hard: random-hex deploy IDs, deep paths, query tokens,
+# and hash-like URL segments — the same character n-gram space that phishing uses.
+# op_p ≈ 0 for all (clean CDN infra); these teach the URL LR model that platform
+# TLDs with random suffixes are NOT intrinsically phishing.
+
+# Vercel — random deploy-hash subdomains + deep app paths
+https://my-app-git-main-username.vercel.app/
+https://next-js-dashboard-henna.vercel.app/dashboard?tab=analytics&period=30d
+https://portfolio-five-alpha.vercel.app/projects/web-dev
+https://team-tracker-9jk2.vercel.app/api/health
+https://saas-landing-xi-seven.vercel.app/pricing#enterprise
+https://open-source-git-feature-xyz.vercel.app/docs/getting-started
+https://crm-demo-ecru.vercel.app/contacts?search=test&page=2
+https://blog-starter-olive.vercel.app/posts/2026/intro-to-nextjs
+https://analytics-dashboard-nu.vercel.app/reports/q1-2026?export=csv
+
+# Cloudflare Pages — hex deploy IDs in subdomain
+https://docs-site-a1b2.pages.dev/
+https://my-project-7f3d.pages.dev/getting-started
+https://open-source-lgwb.pages.dev/
+https://open-source-oib6.pages.dev/releases/v2.1.0
+https://open-source-4rgx.pages.dev/docs/api-reference?version=latest
+https://landing-page-c9d8.pages.dev/?ref=producthunt
+https://internal-tools-3e5f.pages.dev/admin/users?status=active
+https://team-docs-b8a4.pages.dev/architecture/overview#microservices
+
+# Firebase Hosting (web.app) — project-id style subdomains
+https://open-source-olvj.web.app/
+https://open-source-b4wk.web.app/releases
+https://my-portfolio-a4c2.web.app/
+https://team-dashboard-f9b1.web.app/metrics?from=2026-01-01&to=2026-05-01
+https://crm-prototype-7d3e.web.app/api/v1/customers?limit=50
+https://static-site-2b8f.web.app/assets/bundle.a1b2c3d4.js
+
+# Netlify — deploy-preview and branch-deploy patterns
+https://open-source-4rgx.netlify.app/
+https://deploy-preview-142--my-project.netlify.app/
+https://feature-auth-redesign--team-portal.netlify.app/login
+https://portfolio-a9f3.netlify.app/case-studies/e-commerce-rebuild
+https://docs-site-b7c1.netlify.app/reference/cli?section=deploy
+https://blog-starter-d2e4.netlify.app/2026/05/release-notes
+
+# GitHub Pages — user.github.io and project subpages
+https://johndoe.github.io/my-portfolio/
+https://mycompany.github.io/oss-project/docs/
+https://open-source-project.github.io/
+https://username-abc123.github.io/react-component-lib/storybook/
+https://devteam2026.github.io/roadmap/?quarter=Q2
+
+# GitHub user content CDN (usercontent.dev)
+https://entry-abc123def456.usercontent.dev/
+https://project-build-7f3a9c2e1b4d.usercontent.dev/preview
+
+# Adobe Portfolio (myportfolio.com)
+https://johndoe.myportfolio.com/
+https://designstudio-xyz.myportfolio.com/work/brand-identity
+https://freelancer2026.myportfolio.com/contact
+
+# Square Sites (company.site)
+https://coffeeshop123.company.site/
+https://marysbakery2026.company.site/menu
+https://localflorist0042.company.site/shop?category=bouquets
+
+# Webflow
+https://company-landing.webflow.io/
+https://startup-v2.webflow.io/about#team
+https://design-agency-rebrand.webflow.io/work/case-studies
+
+# Glitch — project names with random hex suffixes
+https://iridescent-thunder-a4b2.glitch.me/
+https://enchanted-wave-c9d7.glitch.me/api/data?q=test
+https://open-source-tools.glitch.me/
+
+# Platform deploy-hash URLs: problematic prefixes (crm-demo, analytics, blog-starter, team-tracker)
+# that the URL LR model incorrectly associates with phishing due to deploy-hash n-grams.
+https://crm-demo-7jwf.vercel.app/
+https://analytics-mqcg.pages.dev/
+https://blog-starter-pxc3.netlify.app/
+https://team-tracker-lxoh.web.app/
+https://internal-tools-hwba.vercel.app/
+https://docs-site-kydk.pages.dev/
+https://landing-page-598h.netlify.app/
+https://crm-demo-qzow.vercel.app/
+https://analytics-8pp3.pages.dev/
+https://blog-starter-10q5.netlify.app/
+https://team-tracker-3zj2.web.app/
+https://crm-demo-xs8h.vercel.app/
+https://analytics-rdl6.pages.dev/
+https://blog-starter-0i6k.netlify.app/
+https://team-tracker-n2p4.web.app/
+https://crm-demo-m4me.vercel.app/
+https://analytics-2god.pages.dev/
+https://blog-starter-yzhz.netlify.app/
+https://team-tracker-6mb8.web.app/
+https://crm-demo-hz6v.vercel.app/
+https://analytics-50an.pages.dev/
+https://blog-starter-ixdl.netlify.app/
+https://team-tracker-51mj.web.app/
+https://crm-demo-yco2.vercel.app/
+https://analytics-pbxf.pages.dev/
+https://blog-starter-v97m.netlify.app/
+https://team-tracker-bbwq.web.app/
+https://crm-demo-dem9.vercel.app/
+https://analytics-5r93.pages.dev/
+https://blog-starter-tawe.netlify.app/
+https://team-tracker-jwnl.web.app/
+https://crm-demo-ho38.vercel.app/
+https://analytics-l7og.pages.dev/
+https://blog-starter-3q9u.netlify.app/
+https://team-tracker-vpmb.web.app/
+https://crm-demo-tukf.vercel.app/
+https://analytics-l23q.pages.dev/
+https://blog-starter-uz0g.netlify.app/
+https://team-tracker-8rhx.web.app/
+https://crm-demo-1ogi.vercel.app/
+https://analytics-kf3z.pages.dev/
+https://blog-starter-n9mf.netlify.app/
+https://team-tracker-hq8d.web.app/
+https://crm-demo-6bqa.vercel.app/
+https://analytics-kfkp.pages.dev/
+https://blog-starter-zx8b.netlify.app/
+https://team-tracker-5zie.web.app/
+https://crm-demo-zl7p.vercel.app/
+https://analytics-rcgf.pages.dev/
+https://blog-starter-e0iu.netlify.app/
+https://team-tracker-q5yu.web.app/
+https://crm-demo-ku3b.vercel.app/
+https://analytics-rp0r.pages.dev/
+https://blog-starter-p47n.netlify.app/
+https://team-tracker-hzlg.web.app/
+https://crm-demo-tq8w.vercel.app/
+https://analytics-sqxl.pages.dev/
+https://blog-starter-ye6a.netlify.app/
+https://team-tracker-ulk7.web.app/
+https://crm-demo-aef0.vercel.app/
+https://analytics-7oqe.pages.dev/
+https://blog-starter-77q0.netlify.app/
+https://team-tracker-qu20.web.app/
+
+# URL shorteners — opaque 5-8 char alphanumeric codes (benign redirect destinations)
+# These teach the URL char model that shortener code patterns ≠ phishing
+# Large diverse set needed to cover the full mixed-case alphanumeric n-gram space.
+https://bit.ly/Ua00Zt2x
+https://t.co/rKBkxh
+https://tinyurl.com/qJOlNJlw
+https://ow.ly/HVALG
+https://buff.ly/jnUem1
+https://bit.ly/ubDvb9G
+https://t.co/aa8Q3kXL
+https://tinyurl.com/sgPAg4
+https://ow.ly/Vyo9HM
+https://buff.ly/Zcoh3Fn
+https://bit.ly/qLBH69
+https://t.co/ckt31a
+https://tinyurl.com/9owIvk
+https://ow.ly/uaddTCfy
+https://buff.ly/YaXTxn
+https://bit.ly/ENdaO
+https://t.co/uXN9A78J
+https://tinyurl.com/xXQShJ
+https://ow.ly/fFk59v
+https://buff.ly/nkksjI
+https://bit.ly/HSaja
+https://t.co/4l1M7Z2g
+https://tinyurl.com/GWzeYW9
+https://ow.ly/Alp64lbx
+https://buff.ly/lzllKR0
+https://bit.ly/9AGSAu
+https://t.co/ePDVm
+https://tinyurl.com/ViH5ov
+https://ow.ly/iIGSXQ5
+https://buff.ly/qXBcx
+https://bit.ly/OWejx
+https://t.co/rVCRx
+https://tinyurl.com/tCNqtVFE
+https://ow.ly/qCbow
+https://buff.ly/6aROZ7
+https://bit.ly/bhM3m
+https://t.co/Flrwn5tU
+https://tinyurl.com/2yeNtxY
+https://ow.ly/Amkfj
+https://buff.ly/ovBmajh
+https://bit.ly/Yvzu3
+https://t.co/pgFjL
+https://tinyurl.com/qKIwkV
+https://ow.ly/c23fgHn
+https://buff.ly/HaXHjLIu
+https://bit.ly/DACbxQ
+https://t.co/3ywR0
+https://tinyurl.com/uECcu
+https://ow.ly/yZtiyKN
+https://buff.ly/KhF8h
+https://bit.ly/Nlc8d
+https://t.co/1nHgDFE
+https://tinyurl.com/Bo5ov
+https://ow.ly/yLIpRE
+https://buff.ly/5nJK7J
+https://bit.ly/kRUD2W
+https://t.co/PmeY5
+https://tinyurl.com/JZhgq
+https://ow.ly/nroFxU
+https://buff.ly/QzJpPC31
+https://bit.ly/HbG6I
+https://t.co/pzFRfAD
+https://tinyurl.com/upCtB
+https://ow.ly/knUN6
+https://buff.ly/qK4OXZlO
+https://bit.ly/HUUrb
+https://t.co/5vSOmYOt
+https://tinyurl.com/Uzxn7
+https://ow.ly/of6Ynq6
+https://buff.ly/bjKLY
+https://bit.ly/vni1NN
+https://t.co/GsbnBz6
+https://tinyurl.com/YPOUQZCK
+https://ow.ly/GsIeQE2
+https://buff.ly/6Pk5BdTg
+https://bit.ly/rQu4A
+https://t.co/EfySPhVB
+https://tinyurl.com/NaWDjO
+https://ow.ly/wk1Rr
+https://buff.ly/yktuOM
+https://bit.ly/BcwpSM3
+https://t.co/bwQzFiMX
+https://tinyurl.com/3S1K05t
+https://ow.ly/FCSaDW
+https://buff.ly/oAEoNGv
+https://bit.ly/s0Mo4Au6
+https://t.co/jlIcW
+https://tinyurl.com/Xyixe
+https://ow.ly/Qnagvq
+https://buff.ly/PINr8N
+https://bit.ly/wuzbLhL
+https://t.co/CPupqgkR
+https://tinyurl.com/RdGijHm
+https://ow.ly/n2q7wdf
+https://buff.ly/YVoT9c
+https://bit.ly/bcjyBL
+https://t.co/bl9jRGHj
+https://tinyurl.com/0gwVeVjb
+https://ow.ly/Z2wi7
+https://buff.ly/v9nsmIv
+https://bit.ly/evkqE7Jk
+https://t.co/ybCj45
+https://tinyurl.com/iXRjJVM
+https://ow.ly/7SqsSaH
+https://buff.ly/TzJmyg5
+https://bit.ly/OIkDZ
+https://t.co/eQ1LgY
+https://tinyurl.com/Aj9WU
+https://ow.ly/COhzq
+https://buff.ly/iHHoZ6V
+https://bit.ly/OgBjrp
+https://t.co/QuQzJ
+https://tinyurl.com/nxytas5
+https://ow.ly/CAFgEEoL
+https://buff.ly/wlGmo
+https://bit.ly/58YLZ
+https://t.co/lilPa0
+https://tinyurl.com/ia68W
+https://ow.ly/qh1It
+https://buff.ly/EMLov
+https://bit.ly/baPAg
+https://t.co/Ceey8jC
+https://tinyurl.com/EVQjO1H
+https://ow.ly/2pA2jBR1
+https://buff.ly/T7oy8aD
+https://bit.ly/h9SE505
+https://t.co/hMreHmb
+https://tinyurl.com/zPuJF
+https://ow.ly/pVrBbj
+https://buff.ly/kyo5g
+https://bit.ly/UAQamL
+https://t.co/AGvKyAr6
+https://tinyurl.com/dlPTT76g
+https://ow.ly/CatXdDQ
+https://buff.ly/ZWHCB
+https://bit.ly/5cfkZj
+https://t.co/88KCbu2A
+https://tinyurl.com/1vAJIFq
+https://ow.ly/BflYpFE
+https://buff.ly/vrIuZ
+https://bit.ly/w9JYtS2I
+https://t.co/SlvegD2
+https://tinyurl.com/DY9CUTKn
+https://ow.ly/oRWp0wDu
+https://buff.ly/0A8HgYbT
+https://bit.ly/UR6C2Wb
+https://t.co/QcjxL2
+https://tinyurl.com/mZbsR
+https://ow.ly/GPlmS3vu
+https://buff.ly/B0pYm7D
+https://bit.ly/oo4L1
+https://t.co/Y2CVlW
+https://tinyurl.com/88T19
+https://ow.ly/iiDHQ8wN
+https://buff.ly/ubgki3
+https://bit.ly/XThvM
+https://t.co/L4vXPGwn
+https://tinyurl.com/fBmCnhkP
+https://ow.ly/JxhZhP
+https://buff.ly/jv7XoG2
+https://bit.ly/WbqrFvZa
+https://t.co/3VZGQJb
+https://tinyurl.com/MTXpbeT
+https://ow.ly/XoxUsC
+https://buff.ly/ccRY54He
+https://bit.ly/YunLB
+https://t.co/H1bLgJ3
+https://tinyurl.com/NStiiA
+https://ow.ly/W52Dvk
+https://buff.ly/5x8Xiw6o
+https://bit.ly/7WT47BU4
+https://t.co/UV0t7pBf
+https://tinyurl.com/A29lIL
+https://ow.ly/MvUrF
+https://buff.ly/RuBqE
+https://bit.ly/5qv3W
+https://t.co/ISaZaP
+https://tinyurl.com/iklQtz6
+https://ow.ly/CYLf9
+https://buff.ly/y64ThKK
+https://bit.ly/eRg2TJk7
+https://t.co/5Rkud
+https://tinyurl.com/pG0SS2
+https://ow.ly/POMhPS
+https://buff.ly/jQx1S2yT
+https://bit.ly/RYebuuD
+https://t.co/tamrx
+https://tinyurl.com/rx7Oa
+https://ow.ly/B7UGWEaG
+https://buff.ly/9eHKW
+https://bit.ly/4zWs1
+https://t.co/PxVBf
+https://tinyurl.com/Ae7vISW
+https://ow.ly/NHvb3
+https://buff.ly/AIQfuJ
+https://bit.ly/Y96vYR5
+https://t.co/aFZldy3
+https://tinyurl.com/5TlM2UV
+https://ow.ly/Z3fVp
+https://buff.ly/2SzayZG

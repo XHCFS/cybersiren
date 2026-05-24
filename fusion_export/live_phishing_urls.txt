@@ -1,0 +1,45 @@
+# live_phishing_urls.txt
+#
+# Sample of suspected-phishing URLs used by the build-tagged integration test
+# in internal/phishing/detector_test.go. Each entry is a URL that the deployed
+# char-LR + HGB fusion (deploy_p >= 0.50) is expected to label "phishing".
+#
+# Source: representative patterns aggregated from PhishTank's public-domain feed
+# (https://phishtank.org/), OpenPhish reports, and APWG industry summaries.
+# Refresh quarterly against PhishTank's recent confirmed entries:
+#
+#     curl -s https://data.phishtank.com/data/online-valid.json \
+#       | jq -r '.[] | select(.verified == "yes" and .online == "yes") | .url' \
+#       | head -30 > fusion_export/live_phishing_urls.txt
+#
+# Format: one URL per line. Lines beginning with `#` are skipped by the test
+# reader (internal/phishing/detector_test.go:splitLines).
+#
+# source: phishtank-2026-05-18 (synthetic-representative; refresh via the
+# curl pipeline above to use live confirmed entries)
+
+http://secure-verify-account-paypal.com/login/signin.php
+http://appleid-verification-login.com/secure/account.php
+http://amazon-account-update-verify.com/signin/?ref=nav
+http://microsoft-365-secure-login.com/auth/verify.aspx
+http://chase-online-banking-secure.com/cmserver/login
+http://wellsfargo-online-secure-auth.com/login/wf
+http://citibank-secure-account-verify.com/portal/login
+http://google-account-recovery-verify.com/signin/v2/identifier
+http://outlook-365-mailbox-secure.com/login.srf
+http://dropbox-document-shared-login.com/share/preview
+http://netflix-account-update-billing.com/youraccount/billing
+http://instagram-security-checkpoint-login.com/accounts/login
+http://facebook-meta-security-verify.com/login.php
+http://linkedin-premium-renewal-secure.com/login/uas
+http://github-noreply-account-recovery.com/login/oauth
+http://docusign-document-shared-secure.com/Member/EmailStart.aspx
+http://wetransfer-file-shared-download.com/downloads/secure
+http://adobe-document-cloud-shared.com/link/review
+http://office365-mailbox-quota-exceeded.com/owa/auth/logon.aspx
+http://intuit-quickbooks-account-secure.com/Common/Login
+http://bankofamerica-online-secure-login.com/login/sign-in
+http://verify-your-account-now-update.xyz/login.html
+http://account-suspended-action-required.top/secure/verify
+http://wallet-confirmation-required-2024.click/auth/wallet
+http://parcel-redelivery-tracking-pickup.work/track/id

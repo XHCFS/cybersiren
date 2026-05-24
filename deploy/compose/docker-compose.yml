@@ -191,6 +191,8 @@ services:
         condition: service_completed_successfully
       valkey:
         condition: service_healthy
+      fusion-sidecar:
+        condition: service_healthy
     ports:
       - "8083:8083"
       - "9091:9090"
@@ -208,8 +210,48 @@ services:
       CYBERSIREN_VALKEY__ADDR: valkey:6379
       CYBERSIREN_AUTH__JWT_SECRET: demo-secret-not-for-production-use!!
       CYBERSIREN_ML__URL_MODEL_PATH: /app/ml/inference_script.py
+      CYBERSIREN_PHISHING__SIDECAR_URL: http://fusion-sidecar:8765
+      CYBERSIREN_PHISHING__THRESHOLD: ${CYBERSIREN_PHISHING__THRESHOLD:-0.50}
+      # Path inside the svc-03 image — GeoLite2-City.mmdb + GeoLite2-ASN.mmdb
+      # are COPY'd from fusion_export/fusion_kit/ at build time. When this
+      # directory is reachable, the Go enricher in internal/phishing/enricher
+      # loads and svc-03 routes scoring via /score-features (per-enricher Go
+      # Jaeger spans); otherwise the detector falls back to /score.
+      CYBERSIREN_PHISHING__GEOIP_DIR: /app/geoip
       CYBERSIREN_METRICS_PORT: "9090"
       CYBERSIREN_JAEGER_ENDPOINT: http://jaeger:4318
+    networks:
+      - cybersiren
+    restart: unless-stopped
+
+  # ── fusion-sidecar (Python L2 phishing scorer used by svc-03) ─────────────
+  # Loads url_char_lr.joblib + hgb_operational.joblib at startup. Performs
+  # per-request DNS/WHOIS/TLS/HTTP/GeoIP/shortener enrichment and returns
+  # deploy_p = fusion(url_p, op_p). Bundles ship via Git LFS — see the
+  # `check-fusion-models` Makefile target. Fail-open: svc-03 keeps serving
+  # /scan if this container is stopped.
+  fusion-sidecar:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.fusion_sidecar
+    profiles: ["demo", "svc-03"]
+    ports:
+      - "8765:8765"
+    environment:
+      # OTEL: emit spans to Jaeger over OTLP/HTTP. The Go side uses the
+      # same Jaeger; setting this to empty disables the OTEL stack.
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
+      OTEL_SERVICE_NAME: fusion-sidecar
+    healthcheck:
+      test:
+        - "CMD"
+        - "python"
+        - "-c"
+        - "import urllib.request, sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8765/health', timeout=2).status == 200 else 1)"
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 20s
     networks:
       - cybersiren
     restart: unless-stopped
