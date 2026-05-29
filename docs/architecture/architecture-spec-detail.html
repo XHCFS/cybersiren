@@ -254,7 +254,8 @@
   <code>internal_id</code> (BIGSERIAL) = physical DB primary key. Auto-generated on INSERT. Part of composite PK <code>(internal_id, fetched_at)</code> required by partitioning.<br/>
   <code>fetched_at</code> = partition key for the <code>emails</code> table. Part of composite PK. Not part of logical identity.<br/>
   <code>message_id</code> (RFC 5322) = deduplication key scoped per org <code>(org_id, message_id)</code>. Not globally unique.<br/>
-  <strong>Mapping:</strong> <code>emails.scored</code> message includes both <code>email_id</code> and <code>(internal_id, fetched_at)</code> so SVC-08 can write to DB without an extra lookup.
+  <strong>Mapping:</strong> <code>emails.scored</code> message includes both <code>email_id</code> and <code>(internal_id, fetched_at)</code> so SVC-08 can write to DB without an extra lookup.<br/>
+  <span class="delta-tag">v0&nbsp;delta</span> <strong>Implemented as a single int64:</strong> <code>email_id</code> <em>is</em> <code>internal_id</code> — one value, assigned by SVC-01, used as the Kafka partition key and inserted explicitly as the <code>emails</code> primary key (the <code>BIGSERIAL</code> default is unused; UUIDv7 not implemented). See <a href="#changelog">§16 D11</a> for the invariant and rationale.
 </div>
 
 <div class="note">
@@ -765,7 +766,8 @@
 
 
 <!-- ============================================================ -->
-<h2>5. Redis Key Registry</h2>
+<h2>5. Redis Key Registry <span class="delta-tag">v0&nbsp;delta</span></h2>
+<p style="font-size:10px; color:#555; margin:-4px 0 8px 0;">v0 note: three keys differ from the patterns below (org-scoping / namespacing) and <code>ti_hash</code> TTL is 2h — see §16 D14. TTLs otherwise match.</p>
 
 <table>
   <tr>
@@ -779,11 +781,11 @@
   <tr><td><code>dedup:{org_id}:{message_id}</code></td><td>STRING (1)</td><td>7 days</td><td>SVC-01</td><td>SVC-01</td><td>Email ingestion deduplication. Value: "1". Existence check only.</td></tr>
   <tr><td><code>url_score:{sha256(url)}</code></td><td>HASH</td><td>6 hours</td><td>SVC-03</td><td>SVC-03</td><td>URL score cache. Fields: score, ti_matched, domain, cached_at. Avoids re-enrichment.</td></tr>
   <tr><td><code>ti_domain:{domain}</code></td><td>HASH</td><td>1 hour</td><td>SVC-11</td><td>SVC-03, SVC-04</td><td>TI domain cache. Fields: ti_indicator_id, risk_score, threat_type. Sourced from <code>ti_indicators</code>. Avoids DB query per URL.</td></tr>
-  <tr><td><code>ti_hash:{sha256}</code></td><td>HASH</td><td>1 hour</td><td>SVC-11</td><td>SVC-05</td><td>TI attachment hash cache. Fields: type, risk_score, tags, updated_at.</td></tr>
-  <tr><td><code>aggregator:{email_id}</code></td><td>HASH</td><td>120 seconds</td><td>SVC-07</td><td>SVC-07</td><td>Score aggregation state. Fields: expected (JSON), received (JSON), created_at.</td></tr>
-  <tr><td><code>simhash:{org_id}:{campaign_id}</code></td><td>STRING</td><td>30 days</td><td>SVC-08</td><td>SVC-08</td><td>64-bit SimHash for campaign near-duplicate detection. Per-org scoped to prevent cross-tenant matching.</td></tr>
+  <tr><td><code>ti_hash:{sha256}</code></td><td>HASH</td><td>2 hours <span class="delta-tag">v0&nbsp;delta</span></td><td>SVC-11</td><td>SVC-05</td><td>TI attachment hash cache. Fields: type, risk_score, tags, updated_at. (Impl TTL 7200s, not 1h — see §16 D14.)</td></tr>
+  <tr><td><code>aggregator:{org_id}:{email_id}</code> <span class="delta-tag">v0&nbsp;delta</span></td><td>HASH</td><td>120 seconds</td><td>SVC-07</td><td>SVC-07</td><td>Score aggregation state. Fields: expected (JSON), received (JSON), created_at. (Impl is org-scoped — see §16 D14.)</td></tr>
+  <tr><td><code>simhash_meta:{org_id}:{campaign_id}</code> <span class="delta-tag">v0&nbsp;delta</span></td><td>STRING</td><td>30 days</td><td>SVC-08</td><td>SVC-08</td><td>64-bit SimHash for campaign near-duplicate detection. Per-org scoped. (Impl key is <code>simhash_meta:</code> + a <code>simhash:idx:{org_id}</code> set — see §16 D14.)</td></tr>
   <tr><td><code>notif:{org_id}:{campaign_id}</code></td><td>STRING (counter)</td><td>3600 seconds</td><td>SVC-09</td><td>SVC-09</td><td>Notification rate limiter. INCR on each alert. Block if &gt; 1.</td></tr>
-  <tr><td><code>rules_cache:{org_id}</code></td><td>STRING (JSON)</td><td>60 seconds</td><td>SVC-04, SVC-08</td><td>SVC-04, SVC-08</td><td>In-memory rule cache. Full rule set serialized. Avoids DB poll per email.</td></tr>
+  <tr><td><code>rules_cache:{header|decision}:{org_id}</code> <span class="delta-tag">v0&nbsp;delta</span></td><td>STRING (JSON)</td><td>60 seconds</td><td>SVC-04, SVC-08</td><td>SVC-04, SVC-08</td><td>In-memory rule cache. Full rule set serialized. (Impl is per-service namespaced — see §16 D14.)</td></tr>
 </table>
 
 
@@ -852,9 +854,9 @@
   <tr>
     <td>TI Feed Sync (SVC-11)</td>
     <td>Duplicate threat indicators</td>
-    <td>(indicator_value, indicator_type) unique constraint on <code>ti_indicators</code></td>
-    <td>PostgreSQL unique index</td>
-    <td>Global</td>
+    <td>(feed_id, indicator_type, indicator_value) unique constraint on <code>ti_indicators</code> <span class="delta-tag">v0&nbsp;delta</span></td>
+    <td>PostgreSQL unique index (per-feed)</td>
+    <td>Per-feed (same indicator from 2 feeds → 2 rows; corroboration signal — §16 D15)</td>
   </tr>
   <tr>
     <td>Campaign Detection (SVC-08)</td>
@@ -1133,7 +1135,8 @@ INPUT: email plain_text body
 </div>
 
 <!-- ============================================================ -->
-<h2 class="page-break">13. Table Origin Reference — Migration File → Table</h2>
+<h2 class="page-break">13. Table Origin Reference — Migration File → Table <span class="delta-tag">v0&nbsp;delta</span></h2>
+<p style="font-size:10px; color:#555; margin:-4px 0 8px 0;">v0 note: column counts below are original-intent and are now stale on most tables (migrations added org_id/email_fetched_at/deleted_at/…); actual base-table count is ~23, not 18/19 (four tables omitted here). <code>db/sqlc/models.go</code> is the authoritative column shape — see §16 D13.</p>
 
 <table class="compact-table">
   <tr><th>Table / View</th><th>Defined In</th><th>Columns Added In</th><th>Column Count</th></tr>
@@ -1293,7 +1296,7 @@ INPUT: email plain_text body
     <td><code>ti_indicators</code> (026)</td>
     <td><code>id</code>, <code>indicator_value</code>, <code>indicator_type</code>, <code>risk_score</code>, <code>threat_type</code>, <code>target_brand</code>, <code>deleted_at</code></td>
     <td>READ</td>
-    <td>Lookup by <code>indicator_value</code> (unique index) or domain prefix. Only active rows (deleted_at IS NULL). Cached in Redis <code>ti_domain:{domain}</code>.</td>
+    <td>Lookup by <code>indicator_value</code> (non-unique value index <code>idx_ti_indicators_value</code>; the unique key is per-feed <code>(feed_id, indicator_type, indicator_value)</code> — §16 D15) or domain prefix. Only active rows (deleted_at IS NULL). Cached in Redis <code>ti_domain:{domain}</code>.</td>
   </tr>
   <tr>
     <td>Prior-email URL lookup</td>
@@ -1634,7 +1637,7 @@ INPUT: email plain_text body
       <code>deleted_at</code> (NULL for active)
     </td>
     <td>UPSERT</td>
-    <td><code>INSERT INTO ti_indicators (indicator_value, indicator_type, ...) ON CONFLICT (indicator_value, indicator_type) DO UPDATE SET last_seen_at=NOW(), threat_tags=array_cat(ti_indicators.threat_tags, $new_tags), risk_score=GREATEST(ti_indicators.risk_score, $score)</code>. No enrichment columns — ti_indicators is a lightweight feed-only table.</td>
+    <td><code>INSERT INTO ti_indicators (feed_id, indicator_value, indicator_type, ...) ON CONFLICT (feed_id, indicator_type, indicator_value) DO UPDATE SET last_seen_at=NOW(), threat_tags=array_cat(ti_indicators.threat_tags, $new_tags), risk_score=GREATEST(ti_indicators.risk_score, $score)</code> <span class="delta-tag">v0&nbsp;delta</span> (per-feed conflict key — §16 D15). No enrichment columns — ti_indicators is a lightweight feed-only table.</td>
   </tr>
   <tr>
     <td>UPSERT malware hashes</td>
@@ -1706,7 +1709,58 @@ INPUT: email plain_text body
 
 <div class="changelog">
 
-  <h3 style="margin-top:0;">Infrastructure Spine v0</h3>
+  <h3 style="margin-top:0;">Completion-plan decisions</h3>
+  <div class="changelog-entry">
+    <span class="ver">plan-2.3</span><span class="date">2026-05-29</span>
+    — A plan-vs-spec-vs-code cross-examination resolved several deltas (full log: <code>planning-refined/00-DECISIONS.md</code> § "Grill-session refinements", G1–G10). The two that amend this baseline are recorded here; the rest are implementation sequencing/scope and live in the plan.
+  </div>
+
+  <table>
+    <tr>
+      <th>Δ</th>
+      <th>Affects</th>
+      <th>Baseline (spec)</th>
+      <th>Decision</th>
+      <th>Rationale</th>
+    </tr>
+    <tr>
+      <td><strong>D11</strong></td>
+      <td>§1 Canonical Identifier Strategy</td>
+      <td><code>email_id</code> (UUIDv7, logical) and <code>internal_id</code> (BIGSERIAL, physical) are two independent identifiers.</td>
+      <td><strong>Collapsed to a single int64</strong>: <code>email_id</code> <em>is</em> <code>internal_id</code>. SVC-01 assigns the value and uses it as the partition key; SVC-02 INSERTs the <code>emails</code> row with <code>internal_id</code> set <strong>explicitly to that value</strong> (the <code>BIGSERIAL</code> default is never used; UUIDv7 not implemented). <strong>Invariant:</strong> SVC-02 must never let <code>internal_id</code> auto-generate — otherwise every <code>email_id</code>-keyed message points at a row whose <code>internal_id</code> differs and SVC-08's verdict <code>UPDATE … WHERE internal_id = email_id</code> matches 0 rows. SVC-01 still owns id <em>assignment</em> even after the authoritative INSERT moves to SVC-02 (§1-step1/§1-step2). Already in code today (svc-01 shim).</td>
+      <td>A graduation-scope, single-broker, mostly-single-instance system gains nothing from a separate UUIDv7 logical id, and the two-id model would force every analyzer to propagate a DB-generated <code>internal_id</code>. One int64 keys Kafka, partitions Postgres, and matches the verdict UPDATE with no extra lookup. <em>Caveat:</em> the v0 generator (<code>UnixNano()/1000</code>, µs) collides if SVC-01 is scaled beyond one instance (§11: 1→4); a collision-resistant scheme is needed before horizontal scale.</td>
+    </tr>
+    <tr>
+      <td><strong>D12</strong></td>
+      <td>§4 / §10 Row-Level Security (migration 018)</td>
+      <td>RLS per <code>org_id</code> (migration 018) is listed as present.</td>
+      <td><strong>RLS is the authoritative tenant-isolation boundary, and must actually be enforced.</strong> The shared data-access layer issues <code>SET LOCAL app.current_org_id = &lt;org&gt;</code> at the start of every transaction (org from the message envelope / authenticated API key), and application services connect as a <strong>non-bypass</strong> role. App-level <code>WHERE org_id</code> is defence-in-depth, not the boundary. <code>migration_bypass</code> (role <code>migration_role</code>) stays the only intentional escape hatch — used by migrations and platform-global writers (SVC-11 writes non-org-scoped <code>ti_indicators</code>/<code>attachment_library</code>). <strong>Not yet implemented</strong> — planned in the P0.2 data-access foundation. Today no service sets the GUC, so the 39 FORCE policies are bypassed in practice.</td>
+      <td>This is a security project: "RLS enforced and tested" is defensible; "39 RLS policies that are bypassed" is not. <code>SET LOCAL</code> is transaction-scoped → safe under pgbouncer transaction-mode pooling (§10). Fail-closed: a tx that forgets the GUC sees zero rows, surfacing missing context loudly rather than leaking across tenants.</td>
+    </tr>
+    <tr>
+      <td><strong>D13</strong></td>
+      <td>§10 / §13 table &amp; column counts</td>
+      <td>§10 says "18 tables"; §13/§6b say "19 tables + 5 MVs + 1 view", with per-table column counts.</td>
+      <td><strong>Counts are stale — code is authoritative (<code>db/sqlc/models.go</code> + migrations 001–029).</strong> Actual base-table count is <strong>~23</strong>: §13's 19 plus <code>brands</code> (020), <code>email_identities</code> (015), <code>threat_type_values</code> (020), <code>valid_api_scopes</code> (023), which §13 omits entirely. §13's per-column counts are <em>original-intent</em> values; migrations later added <code>org_id</code> (013), <code>email_fetched_at</code> (014), <code>deleted_at</code> (019), etc., so live counts are higher on most tables — e.g. <code>enriched_threats</code> 35→~48, <code>emails</code> 30→~38, <code>enrichment_jobs</code> 10→~17, <code>ti_indicators</code> 12→~17. Treat <code>db/sqlc/models.go</code> as the authoritative column shape; §13 counts are indicative only.</td>
+      <td>§13 was written at design time and never re-derived after the multitenancy / partition / lifecycle migrations. The §14 Kafka→DB column mappings assume the §13 shapes, so consult the generated models, not the count column.</td>
+    </tr>
+    <tr>
+      <td><strong>D14</strong></td>
+      <td>§5 Redis Key Registry</td>
+      <td><code>aggregator:{email_id}</code>; <code>simhash:{org_id}:{campaign_id}</code>; <code>rules_cache:{org_id}</code>; <code>ti_hash:{sha256}</code> TTL 1h.</td>
+      <td><strong>As implemented:</strong> <code>aggregator:{org_id}:{email_id}</code> (org-scoped for tenant isolation); <code>simhash_meta:{org_id}:{campaign_id}</code> (+ a <code>simhash:idx:{org_id}</code> index set); <code>rules_cache:header:{org_id}</code> / <code>rules_cache:decision:{org_id}</code> (per-service namespaced); <code>ti_hash:{sha256}</code> <strong>TTL 2h (7200s)</strong>, not 1h. All other key TTLs match §5. The org-scoping / namespacing is intentional; the 2h ti_hash TTL is an ops tuning choice.</td>
+      <td>Per-org scoping prevents cross-tenant cache bleed (consistent with the §4/§16-D12 RLS posture); per-service rule-cache namespacing avoids svc-04/svc-08 collisions.</td>
+    </tr>
+    <tr>
+      <td><strong>D15</strong></td>
+      <td>§7 / §14-BG / §3a — <code>ti_indicators</code> dedup</td>
+      <td>Global unique <code>(indicator_value, indicator_type)</code>; §3a reads "by <code>indicator_value</code> (unique index)".</td>
+      <td><strong>Per-feed unique <code>(feed_id, indicator_type, indicator_value)</code></strong> (migration 026), intentional and documented in-migration: the same indicator from two feeds yields <strong>two rows</strong>, so feed count is a corroboration signal, and conflict-merge (<code>GREATEST(risk_score)</code>, union <code>threat_tags</code>) is per-feed. There is <strong>no</strong> global unique index on <code>indicator_value</code>, so §3a's "(unique index)" lookup is by a non-unique value index. §7 / §14-BG / §3a are superseded by this per-feed model.</td>
+      <td>Cross-feed corroboration + per-feed provenance is more useful for a threat feed than collapsing to a single row and losing which feeds reported an indicator.</td>
+    </tr>
+  </table>
+
+  <h3>Infrastructure Spine v0</h3>
   <div class="changelog-entry">
     <span class="ver">spine-v0</span><span class="date">2026-05-02</span>
     — First end-to-end backbone: a fake email flows <code>emails.raw → emails.verdict</code> through 10 stub services with traces, metrics, and logs.
