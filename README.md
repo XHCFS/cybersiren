@@ -2,7 +2,7 @@
 
 A commercial-grade phishing defense platform. Ingests raw emails, runs them through a multi-stage detection pipeline combining threat intelligence feeds, an XGBoost URL classifier, and a DistilBERT NLP model, then produces a structured verdict with confidence scores.
 
-**Tech stack:** Go 1.25, Python 3.12, PostgreSQL 15, Valkey, Kafka, React
+**Tech stack:** Go 1.25, Python 3.12, PostgreSQL 15, Valkey, Redpanda (Kafka API), React
 
 ---
 
