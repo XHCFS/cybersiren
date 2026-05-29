@@ -116,7 +116,7 @@
 
   <!-- ═══ TITLE ═══ -->
   <text x="1700" y="52" text-anchor="middle" font-size="28" font-weight="700" fill="#111" letter-spacing="2">CYBERSIREN — SYSTEM ARCHITECTURE</text>
-  <text x="1700" y="84" text-anchor="middle" font-size="16" fill="#666">Event-Driven Microservices over Apache Kafka  ·  11 Services  ·  12 Kafka Topics  ·  PostgreSQL + Redis  ·  v2.3</text>
+  <text x="1700" y="84" text-anchor="middle" font-size="16" fill="#666">Event-Driven Microservices over Redpanda (Kafka API)  ·  11 Services  ·  12 Kafka Topics  ·  PostgreSQL + Redis  ·  v2.3</text>
 
 
   <!-- ═══════════════════════════════════════════
@@ -189,7 +189,7 @@
 
   <!-- Kafka -->
   <rect x="644" y="558" width="392" height="140" rx="14" fill="#e0e0e0" stroke="#444" stroke-width="2"></rect>
-  <text x="840" y="602" text-anchor="middle" font-size="18" font-weight="700">Apache Kafka</text>
+  <text x="840" y="602" text-anchor="middle" font-size="18" font-weight="700">Redpanda (Kafka API)</text>
   <text x="840" y="626" text-anchor="middle" font-size="13" fill="#555">12 topics  ·  partition key: email_id</text>
   <text x="840" y="648" text-anchor="middle" font-size="13" fill="#555">consumer groups per service</text>
   <text x="840" y="670" text-anchor="middle" font-size="13" fill="#555">retention: 24h–7d</text>
@@ -455,7 +455,7 @@
   <text x="68" y="1296" font-size="13" fill="#555">- Verdicts are append-only (verdicts table + current_verdicts VIEW)</text>
   <text x="68" y="1322" font-size="13" fill="#555">- TI Sync is independent (6h schedule), refreshes all 5 materialized views</text>
   <text x="68" y="1348" font-size="13" fill="#555">- Privacy: email bodies purged after retention; Kafka bounded (24h–7d)</text>
-  <text x="68" y="1374" font-size="13" fill="#555">- All services connect to PostgreSQL / Redis / Kafka as shown in Data Stores panel</text>
+  <text x="68" y="1374" font-size="13" fill="#555">- All services connect to PostgreSQL / Redis / Redpanda as shown in Data Stores panel</text>
 
   <text x="68" y="1416" font-size="13" font-weight="700" fill="#333">VERDICT MAPPING (preliminary thresholds, subject to calibration)</text>
   <text x="68" y="1444" font-size="13" fill="#555">0–25 benign    26–50 suspicious    51–75 phishing    76–100 phishing (high) / malware</text>
