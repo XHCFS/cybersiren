@@ -1,16 +1,16 @@
-// svc-02-parser is the (still-skeletal) parser binary used by the pipeline
-// spine. It pulls emails.raw, decodes the base64 RFC-822 source, extracts
-// URLs / headers / subject+body, and fans out to the 5 analysis.* topics.
+// svc-02-parser is the parser binary on the pipeline spine. It pulls
+// emails.raw, parses the base64 RFC-822 source into a structured email
+// (headers, decoded bodies, hashed attachments, extracted URLs, recipients),
+// persists it to Postgres in one transaction, and fans the analysis facets out
+// to the 5 analysis.* topics.
 //
-// analysis.headers uses svc-04's authoritative AnalysisHeadersMessage
-// shape (int64 IDs, parsed structural fields). The other topics use the
-// generic kafka.MessageMeta envelope. svc-04's processor reads the
-// flat shape directly; svc-03 / svc-06 read the generic envelope.
+// Persistence makes internal_id = the envelope email_id so SVC-08's later
+// emails UPDATE targets the row this service writes (ARCH-SPEC §1 step 2).
 //
-// The MIME parsing here is intentionally minimal — net/mail headers + a
-// regex URL sweep. It is good enough to drive svc-04's auth/structural
-// signal extractors and the real svc-03 URL model and svc-06 NLP. When
-// a richer parser lands it should replace this binary, not extend it.
+// analysis.headers uses svc-04's authoritative AnalysisHeadersMessage shape
+// (int64 IDs, parsed structural fields). The other topics use the generic
+// kafka.MessageMeta envelope. svc-04's processor reads the flat shape directly;
+// svc-03 / svc-06 read the generic envelope.
 package main
 
 import (
@@ -18,16 +18,16 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/mail"
 	"os"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/rs/zerolog"
 
+	"github.com/saif/cybersiren/services/svc-02-parser/internal/email"
+	"github.com/saif/cybersiren/services/svc-02-parser/internal/store"
 	contracts "github.com/saif/cybersiren/shared/contracts/kafka"
 	kafkaconsumer "github.com/saif/cybersiren/shared/kafka/consumer"
 	"github.com/saif/cybersiren/shared/svckit"
@@ -35,9 +35,10 @@ import (
 
 const serviceName = "svc-02-parser"
 
-// urlRE matches http(s):// URLs in plain text and HTML. RE2 caps the
-// repetition counter, so we use `+` and trim ourselves later.
-var urlRE = regexp.MustCompile(`https?://[^\s<>"')]+`)
+// dbWriteRetries is the number of retries (beyond the first attempt) for the
+// per-email persistence transaction before the handler returns an error and the
+// Kafka offset is left uncommitted.
+const dbWriteRetries = 2
 
 func main() {
 	outputs := []string{
@@ -68,24 +69,32 @@ func handle(ctx context.Context, msg kafkaconsumer.Message, deps svckit.Deps) er
 		return fmt.Errorf("decode emails.raw: %w", err)
 	}
 
-	parsedHeaders, subject, body, urls := parseRawEmail(raw)
-	key := []byte(strconv.FormatInt(raw.Meta.EmailID, 10))
 	fetchedAt := raw.FetchedAt
 	if fetchedAt.IsZero() {
 		fetchedAt = time.Now().UTC()
 	}
 	meta := contracts.NewMetaWithFetched(raw.Meta.EmailID, raw.Meta.OrgID, fetchedAt)
 
-	headersMsg := buildAnalysisHeaders(raw.Meta.EmailID, raw.Meta.OrgID, fetchedAt, parsedHeaders)
+	parsed := parseEmail(raw)
+	headersMsg := buildAnalysisHeaders(raw.Meta.EmailID, raw.Meta.OrgID, fetchedAt, parsed.Headers)
 
+	// Persist before fan-out: a failed write returns an error so the Kafka
+	// offset is not committed and the email is redelivered rather than analysed
+	// against a row that was never stored.
+	if err := persistEmail(ctx, deps, raw, fetchedAt, parsed, headersMsg); err != nil {
+		return err
+	}
+
+	urls := urlStrings(parsed.URLs)
+	attachments := contractAttachments(parsed.Attachments)
 	out := []struct {
 		topic   string
 		payload any
 	}{
 		{contracts.TopicAnalysisURLs, contracts.AnalysisURLs{Meta: meta, URLs: urls}},
 		{contracts.TopicAnalysisHeaders, headersMsg},
-		{contracts.TopicAnalysisAttachments, contracts.AnalysisAttachments{Meta: meta, Attachments: nil}},
-		{contracts.TopicAnalysisText, contracts.AnalysisText{Meta: meta, Subject: subject, Body: body}},
+		{contracts.TopicAnalysisAttachments, contracts.AnalysisAttachments{Meta: meta, Attachments: attachments}},
+		{contracts.TopicAnalysisText, contracts.AnalysisText{Meta: meta, Subject: parsed.Subject, Body: parsed.BodyPlain}},
 		{contracts.TopicAnalysisPlans, contracts.AnalysisPlan{
 			Meta: meta,
 			ExpectedScores: []string{
@@ -97,6 +106,7 @@ func handle(ctx context.Context, msg kafkaconsumer.Message, deps svckit.Deps) er
 		}},
 	}
 
+	key := []byte(strconv.FormatInt(raw.Meta.EmailID, 10))
 	for _, o := range out {
 		body, err := json.Marshal(o.payload)
 		if err != nil {
@@ -114,43 +124,148 @@ func handle(ctx context.Context, msg kafkaconsumer.Message, deps svckit.Deps) er
 	deps.Log.Info().
 		Int64("email_id", raw.Meta.EmailID).
 		Int("urls", len(urls)).
-		Int("subject_len", len(subject)).
-		Int("body_len", len(body)).
-		Msg("parsed and fanned out")
+		Int("attachments", len(parsed.Attachments)).
+		Int("recipients", len(parsed.Recipients)).
+		Int("subject_len", len(parsed.Subject)).
+		Int("body_len", len(parsed.BodyPlain)).
+		Msg("parsed, persisted, and fanned out")
 	return nil
 }
 
-// parseRawEmail decodes the base64 RFC-822 source and returns the flat
-// header map, subject, body, and a deduplicated URL list.
-func parseRawEmail(raw contracts.EmailsRaw) (headers map[string]string, subject, body string, urls []string) {
-	headers = map[string]string{}
-	for k, v := range raw.Headers {
-		headers[k] = v
-	}
-
+// parseEmail parses the base64 RFC-822 source into a structured email, merging
+// in any envelope headers the adapter carried separately. When the source is
+// absent or unparseable it falls back to an email built from the envelope
+// headers alone so the pipeline still advances.
+func parseEmail(raw contracts.EmailsRaw) *email.ParsedEmail {
 	if raw.RawMessageB64 != "" {
 		if decoded, err := base64.StdEncoding.DecodeString(raw.RawMessageB64); err == nil {
-			if mm, err := mail.ReadMessage(strings.NewReader(string(decoded))); err == nil {
-				for k, vv := range mm.Header {
-					if len(vv) == 0 {
-						continue
-					}
-					headers[k] = vv[0]
+			if pe, err := email.Parse(decoded); err == nil {
+				mergeHeaders(pe.Headers, raw.Headers)
+				if pe.Subject == "" {
+					pe.Subject = pe.Headers["Subject"]
 				}
-				subject = headers["Subject"]
-				if bytes, err := io.ReadAll(mm.Body); err == nil {
-					body = string(bytes)
-				}
+				return pe
 			}
 		}
 	}
 
-	if subject == "" {
-		subject = headers["Subject"]
+	pe := &email.ParsedEmail{Headers: map[string]string{}}
+	mergeHeaders(pe.Headers, raw.Headers)
+	pe.Subject = pe.Headers["Subject"]
+	return pe
+}
+
+// persistEmail projects the parsed email + header message into an EmailRecord
+// and writes it (plus its junction rows) in one transaction.
+func persistEmail(
+	ctx context.Context,
+	deps svckit.Deps,
+	raw contracts.EmailsRaw,
+	fetchedAt time.Time,
+	parsed *email.ParsedEmail,
+	h contracts.AnalysisHeadersMessage,
+) error {
+	messageID := raw.MessageID
+	if messageID == "" {
+		messageID = parsed.Headers["Message-Id"]
 	}
 
-	urls = uniqueStrings(urlRE.FindAllString(body, -1))
-	return headers, subject, body, urls
+	rec := store.EmailRecord{
+		InternalID:     raw.Meta.EmailID,
+		FetchedAt:      fetchedAt,
+		OrgID:          raw.Meta.OrgID,
+		MessageID:      messageID,
+		SenderName:     h.SenderName,
+		SenderEmail:    h.SenderEmail,
+		SenderDomain:   h.SenderDomain,
+		ReplyToEmail:   h.ReplyToEmail,
+		ReturnPath:     h.ReturnPath,
+		AuthSPF:        h.AuthSPF,
+		AuthDKIM:       h.AuthDKIM,
+		AuthDMARC:      h.AuthDMARC,
+		AuthARC:        h.AuthARC,
+		MailerAgent:    h.MailerAgent,
+		InReplyTo:      h.InReplyTo,
+		ReferencesList: referencesList(parsed.Headers["References"]),
+		ContentCharset: h.ContentCharset,
+		Precedence:     h.Precedence,
+		ListID:         h.ListID,
+		Subject:        parsed.Subject,
+		SentTimestamp:  sentTimestampPtr(parsed.Headers["Date"]),
+		HeadersJSON:    h.HeadersJSON,
+		BodyPlain:      parsed.BodyPlain,
+		BodyHTML:       parsed.BodyHTML,
+	}
+
+	w := store.NewWriter(deps.Pool, dbWriteRetries, deps.Log)
+	if err := w.Persist(ctx, rec, parsed.URLs, parsed.Attachments, parsed.Recipients); err != nil {
+		return fmt.Errorf("persist email %d: %w", raw.Meta.EmailID, err)
+	}
+	return nil
+}
+
+// mergeHeaders copies src entries into dst without overwriting headers already
+// parsed from the RFC-822 source.
+func mergeHeaders(dst, src map[string]string) {
+	for k, v := range src {
+		if _, ok := dst[k]; !ok {
+			dst[k] = v
+		}
+	}
+}
+
+// urlStrings projects extracted URLs down to the slim []string wire shape.
+func urlStrings(urls []email.ExtractedURL) []string {
+	if len(urls) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(urls))
+	for _, u := range urls {
+		out = append(out, u.URL)
+	}
+	return out
+}
+
+// contractAttachments maps parsed attachments to the analysis.attachments wire
+// shape so SVC-05 can look each one up in attachment_library by sha256.
+func contractAttachments(atts []email.ParsedAttachment) []contracts.Attachment {
+	if len(atts) == 0 {
+		return nil
+	}
+	out := make([]contracts.Attachment, 0, len(atts))
+	for _, a := range atts {
+		out = append(out, contracts.Attachment{
+			Filename:    a.Filename,
+			ContentType: a.ContentType,
+			SizeBytes:   a.SizeBytes,
+			SHA256:      a.SHA256,
+		})
+	}
+	return out
+}
+
+// referencesList splits the RFC 5322 References header into individual
+// message-ids, or nil when the header is absent.
+func referencesList(s string) []string {
+	if strings.TrimSpace(s) == "" {
+		return nil
+	}
+	return strings.Fields(s)
+}
+
+// sentTimestampPtr parses the Date header to a Unix epoch, returning nil (SQL
+// NULL) when the header is missing or unparseable so it is distinguishable from
+// a genuine epoch-zero timestamp.
+func sentTimestampPtr(dateHeader string) *int64 {
+	if strings.TrimSpace(dateHeader) == "" {
+		return nil
+	}
+	t, err := mail.ParseDate(dateHeader)
+	if err != nil {
+		return nil
+	}
+	ts := t.Unix()
+	return &ts
 }
 
 // buildAnalysisHeaders projects the flat header map into svc-04's
@@ -200,26 +315,6 @@ func buildAnalysisHeaders(emailID, orgID int64, fetchedAt time.Time, h map[strin
 }
 
 // ── helpers ────────────────────────────────────────────────────────────────
-
-func uniqueStrings(in []string) []string {
-	if len(in) == 0 {
-		return nil
-	}
-	seen := make(map[string]struct{}, len(in))
-	out := make([]string, 0, len(in))
-	for _, s := range in {
-		s = strings.TrimRight(s, ".,;:")
-		if s == "" {
-			continue
-		}
-		if _, ok := seen[s]; ok {
-			continue
-		}
-		seen[s] = struct{}{}
-		out = append(out, s)
-	}
-	return out
-}
 
 func splitEmailAddress(raw string) (addr, name string) {
 	a, err := mail.ParseAddress(strings.TrimSpace(raw))
