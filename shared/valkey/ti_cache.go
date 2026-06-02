@@ -362,9 +362,31 @@ func (c *ValkeyTICache) RefreshHashCache(ctx context.Context) (err error) {
 	return nil
 }
 
+// DomainMatch is the full TI domain-cache entry for a domain, including the
+// matched ti_indicator_id. SVC-03 needs the id to write an email_url_ti_matches
+// audit row; IsBlocklisted drops it for callers that only need the verdict.
+type DomainMatch struct {
+	Matched     bool
+	IndicatorID int64
+	RiskScore   int
+	ThreatType  string
+}
+
 // IsBlocklisted checks whether the given domain appears in the TI domain cache.
-func (c *ValkeyTICache) IsBlocklisted(ctx context.Context, domain string) (blocked bool, riskScore int, threatType string, err error) {
-	ctx, span := tiCacheTracer.Start(ctx, "ti_cache.IsBlocklisted")
+// It is a thin wrapper over LookupDomain for callers that don't need the id.
+func (c *ValkeyTICache) IsBlocklisted(ctx context.Context, domain string) (bool, int, string, error) {
+	m, err := c.LookupDomain(ctx, domain)
+	if err != nil {
+		return false, 0, "", err
+	}
+	return m.Matched, m.RiskScore, m.ThreatType, nil
+}
+
+// LookupDomain returns the TI domain-cache entry for a domain, including the
+// ti_indicator_id stored alongside risk_score / threat_type. A miss returns a
+// zero DomainMatch (Matched=false) with a nil error.
+func (c *ValkeyTICache) LookupDomain(ctx context.Context, domain string) (match DomainMatch, err error) {
+	ctx, span := tiCacheTracer.Start(ctx, "ti_cache.LookupDomain")
 	defer func() {
 		if err != nil {
 			span.RecordError(err)
@@ -380,12 +402,12 @@ func (c *ValkeyTICache) IsBlocklisted(ctx context.Context, domain string) (block
 
 	cmd := c.client.Do(ctx, c.client.B().Hgetall().Key(key).Build())
 	if err = cmd.Error(); err != nil {
-		return false, 0, "", fmt.Errorf("ti cache IsBlocklisted: %w", err)
+		return DomainMatch{}, fmt.Errorf("ti cache LookupDomain: %w", err)
 	}
 
 	result, err := cmd.AsStrMap()
 	if err != nil {
-		return false, 0, "", fmt.Errorf("ti cache IsBlocklisted: %w", err)
+		return DomainMatch{}, fmt.Errorf("ti cache LookupDomain: %w", err)
 	}
 
 	hit := len(result) > 0
@@ -394,18 +416,24 @@ func (c *ValkeyTICache) IsBlocklisted(ctx context.Context, domain string) (block
 	}
 
 	if !hit {
-		return false, 0, "", nil
+		return DomainMatch{}, nil
 	}
 
+	match = DomainMatch{Matched: true, ThreatType: result["threat_type"]}
 	if scoreStr, ok := result["risk_score"]; ok {
-		riskScore, err = strconv.Atoi(scoreStr)
+		match.RiskScore, err = strconv.Atoi(scoreStr)
 		if err != nil {
-			return false, 0, "", fmt.Errorf("ti cache IsBlocklisted: parse risk_score: %w", err)
+			return DomainMatch{}, fmt.Errorf("ti cache LookupDomain: parse risk_score: %w", err)
 		}
 	}
-	threatType = result["threat_type"]
+	if idStr, ok := result["ti_indicator_id"]; ok {
+		match.IndicatorID, err = strconv.ParseInt(idStr, 10, 64)
+		if err != nil {
+			return DomainMatch{}, fmt.Errorf("ti cache LookupDomain: parse ti_indicator_id: %w", err)
+		}
+	}
 
-	return true, riskScore, threatType, nil
+	return match, nil
 }
 
 func (c *ValkeyTICache) ensureReady() error {
