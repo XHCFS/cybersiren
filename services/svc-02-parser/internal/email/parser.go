@@ -244,14 +244,19 @@ func parseRecipients(h mail.Header) []Recipient {
 	return out
 }
 
-// finalize fills derived fields: it extracts URLs from the available body text
-// and is the seam the HTML sanitizer hooks into for richer extraction.
+// finalize fills derived fields: it extracts URLs (HTML-aware first, then a
+// plain-text sweep) and, when only an HTML body is present, derives the plain
+// body the NLP model consumes by stripping the markup.
 func (pe *ParsedEmail) finalize() {
-	corpus := pe.BodyPlain
 	if pe.BodyHTML != "" {
-		corpus = corpus + "\n" + pe.BodyHTML
+		// HTML-derived URLs are appended first so dedupeURLs keeps their
+		// anchor visible text over a bare plain-text duplicate.
+		pe.URLs = append(pe.URLs, ExtractURLsFromHTML(pe.BodyHTML)...)
+		if pe.BodyPlain == "" {
+			pe.BodyPlain = StripHTML(pe.BodyHTML)
+		}
 	}
-	for _, raw := range urlRE.FindAllString(corpus, -1) {
+	for _, raw := range urlRE.FindAllString(pe.BodyPlain, -1) {
 		pe.URLs = append(pe.URLs, ExtractedURL{URL: raw})
 	}
 	pe.URLs = dedupeURLs(pe.URLs)
