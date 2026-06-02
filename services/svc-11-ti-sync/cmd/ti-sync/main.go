@@ -11,6 +11,7 @@ import (
 
 	"github.com/rs/zerolog"
 	db "github.com/saif/cybersiren/db/sqlc"
+	"github.com/saif/cybersiren/services/svc-11-ti-sync/internal/leader"
 	"github.com/saif/cybersiren/services/svc-11-ti-sync/internal/ti"
 	"github.com/saif/cybersiren/services/svc-11-ti-sync/internal/ti/feeds"
 	"github.com/saif/cybersiren/shared/config"
@@ -131,6 +132,8 @@ func main() {
 			feedImpl.URL = feedURL
 
 			feedImpls = append(feedImpls, feedImpl)
+		case "stix":
+			feedImpls = append(feedImpls, feeds.NewSTIXFeed(feedRow.ID, feedURL, httpClient, log))
 		case "threatfox":
 			feedImpl := feeds.NewThreatFoxFeed(feedRow.ID, cfg, httpClient, log)
 			feedImpl.URL = feedURL
@@ -169,7 +172,19 @@ func main() {
 	}
 
 	runner := ti.NewRunner(feedImpls, repo, cache, log, reg)
-	if err := runner.Start(ctx, time.Duration(cfg.SyncIntervalSeconds)*time.Second); err != nil {
+	interval := time.Duration(cfg.SyncIntervalSeconds) * time.Second
+
+	// Single-instance enforcement (ARCH-SPEC §11): only the leader runs the sync
+	// loop; replicas idle until they win the lease. TTL covers a worst-case sync.
+	leaseTTL := 2 * interval
+	if leaseTTL < time.Minute {
+		leaseTTL = time.Minute
+	}
+	lease := leader.New(rdb, "ti-sync:leader", leaseTTL, log)
+	err = lease.RunAsLeader(ctx, func(leaderCtx context.Context) error {
+		return runner.Start(leaderCtx, interval)
+	})
+	if err != nil && !errors.Is(err, context.Canceled) {
 		log.Fatal().Err(err).Msg("TI sync runner failed")
 	}
 
