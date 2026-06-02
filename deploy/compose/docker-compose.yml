@@ -36,6 +36,7 @@ volumes:
   pgdata:
   valkeydata:
   redpandadata:
+  miniodata:
 
 services:
 
@@ -76,6 +77,31 @@ services:
       - cybersiren
     healthcheck:
       test: ["CMD", "valkey-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  # ── MinIO (S3-compatible object storage) ────────────────────────────────────
+  # Stores attachment binaries at s3://attachments/{sha256}. SVC-02 uploads,
+  # SVC-05 / dashboard read back. Console on 9001, S3 API on 9000.
+  minio:
+    image: minio/minio:latest
+    profiles: ["minio", "demo"]
+    container_name: cybersiren-minio
+    command: server /data --console-address ":9001"
+    ports:
+      - "${MINIO_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    environment:
+      MINIO_ROOT_USER: "${MINIO_ROOT_USER:-cybersiren}"
+      MINIO_ROOT_PASSWORD: "${MINIO_ROOT_PASSWORD:-cybersiren-secret}"
+    volumes:
+      - miniodata:/data
+    networks:
+      - cybersiren
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
       interval: 5s
       timeout: 5s
       retries: 10
