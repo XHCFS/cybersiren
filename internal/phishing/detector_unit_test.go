@@ -64,6 +64,22 @@ func TestDetector_ReappliesThresholdOverSidecar(t *testing.T) {
 	}
 }
 
+func TestDetector_ScoreDetailedNilEnrichmentOnSidecarPath(t *testing.T) {
+	t.Parallel()
+	// No GeoIPDir → no Go enricher → /score path → enrichment must be nil,
+	// while the verdict still resolves normally.
+	url := sidecarReturning(t, 0.80, "phishing")
+	d, err := NewDetector(Config{SidecarURL: url})
+	require.NoError(t, err)
+	defer d.Close()
+
+	res, enriched, err := d.ScoreDetailed(context.Background(), "https://example.com/")
+	require.NoError(t, err)
+	require.Nil(t, enriched, "sidecar /score path must not surface enrichment")
+	require.Equal(t, "phishing", res.Verdict)
+	require.InDelta(t, 0.80, res.DeployP, 0.0001)
+}
+
 func TestDetector_DefaultThresholdApplied(t *testing.T) {
 	t.Parallel()
 	// Threshold left as zero → defaults to DefaultThreshold (0.50).
