@@ -4,12 +4,23 @@ package main
 // These run without any external services.
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 
 	urlpkg "github.com/saif/cybersiren/services/svc-03-url-analysis/internal/url"
 )
+
+func TestURLScoreKey(t *testing.T) {
+	k1 := urlScoreKey("https://example.com/a")
+	k2 := urlScoreKey("https://example.com/a")
+	k3 := urlScoreKey("https://example.com/b")
+	assert.Equal(t, k1, k2, "same URL must yield the same key")
+	assert.NotEqual(t, k1, k3, "different URLs must differ")
+	assert.True(t, strings.HasPrefix(k1, "url_score:"), "key must carry the url_score prefix")
+	assert.Len(t, k1, len("url_score:")+64, "sha256 hex is 64 chars")
+}
 
 func TestPipelineClassifyLabel(t *testing.T) {
 	t.Parallel()

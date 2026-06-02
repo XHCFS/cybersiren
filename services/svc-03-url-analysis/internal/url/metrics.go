@@ -16,6 +16,8 @@ type ScanMetrics struct {
 	StageErrors   *prometheus.CounterVec // stage=normalize|guard|l1|ti|l2
 	GuardChecks   *prometheus.CounterVec // hit=allowlisted|typosquat|brand_in_subdomain|none
 	L2Invocations *prometheus.CounterVec // reason=ti_miss|ti_low_confidence
+	CacheLookups  *prometheus.CounterVec // result=hit|miss|prior_reuse (Kafka pipeline url_score cache)
+	PersistErrors prometheus.Counter     // enrichment persistence failures (Kafka pipeline)
 }
 
 // NewScanMetrics registers a fresh ScanMetrics holder on reg. reg may be nil
@@ -59,6 +61,19 @@ func NewScanMetrics(reg prometheus.Registerer) *ScanMetrics {
 			},
 			[]string{"reason"},
 		),
+		CacheLookups: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "url_score_cache_lookups_total",
+				Help: "Kafka-pipeline url_score cache lookups partitioned by result.",
+			},
+			[]string{"result"},
+		),
+		PersistErrors: prometheus.NewCounter(
+			prometheus.CounterOpts{
+				Name: "url_enrichment_persist_errors_total",
+				Help: "Best-effort enrichment-persistence failures in the Kafka pipeline (do not block scores.url).",
+			},
+		),
 	}
 	if reg == nil {
 		return m
@@ -68,6 +83,8 @@ func NewScanMetrics(reg prometheus.Registerer) *ScanMetrics {
 	m.StageErrors = registerOrReuseCounter(reg, m.StageErrors)
 	m.GuardChecks = registerOrReuseCounter(reg, m.GuardChecks)
 	m.L2Invocations = registerOrReuseCounter(reg, m.L2Invocations)
+	m.CacheLookups = registerOrReuseCounter(reg, m.CacheLookups)
+	m.PersistErrors = registerOrReuseCounterPlain(reg, m.PersistErrors)
 	return m
 }
 
@@ -111,11 +128,39 @@ func (m *ScanMetrics) ObserveDuration(seconds float64) {
 	m.ScanDuration.Observe(seconds)
 }
 
+// IncCache bumps the url_score cache-lookup counter (result=hit|miss|prior_reuse).
+func (m *ScanMetrics) IncCache(result string) {
+	if m == nil || m.CacheLookups == nil {
+		return
+	}
+	m.CacheLookups.WithLabelValues(result).Inc()
+}
+
+// IncPersistError bumps the enrichment-persistence error counter.
+func (m *ScanMetrics) IncPersistError() {
+	if m == nil || m.PersistErrors == nil {
+		return
+	}
+	m.PersistErrors.Inc()
+}
+
 func registerOrReuseCounter(reg prometheus.Registerer, c *prometheus.CounterVec) *prometheus.CounterVec {
 	if err := reg.Register(c); err != nil {
 		var already prometheus.AlreadyRegisteredError
 		if errors.As(err, &already) {
 			if existing, ok := already.ExistingCollector.(*prometheus.CounterVec); ok {
+				return existing
+			}
+		}
+	}
+	return c
+}
+
+func registerOrReuseCounterPlain(reg prometheus.Registerer, c prometheus.Counter) prometheus.Counter {
+	if err := reg.Register(c); err != nil {
+		var already prometheus.AlreadyRegisteredError
+		if errors.As(err, &already) {
+			if existing, ok := already.ExistingCollector.(prometheus.Counter); ok {
 				return existing
 			}
 		}

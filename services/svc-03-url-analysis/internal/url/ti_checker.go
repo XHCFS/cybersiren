@@ -13,26 +13,34 @@ import (
 
 var tiCheckerTracer = otel.Tracer("svc-03-url-analysis/ti-checker")
 
+// DomainLookup is the slice of the TI cache the checker needs: a domain lookup
+// that returns the matched indicator id. *valkey.ValkeyTICache satisfies it.
+type DomainLookup interface {
+	LookupDomain(ctx context.Context, domain string) (valkey.DomainMatch, error)
+}
+
 // TIResult holds the outcome of a threat-intelligence cache lookup.
 type TIResult struct {
-	Matched    bool
-	Domain     string
-	RiskScore  int
-	ThreatType string
+	Matched     bool
+	Domain      string
+	IndicatorID int64
+	RiskScore   int
+	ThreatType  string
 }
 
 // TIChecker performs threat-intelligence lookups against the Valkey domain cache.
 type TIChecker struct {
-	cache valkey.TICache
+	cache DomainLookup
 	log   zerolog.Logger
 }
 
 // NewTIChecker returns a TIChecker backed by the given cache.
-func NewTIChecker(cache valkey.TICache, log zerolog.Logger) *TIChecker {
+func NewTIChecker(cache DomainLookup, log zerolog.Logger) *TIChecker {
 	return &TIChecker{cache: cache, log: log}
 }
 
-// Check looks up the domain extracted from rawURL in the TI cache.
+// Check looks up the domain extracted from rawURL in the TI cache, returning the
+// matched ti_indicator_id so callers can record an email_url_ti_matches row.
 func (tc *TIChecker) Check(ctx context.Context, rawURL string) (TIResult, error) {
 	ctx, span := tiCheckerTracer.Start(ctx, "TIChecker.Check")
 	defer span.End()
@@ -43,7 +51,7 @@ func (tc *TIChecker) Check(ctx context.Context, rawURL string) (TIResult, error)
 		return TIResult{}, nil // graceful degradation
 	}
 
-	matched, riskScore, threatType, err := tc.cache.IsBlocklisted(ctx, domain)
+	match, err := tc.cache.LookupDomain(ctx, domain)
 	if err != nil {
 		tc.log.Warn().Err(err).Str("domain", domain).Msg("TI cache lookup failed")
 		span.RecordError(err)
@@ -52,9 +60,10 @@ func (tc *TIChecker) Check(ctx context.Context, rawURL string) (TIResult, error)
 	}
 
 	return TIResult{
-		Matched:    matched,
-		Domain:     domain,
-		RiskScore:  riskScore,
-		ThreatType: threatType,
+		Matched:     match.Matched,
+		Domain:      domain,
+		IndicatorID: match.IndicatorID,
+		RiskScore:   match.RiskScore,
+		ThreatType:  match.ThreatType,
 	}, nil
 }

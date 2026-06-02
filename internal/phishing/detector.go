@@ -125,17 +125,30 @@ func (d *Detector) Close() {
 // (false).
 func (d *Detector) UsesGoEnricher() bool { return d.enricher != nil }
 
-// Score scores one URL against the L2 fusion sidecar. Path selection:
+// Score scores one URL against the L2 fusion sidecar and returns only the
+// fused verdict. It is a thin wrapper over ScoreDetailed for callers that do
+// not persist enrichment. On error the caller should fail-open (treat as
+// benign) for Layer 2.
+func (d *Detector) Score(ctx context.Context, rawURL string) (Result, error) {
+	res, _, err := d.ScoreDetailed(ctx, rawURL)
+	return res, err
+}
+
+// ScoreDetailed scores one URL and also returns the in-process enrichment data.
+// Path selection:
 //
 //   - If a Go enricher is available (cfg.GeoIPDir loaded), the URL is
 //     enriched in-process and the feature vector is sent to /score-features.
-//     This gives per-enricher Jaeger spans on the Go side.
+//     This gives per-enricher Jaeger spans on the Go side, and the returned
+//     *enricher.EnrichedURL carries the WHOIS/Geo/TLS/HTTP data so callers can
+//     persist it.
 //   - Otherwise, the raw URL is sent to /score and the sidecar performs its
-//     own enrichment.
+//     own enrichment; the returned *enricher.EnrichedURL is nil.
 //
-// Returns from the LRU cache (keyed on full URL) when available. On error
-// the caller should fail-open (treat as benign) for Layer 2.
-func (d *Detector) Score(ctx context.Context, rawURL string) (Result, error) {
+// The enrichment pointer is also nil when the Go enricher path errored and
+// fell back to /score. Results come from the LRU cache (keyed on full URL)
+// when available.
+func (d *Detector) ScoreDetailed(ctx context.Context, rawURL string) (Result, *enricher.EnrichedURL, error) {
 	ctx, span := detectorTracer.Start(ctx, "phishing.detector.Score",
 		trace.WithAttributes(attribute.String("phishing.url", rawURL)),
 	)
@@ -143,6 +156,7 @@ func (d *Detector) Score(ctx context.Context, rawURL string) (Result, error) {
 
 	var (
 		scored   phclient.ScoreResult
+		enriched *enricher.EnrichedURL
 		cacheHit bool
 		err      error
 		path     string
@@ -150,7 +164,7 @@ func (d *Detector) Score(ctx context.Context, rawURL string) (Result, error) {
 
 	if d.enricher != nil {
 		path = "score-features"
-		scored, cacheHit, err = d.scoreViaFeatures(ctx, rawURL)
+		scored, enriched, cacheHit, err = d.scoreViaFeatures(ctx, rawURL)
 	} else {
 		path = "score"
 		apexKey := apexFromRawURL(rawURL)
@@ -162,7 +176,7 @@ func (d *Detector) Score(ctx context.Context, rawURL string) (Result, error) {
 		d.metrics.IncScore("error", "miss")
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		return Result{}, fmt.Errorf("sidecar score: %w", err)
+		return Result{}, nil, fmt.Errorf("sidecar score: %w", err)
 	}
 
 	// Reapply the Go-side threshold over deploy_p. This lets svc-03 pick its
@@ -192,13 +206,14 @@ func (d *Detector) Score(ctx context.Context, rawURL string) (Result, error) {
 		DeployP:      scored.DeployP,
 		Verdict:      verdict,
 		CacheHit:     cacheHit,
-	}, nil
+	}, enriched, nil
 }
 
 // scoreViaFeatures runs the Go enricher and POSTs the feature vector to
 // /score-features. On enrichment failure it falls back to /score so that a
-// transient enricher problem doesn't take down L2 entirely.
-func (d *Detector) scoreViaFeatures(ctx context.Context, rawURL string) (phclient.ScoreResult, bool, error) {
+// transient enricher problem doesn't take down L2 entirely; in that case the
+// returned enrichment pointer is nil.
+func (d *Detector) scoreViaFeatures(ctx context.Context, rawURL string) (phclient.ScoreResult, *enricher.EnrichedURL, bool, error) {
 	eu, enrichErr := d.enricher.Enrich(ctx, rawURL)
 	if enrichErr != nil {
 		d.log.Warn().Err(enrichErr).Str("url", rawURL).
@@ -206,9 +221,9 @@ func (d *Detector) scoreViaFeatures(ctx context.Context, rawURL string) (phclien
 		apexKey := apexFromRawURL(rawURL)
 		result, hit, err := d.client.CachedScore(ctx, rawURL, apexKey)
 		if err != nil {
-			return phclient.ScoreResult{}, false, fmt.Errorf("fallback /score: %w", err)
+			return phclient.ScoreResult{}, nil, false, fmt.Errorf("fallback /score: %w", err)
 		}
-		return result, hit, nil
+		return result, nil, hit, nil
 	}
 	result, hit, err := d.client.CachedScoreFeatures(ctx, phclient.FeatureRequest{
 		NormalizedURL: eu.ResolvedURL,
@@ -216,9 +231,9 @@ func (d *Detector) scoreViaFeatures(ctx context.Context, rawURL string) (phclien
 		Features:      eu.Features.ToJSON(),
 	})
 	if err != nil {
-		return phclient.ScoreResult{}, false, fmt.Errorf("/score-features: %w", err)
+		return phclient.ScoreResult{}, nil, false, fmt.Errorf("/score-features: %w", err)
 	}
-	return result, hit, nil
+	return result, &eu, hit, nil
 }
 
 func apexFromRawURL(rawURL string) string {

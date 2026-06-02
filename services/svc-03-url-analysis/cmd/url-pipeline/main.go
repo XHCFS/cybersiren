@@ -13,6 +13,8 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -20,12 +22,17 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/rs/zerolog"
+	valkeygo "github.com/valkey-io/valkey-go"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 
+	dbsqlc "github.com/saif/cybersiren/db/sqlc"
 	"github.com/saif/cybersiren/internal/phishing"
 	phclient "github.com/saif/cybersiren/internal/phishing/client"
+	"github.com/saif/cybersiren/internal/phishing/enricher"
+	"github.com/saif/cybersiren/services/svc-03-url-analysis/internal/persist"
 	"github.com/saif/cybersiren/services/svc-03-url-analysis/internal/url"
 	contracts "github.com/saif/cybersiren/shared/contracts/kafka"
 	kafkaconsumer "github.com/saif/cybersiren/shared/kafka/consumer"
@@ -38,6 +45,13 @@ import (
 const (
 	serviceName    = "svc-03-url-analysis"
 	predictTimeout = 5 * time.Second
+	// urlScoreTTL is how long a scored URL stays in the url_score cache.
+	urlScoreTTL = 6 * time.Hour
+	// priorEnrichmentTTL is how recently a URL must have been enriched for the
+	// pipeline to reuse the stored enrichment instead of re-fetching it.
+	priorEnrichmentTTL = 7 * 24 * time.Hour
+	// maxConcurrentURLs caps per-email URL enrichment fan-out (ARCH-SPEC §1 step 3a).
+	maxConcurrentURLs = 5
 )
 
 var (
@@ -45,6 +59,9 @@ var (
 	tiChecker        *url.TIChecker
 	phishingDetector *phishing.Detector
 	scanMetrics      *url.ScanMetrics
+	dbPool           *pgxpool.Pool
+	urlCache         valkeygo.Client
+	enrichWriter     *persist.Writer
 	pipelineTracer   = otel.Tracer("svc-03-url-pipeline/scan-one")
 )
 
@@ -111,6 +128,12 @@ func main() {
 					Bool("go_enricher", det.UsesGoEnricher()).
 					Msg("phishing ML detector ready")
 			}
+
+			// Persistence + caching backing stores for pipeline parity.
+			dbPool = deps.Pool
+			urlCache = deps.Valkey
+			enrichWriter = persist.NewWriter(deps.Pool, log)
+			log.Info().Msg("url_score cache + enrichment persistence ready")
 			return nil
 		},
 		Handler: handle,
@@ -140,6 +163,15 @@ type urlScan struct {
 	MLVerdict  string  `json:"ml_verdict,omitempty"`
 	MLCacheHit bool    `json:"ml_cache_hit,omitempty"`
 	Label      string  `json:"label"`
+
+	// fresh marks a URL scored this run (not served from the url_score cache);
+	// only fresh scans are persisted. Not serialised onto scores.url.
+	fresh bool
+	// urlP/opP/deployP carry the L2 fusion probabilities through to persistence.
+	urlP, opP, deployP float64
+	// tiIndicatorID is the matched TI indicator (0 = no match), for the
+	// email_url_ti_matches audit row.
+	tiIndicatorID int64
 }
 
 func handle(ctx context.Context, msg kafkaconsumer.Message, deps svckit.Deps) error {
@@ -150,15 +182,32 @@ func handle(ctx context.Context, msg kafkaconsumer.Message, deps svckit.Deps) er
 
 	log := zerolog.Ctx(ctx).With().Int64("email_id", input.Meta.EmailID).Logger()
 
-	scans := make([]urlScan, 0, len(input.URLs))
+	ft := input.Meta.FetchedAt
+	if ft.IsZero() {
+		ft = time.Now().UTC()
+	}
+
+	// Scan all URLs of the email concurrently, capped at maxConcurrentURLs.
+	scans := make([]urlScan, len(input.URLs))
+	enrichments := make([]*enricher.EnrichedURL, len(input.URLs))
+	sem := make(chan struct{}, maxConcurrentURLs)
+	var wg sync.WaitGroup
+	for i, raw := range input.URLs {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(i int, raw string) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			scans[i], enrichments[i] = scanOne(ctx, raw, log)
+		}(i, raw)
+	}
+	wg.Wait()
+
 	maxScore := 0
 	maxProb := 0.0
 	maxTIRisk := 0
 	worstLabel := "legitimate"
-
-	for _, raw := range input.URLs {
-		s := scanOne(ctx, raw, log)
-		scans = append(scans, s)
+	for _, s := range scans {
 		if s.Score > maxScore {
 			maxScore = s.Score
 			maxProb = s.Probability
@@ -169,10 +218,9 @@ func handle(ctx context.Context, msg kafkaconsumer.Message, deps svckit.Deps) er
 		worstLabel = worseLabel(worstLabel, s.Label)
 	}
 
-	ft := input.Meta.FetchedAt
-	if ft.IsZero() {
-		ft = time.Now().UTC()
-	}
+	// Persist enrichment best-effort: scores.url is the SLA-bound output, so a
+	// DB failure is logged + metered but does not block the publish below.
+	persistEnrichment(ctx, input.Meta.EmailID, ft, scans, enrichments, log)
 	out := contracts.ScoreEnvelope{
 		Meta:      contracts.NewMetaWithFetched(input.Meta.EmailID, input.Meta.OrgID, ft),
 		Component: contracts.ComponentURL,
@@ -208,8 +256,10 @@ func handle(ctx context.Context, msg kafkaconsumer.Message, deps svckit.Deps) er
 }
 
 // scanOne mirrors the standalone /scan handler: normalise, run ML + TI in
-// parallel, classify into a label.
-func scanOne(ctx context.Context, raw string, log zerolog.Logger) urlScan {
+// parallel, classify into a label. It returns the per-URL outcome plus the
+// in-process enrichment (nil unless a fresh Go-enricher L2 scan ran), which the
+// caller persists. A url_score cache hit short-circuits the whole pipeline.
+func scanOne(ctx context.Context, raw string, log zerolog.Logger) (urlScan, *enricher.EnrichedURL) {
 	start := time.Now()
 	defer func() { scanMetrics.ObserveDuration(time.Since(start).Seconds()) }()
 
@@ -226,10 +276,22 @@ func scanOne(ctx context.Context, raw string, log zerolog.Logger) urlScan {
 		scanMetrics.IncStageError("normalize")
 		span.RecordError(err)
 		log.Warn().Err(err).Str("url", raw).Msg("URL normalisation failed; skipping")
-		return out
+		return out, nil
 	}
 	out.Normalized = normalized
 	span.SetAttributes(attribute.String("scan.url", normalized))
+
+	// url_score cache: a hit short-circuits guard/L1/TI/L2 and persistence.
+	cacheKey := urlScoreKey(normalized)
+	if cached, ok := cacheGet(ctx, cacheKey); ok {
+		scanMetrics.IncCache("hit")
+		cached.URL = raw
+		cached.fresh = false
+		span.SetAttributes(attribute.Bool("scan.cache_hit", true))
+		return cached, nil
+	}
+	scanMetrics.IncCache("miss")
+	out.fresh = true
 
 	// Domain guard fast-path. Mirrors the /scan handler: allowlist short-
 	// circuits to legitimate (skip L1+TI+L2 entirely); typosquat and
@@ -255,7 +317,8 @@ func scanOne(ctx context.Context, raw string, log zerolog.Logger) urlScan {
 			attribute.String("scan.outcome", "guard_allowlisted"),
 			attribute.String("scan.label", out.Label),
 		)
-		return out
+		cacheSet(ctx, cacheKey, out)
+		return out, nil
 	case "typosquat":
 		scanMetrics.IncGuard("typosquat")
 		scanMetrics.IncOutcome("guard_typosquat")
@@ -268,7 +331,8 @@ func scanOne(ctx context.Context, raw string, log zerolog.Logger) urlScan {
 			attribute.String("guard.matched_brand", guard.MatchedBrand),
 			attribute.String("scan.label", out.Label),
 		)
-		return out
+		cacheSet(ctx, cacheKey, out)
+		return out, nil
 	}
 
 	_, subSpan := pipelineTracer.Start(guardCtx, "svc-03.pipeline.guard.CheckSubdomainBrand")
@@ -288,7 +352,8 @@ func scanOne(ctx context.Context, raw string, log zerolog.Logger) urlScan {
 			attribute.String("guard.matched_brand", sub.MatchedBrand),
 			attribute.String("scan.label", out.Label),
 		)
-		return out
+		cacheSet(ctx, cacheKey, out)
+		return out, nil
 	}
 	scanMetrics.IncGuard("none")
 
@@ -329,12 +394,18 @@ func scanOne(ctx context.Context, raw string, log zerolog.Logger) urlScan {
 	out.TIMatch = tiRes.Matched
 	out.TIThreatType = tiRes.ThreatType
 	out.TIRiskScore = tiRes.RiskScore
+	out.tiIndicatorID = tiRes.IndicatorID
+
+	// Prior-email reuse: if this URL was enriched recently for another email,
+	// skip the live L2 enrichment fetch and reuse the stored signal.
+	priorReuse := priorEnrichmentFresh(ctx, raw)
 
 	// Layer 2: ML phishing check fires when TI didn't match OR when TI
 	// matched with low confidence (< 80 risk). classifyLabel ignores
 	// low-confidence TI matches, so we still want L2 to weigh in.
+	var enrichment *enricher.EnrichedURL
 	ranL2 := false
-	if (!tiRes.Matched || tiRes.RiskScore < 80) && phishingDetector != nil {
+	if !priorReuse && (!tiRes.Matched || tiRes.RiskScore < 80) && phishingDetector != nil {
 		reasonLabel := "ti_miss"
 		if tiRes.Matched {
 			reasonLabel = "ti_low_confidence"
@@ -344,7 +415,7 @@ func scanOne(ctx context.Context, raw string, log zerolog.Logger) urlScan {
 
 		mlCtx, mlCancel := context.WithTimeout(ctx, 15*time.Second)
 		defer mlCancel()
-		if phishResult, phishErr := phishingDetector.Score(mlCtx, normalized); phishErr != nil {
+		if phishResult, eu, phishErr := phishingDetector.ScoreDetailed(mlCtx, normalized); phishErr != nil {
 			scanMetrics.IncStageError("l2")
 			span.RecordError(phishErr)
 			log.Warn().Err(phishErr).Str("url", normalized).Msg("phishing ML check failed")
@@ -352,6 +423,10 @@ func scanOne(ctx context.Context, raw string, log zerolog.Logger) urlScan {
 			out.MLDeployP = phishResult.DeployP
 			out.MLVerdict = phishResult.Verdict
 			out.MLCacheHit = phishResult.CacheHit
+			out.urlP = phishResult.URLP
+			out.opP = phishResult.OpP
+			out.deployP = phishResult.DeployP
+			enrichment = eu
 		}
 	}
 
@@ -365,6 +440,8 @@ func scanOne(ctx context.Context, raw string, log zerolog.Logger) urlScan {
 		outcome = "ml_phishing"
 	case ranL2 && out.MLVerdict == "benign":
 		outcome = "ml_benign"
+	case priorReuse:
+		outcome = "prior_reuse"
 	case tiRes.Matched:
 		outcome = "ti_low_confidence"
 	}
@@ -374,7 +451,97 @@ func scanOne(ctx context.Context, raw string, log zerolog.Logger) urlScan {
 		attribute.String("scan.label", out.Label),
 	)
 
-	return out
+	cacheSet(ctx, cacheKey, out)
+	return out, enrichment
+}
+
+// urlScoreKey is the Valkey key for a normalized URL's cached scan.
+func urlScoreKey(normalized string) string {
+	sum := sha256.Sum256([]byte(normalized))
+	return "url_score:" + hex.EncodeToString(sum[:])
+}
+
+// cacheGet returns a cached scan for key, or ok=false on miss / any error
+// (the cache is an optimisation; failures degrade to a fresh scan).
+func cacheGet(ctx context.Context, key string) (urlScan, bool) {
+	if urlCache == nil {
+		return urlScan{}, false
+	}
+	val, err := urlCache.Do(ctx, urlCache.B().Get().Key(key).Build()).ToString()
+	if err != nil {
+		return urlScan{}, false // miss or error
+	}
+	var s urlScan
+	if json.Unmarshal([]byte(val), &s) != nil {
+		return urlScan{}, false
+	}
+	return s, true
+}
+
+// cacheSet stores a scan under key with the url_score TTL. Best-effort.
+func cacheSet(ctx context.Context, key string, s urlScan) {
+	if urlCache == nil {
+		return
+	}
+	body, err := json.Marshal(s)
+	if err != nil {
+		return
+	}
+	cmd := urlCache.B().Set().Key(key).Value(string(body)).ExSeconds(int64(urlScoreTTL.Seconds())).Build()
+	_ = urlCache.Do(ctx, cmd).Error()
+}
+
+// priorEnrichmentFresh reports whether rawURL already has an enriched_threats
+// row checked within priorEnrichmentTTL, so the live L2 enrichment can be
+// skipped. Any lookup error degrades to false (enrich normally).
+func priorEnrichmentFresh(ctx context.Context, rawURL string) bool {
+	if dbPool == nil {
+		return false
+	}
+	row, err := dbsqlc.New(dbPool).GetEnrichedThreatByURL(ctx, rawURL)
+	if err != nil || !row.LastChecked.Valid {
+		return false
+	}
+	return time.Since(row.LastChecked.Time) < priorEnrichmentTTL
+}
+
+// persistEnrichment writes enrichment for the freshly-scored URLs of an email.
+// It is best-effort: errors are logged and metered but never block scores.url.
+func persistEnrichment(
+	ctx context.Context,
+	emailID int64,
+	fetchedAt time.Time,
+	scans []urlScan,
+	enrichments []*enricher.EnrichedURL,
+	log zerolog.Logger,
+) {
+	if enrichWriter == nil {
+		return
+	}
+	records := make([]persist.ScanRecord, 0, len(scans))
+	for i, s := range scans {
+		if !s.fresh || s.Normalized == "" {
+			continue // cache hit or unparseable URL — nothing new to persist
+		}
+		records = append(records, persist.ScanRecord{
+			URL:           s.URL,
+			RiskScore:     s.Score,
+			URLP:          s.urlP,
+			OpP:           s.opP,
+			DeployP:       s.deployP,
+			Verdict:       s.MLVerdict,
+			TIMatched:     s.TIMatch,
+			TIIndicatorID: s.tiIndicatorID,
+			Enrichment:    enrichments[i],
+		})
+	}
+	if len(records) == 0 {
+		return
+	}
+	if err := enrichWriter.Persist(ctx, emailID, fetchedAt, records); err != nil {
+		scanMetrics.IncPersistError()
+		log.Warn().Err(err).Int64("email_id", emailID).Msg("enrichment persistence failed (scores.url still published)")
+	}
 }
 
 // classifyLabel maps ML + TI + Layer-2 signals to a label.
