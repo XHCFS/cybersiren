@@ -1,3 +1,19 @@
+// Package persist owns the single-transaction database write performed by
+// SVC-08 Decision Engine for every emails.scored message.
+//
+// All primary writes happen inside one pgx transaction, scoped to the email's
+// org via the app.current_org_id RLS GUC (spec §16 D12):
+//  1. UPSERT campaigns (returns campaign_id, is_new, email_count_after).
+//  2. UPDATE emails (sets risk scores, campaign_id, analysis_metadata).
+//  3. INSERT verdicts (append-only).
+//  4. INSERT rule_hits (one per fired rule, append-only).
+//  5. UPDATE verdicts.kafka_verdict_wire (immutable emails.verdict JSON for idempotent republish).
+//
+// Failure of any step rolls back the transaction; the Kafka offset is not
+// committed and the message is redelivered after restart/rebalance.
+//
+// Every statement is a sqlc-generated method (db.New(tx)); the canonical SQL
+// lives in db/queries/{campaigns,verdicts,emails_scores,email_campaign_snapshot}.sql.
 package persist
 
 import (
@@ -14,6 +30,7 @@ import (
 
 	dbsqlc "github.com/saif/cybersiren/db/sqlc"
 	rulespkg "github.com/saif/cybersiren/services/svc-08-decision/internal/rules"
+	"github.com/saif/cybersiren/shared/postgres/repository"
 )
 
 // Input bundles every value the single-transaction write needs. The
@@ -161,29 +178,35 @@ func (w *Writer) runOnce(ctx context.Context, in Input) (Output, error) {
 		_ = tx.Rollback(ctx)
 	}()
 
-	var existingVerdict int64
-	var wireText pgtype.Text
-	err = tx.QueryRow(ctx, queryFindExistingVerdict,
-		string(dbsqlc.EntityTypeEnumEmail),
-		in.InternalID,
-		fetchedAtParam(in.FetchedAt),
-	).Scan(&existingVerdict, &wireText)
-	var storedWire []byte
-	if wireText.Valid && wireText.String != "" {
-		storedWire = []byte(wireText.String)
+	// G10/D12 RLS: bind the tenant boundary for this transaction. Every table
+	// this writer touches (emails, verdicts, campaigns, rule_hits) is
+	// FORCE ROW LEVEL SECURITY; without the GUC the tenant_isolation policy
+	// denies all rows once the app connects as a non-bypass role.
+	if err := repository.SetOrgGUC(ctx, tx, in.OrgID); err != nil {
+		return Output{}, fmt.Errorf("set org guc: %w", err)
 	}
+
+	q := dbsqlc.New(tx)
+
+	existingRow, err := q.FindExistingVerdictForEmail(ctx, dbsqlc.FindExistingVerdictForEmailParams{
+		Column1:  dbsqlc.EntityTypeEnumEmail,
+		EntityID: in.InternalID,
+		Column3:  fetchedAtParam(in.FetchedAt),
+	})
+	existingVerdict := existingRow.ID
+	storedWire := kafkaWireBytes(existingRow.KafkaWire)
 	if err == nil {
 		// LEFT JOIN: campaign_id may be NULL when the campaign was
 		// soft-deleted between the original commit and this replay, or
 		// on legacy rows that never linked one. The stored
 		// kafka_verdict_wire is what republish actually needs; live
 		// campaign linkage is best-effort here.
-		var campID pgtype.Int8
-		var emailCount int32
-		scanErr := tx.QueryRow(ctx, queryEmailCampaignSnapshot,
-			in.InternalID,
-			fetchedAtParam(in.FetchedAt),
-		).Scan(&campID, &emailCount)
+		snap, scanErr := q.GetEmailCampaignSnapshot(ctx, dbsqlc.GetEmailCampaignSnapshotParams{
+			InternalID: in.InternalID,
+			Column2:    fetchedAtParam(in.FetchedAt),
+		})
+		campID := snap.CampaignID
+		emailCount := emailCountToInt32(snap.EmailCount)
 		switch {
 		case scanErr == nil:
 			// fall through
@@ -218,58 +241,56 @@ func (w *Writer) runOnce(ctx context.Context, in Input) (Output, error) {
 
 	// 1. UPSERT campaign — needed first so we have the campaign_id to
 	// record on the emails row.
-	var (
-		campID     int64
-		isNew      bool
-		emailCount int32
-	)
-	err = tx.QueryRow(ctx, queryUpsertCampaign,
-		requiredOrgID(in.OrgID),
-		in.Fingerprint,
-		nullableString(in.CampaignName),
-		nullableString(in.ThreatType),
-		nullableString(in.TargetBrand),
-		clampInt32(in.RiskScore, 0, 100),
-		[]string{}, // tags — empty array; future enrichment can populate
-	).Scan(&campID, &isNew, &emailCount)
+	campRow, err := q.UpsertCampaign(ctx, dbsqlc.UpsertCampaignParams{
+		OrgID:       requiredOrgID(in.OrgID),
+		Fingerprint: in.Fingerprint,
+		Name:        in.CampaignName,
+		ThreatType:  nullableString(in.ThreatType),
+		TargetBrand: nullableString(in.TargetBrand),
+		RiskScore:   pgtype.Int4{Int32: clampInt32(in.RiskScore, 0, 100), Valid: true},
+		Tags:        []string{}, // empty array; future enrichment can populate
+	})
 	if err != nil {
 		return Output{}, fmt.Errorf("upsert campaign: %w", err)
 	}
+	campID := campRow.ID
+	isNew := campRow.IsNew
+	emailCount := emailCountToInt32(campRow.EmailCount)
 
 	// 2. UPDATE emails row with final scores + campaign linkage.
-	tag, err := tx.Exec(ctx, queryUpdateEmailScores,
-		in.InternalID,
-		fetchedAtParam(in.FetchedAt),
-		clampInt32(in.RiskScore, 0, 100),
-		nullableInt32Ptr(in.HeaderRiskScore),
-		nullableInt32Ptr(in.ContentRiskScore),
-		nullableInt32Ptr(in.URLRiskScore),
-		nullableInt32Ptr(in.AttachmentRiskScore),
-		pgtype.Int8{Int64: campID, Valid: true},
-		nullableJSONB(in.AnalysisMetadata),
-	)
+	rowsAffected, err := q.UpdateEmailScores(ctx, dbsqlc.UpdateEmailScoresParams{
+		InternalID:          in.InternalID,
+		FetchedAt:           fetchedAtParam(in.FetchedAt),
+		RiskScore:           pgtype.Int4{Int32: clampInt32(in.RiskScore, 0, 100), Valid: true},
+		HeaderRiskScore:     nullableInt32Ptr(in.HeaderRiskScore),
+		ContentRiskScore:    nullableInt32Ptr(in.ContentRiskScore),
+		UrlRiskScore:        nullableInt32Ptr(in.URLRiskScore),
+		AttachmentRiskScore: nullableInt32Ptr(in.AttachmentRiskScore),
+		CampaignID:          pgtype.Int8{Int64: campID, Valid: true},
+		Column9:             nullableJSONBBytes(in.AnalysisMetadata),
+	})
 	if err != nil {
 		return Output{}, fmt.Errorf("update emails: %w", err)
 	}
-	if tag.RowsAffected() != 1 {
+	if rowsAffected != 1 {
 		return Output{}, fmt.Errorf(
 			"update emails: expected exactly 1 row updated for (internal_id,fetched_at)=(%d,%v), got %d",
-			in.InternalID, in.FetchedAt.UTC(), tag.RowsAffected(),
+			in.InternalID, in.FetchedAt.UTC(), rowsAffected,
 		)
 	}
 
 	// 3. INSERT verdict (append-only).
-	var verdictID int64
-	if err := tx.QueryRow(ctx, queryInsertVerdict,
-		string(dbsqlc.EntityTypeEnumEmail),
-		in.InternalID,
-		fetchedAtParam(in.FetchedAt),
-		in.Label,
-		pgtype.Float8{Float64: in.Confidence, Valid: true},
-		in.VerdictSource,
-		nullableString(in.ModelVersion),
-		requiredOrgID(in.OrgID),
-	).Scan(&verdictID); err != nil {
+	verdictID, err := q.InsertVerdict(ctx, dbsqlc.InsertVerdictParams{
+		EntityType:     dbsqlc.EntityTypeEnumEmail,
+		EntityID:       in.InternalID,
+		EmailFetchedAt: fetchedAtParam(in.FetchedAt),
+		Label:          dbsqlc.VerdictLabel(in.Label),
+		Confidence:     pgtype.Float8{Float64: in.Confidence, Valid: true},
+		Source:         dbsqlc.VerdictSource(in.VerdictSource),
+		ModelVersion:   nullableString(in.ModelVersion),
+		OrgID:          requiredOrgID(in.OrgID),
+	})
+	if err != nil {
 		var pe *pgconn.PgError
 		if errors.As(err, &pe) && pe.Code == "23505" {
 			return Output{}, fmt.Errorf("insert verdict: pipeline unique conflict (retry should dedupe): %w", err)
@@ -277,9 +298,7 @@ func (w *Writer) runOnce(ctx context.Context, in Input) (Output, error) {
 		return Output{}, fmt.Errorf("insert verdict: %w", err)
 	}
 
-	// 4. INSERT rule_hits (one per fired rule). Reuse the existing
-	// sqlc-generated InsertRuleHit through dbsqlc.New(tx).
-	q := dbsqlc.New(tx)
+	// 4. INSERT rule_hits (one per fired rule).
 	for _, fr := range in.Fired {
 		if _, err := q.InsertRuleHit(ctx, dbsqlc.InsertRuleHitParams{
 			RuleID:         pgtype.Int8{Int64: fr.Rule.ID, Valid: true},
@@ -305,7 +324,10 @@ func (w *Writer) runOnce(ctx context.Context, in Input) (Output, error) {
 			return Output{}, fmt.Errorf("verdict wire builder: %w", werr)
 		}
 		if len(wire) > 0 {
-			if _, err := tx.Exec(ctx, queryUpdateVerdictKafkaWire, wire, verdictID); err != nil {
+			if err := q.UpdateVerdictKafkaWire(ctx, dbsqlc.UpdateVerdictKafkaWireParams{
+				Column1: wire,
+				ID:      verdictID,
+			}); err != nil {
 				return Output{}, fmt.Errorf("persist kafka_verdict_wire: %w", err)
 			}
 		}
@@ -329,30 +351,44 @@ func (w *Writer) GetCampaignHistory(ctx context.Context, orgID int64, fingerprin
 	if w == nil || w.pool == nil {
 		return nil, errors.New("decision writer: not initialised")
 	}
+
+	// campaigns is RLS-forced, so the read must run inside an org-scoped tx
+	// (G10/D12); a bare pool read would return zero rows once the app connects
+	// as a non-bypass role.
 	var (
-		id         int64
-		riskScore  pgtype.Int4
-		emailCount int32
+		out   *CampaignHistory
+		found bool
 	)
-	err := w.pool.QueryRow(ctx, queryGetCampaignByFingerprint,
-		nullableInt8(orgID),
-		fingerprint,
-	).Scan(&id, &riskScore, &emailCount)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, nil
+	err := repository.WithOrgTx(ctx, w.pool, orgID, func(q *dbsqlc.Queries) error {
+		row, qerr := q.GetCampaignByFingerprint(ctx, dbsqlc.GetCampaignByFingerprintParams{
+			OrgID:       nullableInt8(orgID),
+			Fingerprint: fingerprint,
+		})
+		if qerr != nil {
+			if errors.Is(qerr, pgx.ErrNoRows) {
+				return nil
+			}
+			return fmt.Errorf("get campaign by fingerprint: %w", qerr)
 		}
-		return nil, fmt.Errorf("get campaign by fingerprint: %w", err)
+		rs := 0
+		if row.RiskScore.Valid {
+			rs = int(row.RiskScore.Int32)
+		}
+		out = &CampaignHistory{
+			CampaignID: row.ID,
+			RiskScore:  rs,
+			EmailCount: int(emailCountToInt32(row.EmailCount)),
+		}
+		found = true
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
-	rs := 0
-	if riskScore.Valid {
-		rs = int(riskScore.Int32)
+	if !found {
+		return nil, nil
 	}
-	return &CampaignHistory{
-		CampaignID: id,
-		RiskScore:  rs,
-		EmailCount: int(emailCount),
-	}, nil
+	return out, nil
 }
 
 // CampaignHistory mirrors campaign.History; declared here so the persist
@@ -405,11 +441,41 @@ func nullableInt32Ptr(v *int) pgtype.Int4 {
 	return pgtype.Int4{Int32: clampInt32(*v, 0, 100), Valid: true}
 }
 
-func nullableJSONB(b []byte) any {
+// nullableJSONBBytes returns nil for an empty blob so sqlc's []byte parameter
+// is encoded as SQL NULL (leaving analysis_metadata unchanged via COALESCE),
+// or the blob itself otherwise.
+func nullableJSONBBytes(b []byte) []byte {
 	if len(b) == 0 {
 		return nil
 	}
 	return b
+}
+
+// kafkaWireBytes normalises the kafka_wire column, which sqlc types as
+// interface{} because COALESCE(kafka_verdict_wire::text, '') defeats type
+// inference. pgx decodes the TEXT result as a Go string; an empty string means
+// "no stored wire" (the COALESCE default), matching the original NULL handling.
+func kafkaWireBytes(v any) []byte {
+	if s, ok := v.(string); ok && s != "" {
+		return []byte(s)
+	}
+	return nil
+}
+
+// emailCountToInt32 normalises the email_count column, which sqlc types as
+// interface{} because it is a COALESCE expression. pgx decodes the underlying
+// INT as int32/int64 depending on the path; handle both plus a nil (no row).
+func emailCountToInt32(v any) int32 {
+	switch n := v.(type) {
+	case int32:
+		return n
+	case int64:
+		return int32(n)
+	case int:
+		return int32(n)
+	default:
+		return 0
+	}
 }
 
 func clampInt32(v, lo, hi int) int32 {
