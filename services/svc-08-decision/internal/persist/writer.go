@@ -452,7 +452,7 @@ func nullableJSONBBytes(b []byte) []byte {
 }
 
 // kafkaWireBytes normalises the kafka_wire column, which sqlc types as
-// interface{} because COALESCE(kafka_verdict_wire::text, '') defeats type
+// interface{} because COALESCE(kafka_verdict_wire::text, ”) defeats type
 // inference. pgx decodes the TEXT result as a Go string; an empty string means
 // "no stored wire" (the COALESCE default), matching the original NULL handling.
 func kafkaWireBytes(v any) []byte {
