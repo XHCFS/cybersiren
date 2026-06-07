@@ -67,9 +67,9 @@ func TestIssueVerifyRoundTrip(t *testing.T) {
 func TestIssueRejectsBadIdentity(t *testing.T) {
 	m := newTestManager(t)
 	cases := []struct {
-		name           string
-		uid, org       int64
-		role           Role
+		name     string
+		uid, org int64
+		role     Role
 	}{
 		{"zero uid", 0, 1, RoleAdmin},
 		{"negative org", 1, -1, RoleAdmin},
