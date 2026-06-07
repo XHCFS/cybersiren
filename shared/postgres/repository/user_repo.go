@@ -32,17 +32,21 @@ func NewUserRepository(pool *pgxpool.Pool) *UserRepository {
 	return r
 }
 
-// GetAPIKeyByHash resolves an API key by its stored hash. The caller MUST still
-// reject the key when revoked_at is set or expires_at is in the past.
-func (r *UserRepository) GetAPIKeyByHash(ctx context.Context, keyHash string) (db.GetAPIKeyByHashRow, error) {
+// GetAPIKeyByPrefix resolves candidate API keys by their stored lookup prefix
+// (shared/auth KeyManager.LookupPrefix). key_hash is a salted bcrypt hash that
+// cannot be matched by equality, so the caller bcrypt-compares the presented key
+// against each candidate's KeyHash (shared/auth ValidateKey) and MUST still
+// reject a key whose revoked_at is set or expires_at is in the past. A prefix is
+// selective but not guaranteed unique, hence the slice.
+func (r *UserRepository) GetAPIKeyByPrefix(ctx context.Context, keyPrefix string) ([]db.GetAPIKeyByPrefixRow, error) {
 	if err := r.ready(); err != nil {
-		return db.GetAPIKeyByHashRow{}, err
+		return nil, err
 	}
-	row, err := r.q.GetAPIKeyByHash(ctx, keyHash)
+	rows, err := r.q.GetAPIKeyByPrefix(ctx, keyPrefix)
 	if err != nil {
-		return db.GetAPIKeyByHashRow{}, fmt.Errorf("get api_key by hash: %w", err)
+		return nil, fmt.Errorf("get api_key by prefix: %w", err)
 	}
-	return row, nil
+	return rows, nil
 }
 
 // TouchAPIKeyLastUsed records that an API key was used.

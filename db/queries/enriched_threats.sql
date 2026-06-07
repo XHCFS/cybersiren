@@ -16,16 +16,29 @@
 -- =============================================================================
 
 -- name: UpsertBareEnrichedThreat :one
--- Idempotent bare insert keyed on the global-unique url column. On conflict we
--- only refresh last_seen and keep the existing enrichment untouched, so a
--- re-observed URL never loses data populated by a later enrichment pass.
--- Returns the row id used as email_urls.threat_id.
+-- Idempotent bare insert keyed on the PER-ORG (org_id, url) unique
+-- (uq_enriched_threats_org_url, migration 032). On conflict we only refresh
+-- last_seen and keep the existing enrichment untouched, so a re-observed URL
+-- never loses data populated by a later enrichment pass. Returns the row id
+-- used as email_urls.threat_id.
+--
+-- The conflict target is (org_id, url), NOT the old global (url): enriched_threats
+-- is per-org RLS-forced (018), so a global UNIQUE(url) made cross-tenant
+-- re-observation conflict on a row the second org's tenant_isolation policy hides,
+-- erroring the parse tx once the app connects as the non-bypass role (031). Each
+-- org now owns its row for the same url. (Same fix 013 #9 applied to campaigns.)
+-- source_feed = 'email' records the provenance the chk_enriched_threats_feed_or_source
+-- CHECK (migration 012) requires: every row must carry feed_id OR source_feed.
+-- Post-026 this table is reserved for email-pipeline-observed artefacts, so the
+-- bare row's source is the email pipeline. Without it the INSERT fails the CHECK
+-- on every first observation.
 INSERT INTO enriched_threats (
     url,
     domain,
     tld,
     org_id,
     is_global,
+    source_feed,
     first_seen,
     last_seen
 ) VALUES (
@@ -34,10 +47,11 @@ INSERT INTO enriched_threats (
     $3,
     $4,
     FALSE,
+    'email',
     NOW(),
     NOW()
 )
-ON CONFLICT (url) DO UPDATE SET
+ON CONFLICT (org_id, url) DO UPDATE SET
     last_seen = NOW()
 RETURNING id;
 

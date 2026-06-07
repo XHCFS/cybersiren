@@ -29,9 +29,16 @@ func TestSetOrgGUCRejectsNilTx(t *testing.T) {
 
 func TestSetOrgGUCRejectsBadOrg(t *testing.T) {
 	t.Parallel()
-	// orgID <= 0 is rejected before the (nil) tx is touched.
-	if err := SetOrgGUC(context.Background(), nil, 0); err == nil {
-		t.Fatal("expected error for zero org id")
+	// orgID <= 0 is validated before the tx is touched (see SetOrgGUC guard
+	// order), so a non-positive org is rejected with the ErrNoOrgContext sentinel
+	// regardless of tx state. Asserting the sentinel (not just non-nil) is what
+	// actually exercises the org guard — a plain non-nil check would also pass on
+	// the nil-tx error and prove nothing about org validation.
+	if err := SetOrgGUC(context.Background(), nil, 0); !errors.Is(err, ErrNoOrgContext) {
+		t.Fatalf("expected ErrNoOrgContext for zero org id, got %v", err)
+	}
+	if err := SetOrgGUC(context.Background(), nil, -1); !errors.Is(err, ErrNoOrgContext) {
+		t.Fatalf("expected ErrNoOrgContext for negative org id, got %v", err)
 	}
 }
 

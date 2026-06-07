@@ -128,8 +128,9 @@ type ScoresHeaderMessage struct {
 	OrgID      int64 `json:"org_id"`
 	// FetchedAt is emails.fetched_at; with InternalID it is the composite PK
 	// SVC-08 needs for partitioned emails updates, propagated SVC-04 → SVC-07 →
-	// emails.scored.
-	FetchedAt time.Time `json:"fetched_at,omitempty"`
+	// emails.scored. No omitempty: it is a no-op on time.Time (a zero time still
+	// marshals), so the tag would only mislead — the field is always emitted.
+	FetchedAt time.Time `json:"fetched_at"`
 
 	Component string `json:"component"` // always "header"
 	Score     int    `json:"score"`     // [0, 100]

@@ -1,10 +1,17 @@
 -- =============================================================================
 -- enrichment_results.sql — cached third-party enrichment lookups (SVC-03/04)
 -- =============================================================================
--- One row per (entity_type, entity_id, provider) UNIQUE; re-fetches UPSERT the
--- cached response and refresh the TTL. expires_at drives cache validity.
+-- One row per PER-ORG (org_id, entity_type, entity_id, provider) UNIQUE
+-- (uq_enrichment_results_org_entity_provider, migration 032); re-fetches UPSERT
+-- the cached response and refresh the TTL. expires_at drives cache validity.
 -- org_id is set for RLS scoping; email_fetched_at carries the emails partition
 -- key when entity_type = 'email'.
+--
+-- The conflict target is org-scoped, NOT the old global (entity_type,entity_id,
+-- provider): enrichment_results is per-org RLS-forced (018) and for url entities
+-- entity_id is the shared enriched_threats.id, so a global UNIQUE made two orgs'
+-- caches collide on a row the second org's policy hides, erroring the upsert once
+-- the app runs as the non-bypass role (031). Each org caches independently.
 -- =============================================================================
 
 -- name: UpsertEnrichmentResult :one
@@ -39,7 +46,7 @@ INSERT INTO enrichment_results (
     $11,
     $12
 )
-ON CONFLICT (entity_type, entity_id, provider) DO UPDATE SET
+ON CONFLICT (org_id, entity_type, entity_id, provider) DO UPDATE SET
     raw_response     = EXCLUDED.raw_response,
     malicious_votes  = EXCLUDED.malicious_votes,
     harmless_votes   = EXCLUDED.harmless_votes,

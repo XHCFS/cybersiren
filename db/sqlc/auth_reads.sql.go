@@ -12,7 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-const getAPIKeyByHash = `-- name: GetAPIKeyByHash :one
+const getAPIKeyByPrefix = `-- name: GetAPIKeyByPrefix :many
 
 SELECT
     id,
@@ -20,20 +20,22 @@ SELECT
     user_id,
     name,
     key_prefix,
+    key_hash,
     scopes,
     last_used_at,
     expires_at,
     revoked_at
 FROM api_keys
-WHERE key_hash = $1
+WHERE key_prefix = $1
 `
 
-type GetAPIKeyByHashRow struct {
+type GetAPIKeyByPrefixRow struct {
 	ID         int64              `db:"id" json:"id"`
 	OrgID      int64              `db:"org_id" json:"org_id"`
 	UserID     pgtype.Int8        `db:"user_id" json:"user_id"`
 	Name       string             `db:"name" json:"name"`
 	KeyPrefix  string             `db:"key_prefix" json:"key_prefix"`
+	KeyHash    string             `db:"key_hash" json:"key_hash"`
 	Scopes     []string           `db:"scopes" json:"scopes"`
 	LastUsedAt pgtype.Timestamptz `db:"last_used_at" json:"last_used_at"`
 	ExpiresAt  pgtype.Timestamptz `db:"expires_at" json:"expires_at"`
@@ -47,23 +49,43 @@ type GetAPIKeyByHashRow struct {
 // resolve the tenant BEFORE org context exists, so they are NOT subject to the
 // app.current_org_id GUC. audit_log reads are operator-facing.
 // =============================================================================
-// Resolves an API key by its stored hash for request authentication. Callers
-// must still check expires_at / revoked_at against NOW() before trusting it.
-func (q *Queries) GetAPIKeyByHash(ctx context.Context, keyHash string) (GetAPIKeyByHashRow, error) {
-	row := q.db.QueryRow(ctx, getAPIKeyByHash, keyHash)
-	var i GetAPIKeyByHashRow
-	err := row.Scan(
-		&i.ID,
-		&i.OrgID,
-		&i.UserID,
-		&i.Name,
-		&i.KeyPrefix,
-		&i.Scopes,
-		&i.LastUsedAt,
-		&i.ExpiresAt,
-		&i.RevokedAt,
-	)
-	return i, err
+// Resolves candidate API keys by their stored lookup prefix (api_keys.key_prefix
+// — the leading fragment of the plaintext key produced by shared/auth
+// KeyManager.LookupPrefix). api_keys.key_hash is a *salted bcrypt* hash, so a
+// presented key can NEVER be matched by hash equality; the caller fetches the
+// candidate row(s) by their indexed prefix and then bcrypt-compares the presented
+// key against each key_hash (shared/auth ValidateKey). A prefix is selective but
+// not guaranteed unique, so this returns :many. Callers MUST still reject a key
+// whose revoked_at is set or whose expires_at is in the past.
+func (q *Queries) GetAPIKeyByPrefix(ctx context.Context, keyPrefix string) ([]GetAPIKeyByPrefixRow, error) {
+	rows, err := q.db.Query(ctx, getAPIKeyByPrefix, keyPrefix)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []GetAPIKeyByPrefixRow
+	for rows.Next() {
+		var i GetAPIKeyByPrefixRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.OrgID,
+			&i.UserID,
+			&i.Name,
+			&i.KeyPrefix,
+			&i.KeyHash,
+			&i.Scopes,
+			&i.LastUsedAt,
+			&i.ExpiresAt,
+			&i.RevokedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const getOrganisationByID = `-- name: GetOrganisationByID :one

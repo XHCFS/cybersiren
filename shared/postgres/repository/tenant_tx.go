@@ -80,11 +80,14 @@ func WithOrgTx(ctx context.Context, pool *pgxpool.Pool, orgID int64, fn func(q *
 // q must be a transaction handle (pgx.Tx) — the GUC uses SET LOCAL semantics
 // and is only meaningful inside an explicit transaction.
 func SetOrgGUC(ctx context.Context, tx pgx.Tx, orgID int64) error {
-	if tx == nil {
-		return errors.New("repository: nil transaction for org GUC")
-	}
+	// Validate the org invariant first — it is the security-critical guard
+	// (never bind/run a tenant statement without a real org), and checking it
+	// before tx keeps the org-rejection path reachable independent of tx state.
 	if orgID <= 0 {
 		return ErrNoOrgContext
+	}
+	if tx == nil {
+		return errors.New("repository: nil transaction for org GUC")
 	}
 	if _, err := tx.Exec(ctx, setCurrentOrgGUC, fmt.Sprintf("%d", orgID)); err != nil {
 		return fmt.Errorf("set app.current_org_id=%d: %w", orgID, err)

@@ -6,21 +6,28 @@
 -- app.current_org_id GUC. audit_log reads are operator-facing.
 -- =============================================================================
 
--- name: GetAPIKeyByHash :one
--- Resolves an API key by its stored hash for request authentication. Callers
--- must still check expires_at / revoked_at against NOW() before trusting it.
+-- name: GetAPIKeyByPrefix :many
+-- Resolves candidate API keys by their stored lookup prefix (api_keys.key_prefix
+-- — the leading fragment of the plaintext key produced by shared/auth
+-- KeyManager.LookupPrefix). api_keys.key_hash is a *salted bcrypt* hash, so a
+-- presented key can NEVER be matched by hash equality; the caller fetches the
+-- candidate row(s) by their indexed prefix and then bcrypt-compares the presented
+-- key against each key_hash (shared/auth ValidateKey). A prefix is selective but
+-- not guaranteed unique, so this returns :many. Callers MUST still reject a key
+-- whose revoked_at is set or whose expires_at is in the past.
 SELECT
     id,
     org_id,
     user_id,
     name,
     key_prefix,
+    key_hash,
     scopes,
     last_used_at,
     expires_at,
     revoked_at
 FROM api_keys
-WHERE key_hash = $1;
+WHERE key_prefix = $1;
 
 -- name: TouchAPIKeyLastUsed :exec
 -- Records that an API key was used for a request.
