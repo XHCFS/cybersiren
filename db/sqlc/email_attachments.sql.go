@@ -19,10 +19,8 @@ INSERT INTO email_attachments (
     attachment_id,
     filename,
     content_type,
-    analysis_metadata,
     content_id,
     disposition,
-    risk_score,
     org_id
 ) VALUES (
     $1,
@@ -32,24 +30,20 @@ INSERT INTO email_attachments (
     $5,
     $6,
     $7,
-    $8,
-    $9,
-    $10
+    $8
 )
 ON CONFLICT (email_id, email_fetched_at, attachment_id) DO NOTHING
 `
 
 type InsertEmailAttachmentParams struct {
-	EmailID          int64              `db:"email_id" json:"email_id"`
-	EmailFetchedAt   pgtype.Timestamptz `db:"email_fetched_at" json:"email_fetched_at"`
-	AttachmentID     int64              `db:"attachment_id" json:"attachment_id"`
-	Filename         pgtype.Text        `db:"filename" json:"filename"`
-	ContentType      pgtype.Text        `db:"content_type" json:"content_type"`
-	AnalysisMetadata []byte             `db:"analysis_metadata" json:"analysis_metadata"`
-	ContentID        pgtype.Text        `db:"content_id" json:"content_id"`
-	Disposition      pgtype.Text        `db:"disposition" json:"disposition"`
-	RiskScore        pgtype.Int4        `db:"risk_score" json:"risk_score"`
-	OrgID            pgtype.Int8        `db:"org_id" json:"org_id"`
+	EmailID        int64              `db:"email_id" json:"email_id"`
+	EmailFetchedAt pgtype.Timestamptz `db:"email_fetched_at" json:"email_fetched_at"`
+	AttachmentID   int64              `db:"attachment_id" json:"attachment_id"`
+	Filename       pgtype.Text        `db:"filename" json:"filename"`
+	ContentType    pgtype.Text        `db:"content_type" json:"content_type"`
+	ContentID      pgtype.Text        `db:"content_id" json:"content_id"`
+	Disposition    pgtype.Text        `db:"disposition" json:"disposition"`
+	OrgID          pgtype.Int8        `db:"org_id" json:"org_id"`
 }
 
 // =============================================================================
@@ -59,8 +53,10 @@ type InsertEmailAttachmentParams struct {
 // content hash. Primary key is (email_id, email_fetched_at, attachment_id), so
 // a re-parsed email re-attaching the same library entry is idempotent.
 // =============================================================================
-// Inserts one attachment link. ON CONFLICT DO NOTHING keeps the write
-// idempotent across redelivery of the same parsed email.
+// Inserts one attachment link (SVC-02). ON CONFLICT DO NOTHING keeps the write
+// idempotent across redelivery of the same parsed email. Per ARCH-SPEC §14
+// step 2 the parser does NOT set risk_score / analysis_metadata — they stay at
+// DEFAULT 0 / NULL until SVC-05 UPDATEs them after scoring (§15 gap #2).
 func (q *Queries) InsertEmailAttachment(ctx context.Context, arg InsertEmailAttachmentParams) error {
 	_, err := q.db.Exec(ctx, insertEmailAttachment,
 		arg.EmailID,
@@ -68,10 +64,8 @@ func (q *Queries) InsertEmailAttachment(ctx context.Context, arg InsertEmailAtta
 		arg.AttachmentID,
 		arg.Filename,
 		arg.ContentType,
-		arg.AnalysisMetadata,
 		arg.ContentID,
 		arg.Disposition,
-		arg.RiskScore,
 		arg.OrgID,
 	)
 	return err

@@ -52,14 +52,15 @@ type ChildURL struct {
 }
 
 // ChildAttachment links a parsed attachment to its attachment_library row.
+// Per ARCH-SPEC §14 the parser writes only the link columns; risk_score and
+// analysis_metadata are SVC-05's to UPDATE after scoring (§15 gap #2), so they
+// are intentionally absent here.
 type ChildAttachment struct {
-	AttachmentID     int64
-	Filename         pgtype.Text
-	ContentType      pgtype.Text
-	AnalysisMetadata []byte
-	ContentID        pgtype.Text
-	Disposition      pgtype.Text
-	RiskScore        pgtype.Int4
+	AttachmentID int64
+	Filename     pgtype.Text
+	ContentType  pgtype.Text
+	ContentID    pgtype.Text
+	Disposition  pgtype.Text
 }
 
 // ChildRecipient is one to/cc/bcc recipient of the email.
@@ -99,16 +100,14 @@ func (r *EmailRepository) Insert(ctx context.Context, orgID int64, in PersistPar
 
 		for i, a := range in.Attachments {
 			if err := q.InsertEmailAttachment(ctx, db.InsertEmailAttachmentParams{
-				EmailID:          key.InternalID,
-				EmailFetchedAt:   key.FetchedAt,
-				AttachmentID:     a.AttachmentID,
-				Filename:         a.Filename,
-				ContentType:      a.ContentType,
-				AnalysisMetadata: a.AnalysisMetadata,
-				ContentID:        a.ContentID,
-				Disposition:      a.Disposition,
-				RiskScore:        a.RiskScore,
-				OrgID:            orgParam,
+				EmailID:        key.InternalID,
+				EmailFetchedAt: key.FetchedAt,
+				AttachmentID:   a.AttachmentID,
+				Filename:       a.Filename,
+				ContentType:    a.ContentType,
+				ContentID:      a.ContentID,
+				Disposition:    a.Disposition,
+				OrgID:          orgParam,
 			}); err != nil {
 				return fmt.Errorf("insert email_attachment[%d]: %w", i, err)
 			}

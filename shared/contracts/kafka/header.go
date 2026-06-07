@@ -6,21 +6,25 @@
 // dependencies — so they can be imported by any service (producer or
 // consumer) without dragging in extra runtime deps.
 //
-// CONTRACT NOTE for SVC-04:
+// CONTRACT NOTE for SVC-04 — two-id model (ARCH-SPEC §1 / §16 D11, G17):
 //
-//	`email_id` on every analysis.* / scores.* topic carries the BIGINT
-//	value of `emails.internal_id`. SVC-04 uses it directly as
-//	`rule_hits.entity_id` and as the partitioning key. ARCH-SPEC §14
-//	step 3b confirms this mapping. SVC-02 (Parser) is the source of
-//	truth and is responsible for emitting the correct `internal_id`.
-//	The companion `fetched_at` field is required so consumers can
-//	reconstruct the partitioned `(internal_id, fetched_at)` PK without
-//	an extra DB lookup (per ARCH-SPEC §1 step 4 precedent).
+//	`email_id` and `internal_id` are TWO DISTINCT identifiers:
+//	  - `email_id`  — the logical id assigned by SVC-01, the Kafka partition
+//	    key, opaque. Its contract type is a UUIDv7 string; it is carried as
+//	    an int64 only on an interim basis (SVC-01 emits
+//	    time.Now().UnixNano()/1000). The uuid.NewV7() swap + widening to a
+//	    string is tracked by issue #142.
+//	  - `internal_id` — the DB BIGSERIAL surrogate (emails.internal_id),
+//	    assigned by Postgres on the SVC-02 INSERT. With `fetched_at` it is
+//	    the partitioned `emails` composite PK, and it is what SVC-04 writes
+//	    to `rule_hits.entity_id` (ARCH-SPEC §14 step 3b).
 //
-//	NOTE: ARCH-SPEC §1 describes `email_id` as a UUIDv7 logical
-//	identifier. The repo currently models it as BIGINT to match the
-//	emails table primary key; aligning these two representations is a
-//	tracked architectural follow-up.
+//	Both ids are carried on analysis.headers (and emails.scored) so
+//	consumers reconstruct the `(internal_id, fetched_at)` PK without a DB
+//	lookup. SVC-02 (P1.1) populates `internal_id` from the INSERT RETURNING;
+//	until then it is zero and consumers fall back to `email_id` (the interim
+//	int64 email_id == internal_id equivalence). There is NO permanent
+//	`email_id == internal_id` invariant.
 package kafka
 
 import (
@@ -34,12 +38,20 @@ import (
 // omit fields it could not parse from the raw RFC822 headers. SVC-04 must
 // treat zero-values as "missing", not as failed authentication.
 type AnalysisHeadersMessage struct {
-	// EmailID is the BIGINT value of emails.internal_id. SVC-04 writes it
-	// to rule_hits.entity_id and uses it as the Kafka partitioning key.
+	// EmailID is the logical email identifier (ARCH-SPEC §1 / §16 D11):
+	// assigned by SVC-01, the Kafka partition key, opaque. UUIDv7 string by
+	// contract, carried as an int64 on an interim basis (swap tracked by
+	// #142). Distinct from InternalID — do not depend on its numeric shape.
 	EmailID int64 `json:"email_id"`
+	// InternalID is the DB BIGSERIAL surrogate (emails.internal_id). With
+	// FetchedAt it forms the partitioned emails composite PK; SVC-04 writes it
+	// to rule_hits.entity_id (ARCH-SPEC §14 step 3b). Populated by SVC-02
+	// (P1.1) from the INSERT RETURNING; zero until then, when consumers fall
+	// back to EmailID (interim int64 email_id == internal_id equivalence).
+	InternalID int64 `json:"internal_id,omitempty"`
 	// FetchedAt is emails.fetched_at, the partition key on the partitioned
 	// emails table and the companion for rule_hits.email_fetched_at.
-	// Populated by SVC-02 alongside EmailID per ARCH-SPEC §1 step 4.
+	// Populated by SVC-02 alongside the ids per ARCH-SPEC §1 step 4.
 	FetchedAt time.Time `json:"fetched_at"`
 	// OrgID is the owning tenant; required for rules cache scoping.
 	OrgID int64 `json:"org_id"`
@@ -78,6 +90,17 @@ type AnalysisHeadersMessage struct {
 	// ── Vendor security tags / raw header dump ──────────────────────────
 	VendorSecurityTags json.RawMessage `json:"vendor_security_tags,omitempty"`
 	HeadersJSON        json.RawMessage `json:"headers_json,omitempty"`
+
+	// ── Body content (D9 structural-anomaly signals) ────────────────────
+	// BodyHTML is the raw HTML body part (empty when the message had no HTML
+	// part); BodyPlain is the HTML-stripped / sanitized plain text. SVC-04
+	// derives the structural signals it owns (html_only / has_hidden_text /
+	// has_form / encoding anomalies) from these — per D9 the parser ships the
+	// body and SVC-04 computes the structural dimension. (Moved here from the
+	// retired map-based AnalysisHeaders so the body reaches the type SVC-04
+	// actually consumes.)
+	BodyHTML  string `json:"body_html,omitempty"`
+	BodyPlain string `json:"body_plain,omitempty"`
 }
 
 // ReceivedHop is a single entry in the Received-chain.

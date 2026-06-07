@@ -48,14 +48,18 @@ func TestRoundTrip_AllPayloads(t *testing.T) {
 			fresh: func() any { return &contracts.AnalysisURLs{} },
 		},
 		{
-			name: "AnalysisHeaders",
-			payload: contracts.AnalysisHeaders{
-				Meta:      meta,
-				Headers:   map[string]string{"x": "y"},
-				BodyHTML:  "<html><body>hi</body></html>",
-				BodyPlain: "hi",
+			name: "AnalysisHeadersMessage",
+			payload: contracts.AnalysisHeadersMessage{
+				EmailID:      1001,
+				InternalID:   5005,
+				FetchedAt:    now,
+				OrgID:        42,
+				SenderDomain: "acme.example",
+				AuthSPF:      "pass",
+				BodyHTML:     "<html><body>hi</body></html>",
+				BodyPlain:    "hi",
 			},
-			fresh: func() any { return &contracts.AnalysisHeaders{} },
+			fresh: func() any { return &contracts.AnalysisHeadersMessage{} },
 		},
 		{
 			name: "AnalysisAttachments",
@@ -261,10 +265,11 @@ func TestSpecWireTags(t *testing.T) {
 		assert.Contains(t, string(txt), k)
 	}
 
-	hdr, err := json.Marshal(contracts.AnalysisHeaders{Meta: meta, BodyHTML: "<p>x</p>", BodyPlain: "x"})
+	hdr, err := json.Marshal(contracts.AnalysisHeadersMessage{EmailID: 1, InternalID: 9, OrgID: 2, BodyHTML: "<p>x</p>", BodyPlain: "x"})
 	require.NoError(t, err)
 	assert.Contains(t, string(hdr), `"body_html"`)
 	assert.Contains(t, string(hdr), `"body_plain"`)
+	assert.Contains(t, string(hdr), `"internal_id"`)
 
 	plan, err := json.Marshal(contracts.AnalysisPlan{Meta: meta, URLCount: 1, AttachmentCount: 1, HasBody: true, CreatedAt: 5})
 	require.NoError(t, err)

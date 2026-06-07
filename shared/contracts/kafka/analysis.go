@@ -23,26 +23,10 @@ type AnalysisURLs struct {
 	URLs []ExtractedURL `json:"urls"`
 }
 
-// AnalysisHeaders is published by svc-02-parser to analysis.headers.
-//
-// NOTE: the authoritative, spec-faithful header payload that svc-04 consumes
-// is AnalysisHeadersMessage in header.go. This flatter map-based type is the
-// spine v0 shape; it additionally carries the raw body content (HTML +
-// sanitized plain text) so svc-04 can compute the structural-anomaly signals
-// it owns (html_only / has_hidden_text / has_form / encoding anomalies) — per
-// D9, the parser ships the body and svc-04 computes the structural dimension.
-type AnalysisHeaders struct {
-	Meta    MessageMeta       `json:"meta"`
-	Headers map[string]string `json:"headers"`
-
-	// BodyHTML is the raw HTML body part (empty when the message had no HTML
-	// part). svc-04 inspects it for html-only, hidden-text and embedded-form
-	// structural signals (D9).
-	BodyHTML string `json:"body_html,omitempty"`
-	// BodyPlain is the HTML-stripped / sanitized plain-text body used as the
-	// textual baseline for structural comparison (D9).
-	BodyPlain string `json:"body_plain,omitempty"`
-}
+// NOTE: the analysis.headers payload is AnalysisHeadersMessage in header.go
+// (svc-04's authoritative contract). The earlier map-based AnalysisHeaders
+// type was retired — its D9 body-content fields (body_html / body_plain) now
+// live on AnalysisHeadersMessage, the type svc-04 actually consumes.
 
 // Attachment represents one attachment slot in analysis.attachments
 // (ARCH-SPEC §1 step 2, analysis.attachments schema). svc-05 scores from

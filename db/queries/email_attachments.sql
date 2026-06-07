@@ -7,18 +7,18 @@
 -- =============================================================================
 
 -- name: InsertEmailAttachment :exec
--- Inserts one attachment link. ON CONFLICT DO NOTHING keeps the write
--- idempotent across redelivery of the same parsed email.
+-- Inserts one attachment link (SVC-02). ON CONFLICT DO NOTHING keeps the write
+-- idempotent across redelivery of the same parsed email. Per ARCH-SPEC §14
+-- step 2 the parser does NOT set risk_score / analysis_metadata — they stay at
+-- DEFAULT 0 / NULL until SVC-05 UPDATEs them after scoring (§15 gap #2).
 INSERT INTO email_attachments (
     email_id,
     email_fetched_at,
     attachment_id,
     filename,
     content_type,
-    analysis_metadata,
     content_id,
     disposition,
-    risk_score,
     org_id
 ) VALUES (
     $1,
@@ -28,9 +28,7 @@ INSERT INTO email_attachments (
     $5,
     $6,
     $7,
-    $8,
-    $9,
-    $10
+    $8
 )
 ON CONFLICT (email_id, email_fetched_at, attachment_id) DO NOTHING;
 
