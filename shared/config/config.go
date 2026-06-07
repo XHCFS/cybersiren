@@ -34,16 +34,19 @@ type Config struct {
 	SyncIntervalSeconds     int    `koanf:"sync_interval_seconds"`
 	TIHashCacheTTLSeconds   int    `koanf:"ti_hash_cache_ttl_seconds"`
 
-	Valkey     ValkeyConfig     `koanf:"valkey"`
-	Kafka      KafkaConfig      `koanf:"kafka"`
-	Worker     WorkerConfig     `koanf:"worker"`
-	CORS       CORSConfig       `koanf:"cors"`
-	ML         MLConfig         `koanf:"ml"`
-	Enrichment EnrichmentConfig `koanf:"enrichment"`
-	Storage    StorageConfig    `koanf:"storage"`
-	Embedding  EmbeddingConfig  `koanf:"embedding"`
-	Header     HeaderConfig     `koanf:"header"`
-	Phishing   PhishingConfig   `koanf:"phishing"`
+	Valkey       ValkeyConfig       `koanf:"valkey"`
+	Kafka        KafkaConfig        `koanf:"kafka"`
+	Worker       WorkerConfig       `koanf:"worker"`
+	CORS         CORSConfig         `koanf:"cors"`
+	ML           MLConfig           `koanf:"ml"`
+	Enrichment   EnrichmentConfig   `koanf:"enrichment"`
+	Storage      StorageConfig      `koanf:"storage"`
+	Attachment   AttachmentConfig   `koanf:"attachment"`
+	Notification NotificationConfig `koanf:"notification"`
+	Gmail        GmailConfig        `koanf:"gmail"`
+	Embedding    EmbeddingConfig    `koanf:"embedding"`
+	Header       HeaderConfig       `koanf:"header"`
+	Phishing     PhishingConfig     `koanf:"phishing"`
 }
 
 // HeaderConfig holds configuration for SVC-04 Header Analysis Service.
@@ -256,6 +259,35 @@ type StorageConfig struct {
 	UseSSL    bool   `koanf:"use_ssl"`
 }
 
+type AttachmentConfig struct {
+	VirusTotalAPIKey string `koanf:"virustotal_api_key"`
+}
+
+type NotificationConfig struct {
+	SMTP    SMTPConfig    `koanf:"smtp"`
+	Webhook WebhookConfig `koanf:"webhook"`
+}
+
+type SMTPConfig struct {
+	Host     string `koanf:"host"`
+	Port     int    `koanf:"port"`
+	Username string `koanf:"username"`
+	Password string `koanf:"password"`
+	From     string `koanf:"from"`
+}
+
+type WebhookConfig struct {
+	URL    string `koanf:"url"`
+	Secret string `koanf:"secret"`
+}
+
+type GmailConfig struct {
+	ClientID     string `koanf:"client_id"`
+	ClientSecret string `koanf:"client_secret"`
+	RefreshToken string `koanf:"refresh_token"`
+	PubSubTopic  string `koanf:"pubsub_topic"`
+}
+
 type EmbeddingConfig struct {
 	Provider  string `koanf:"provider"`
 	APIKey    string `koanf:"api_key"`
@@ -361,6 +393,13 @@ func Load() (*Config, error) {
 		Storage: StorageConfig{
 			UseSSL: true,
 		},
+		Attachment: AttachmentConfig{},
+		Notification: NotificationConfig{
+			SMTP: SMTPConfig{
+				Port: 587,
+			},
+		},
+		Gmail: GmailConfig{},
 		Embedding: EmbeddingConfig{
 			Provider:  "openai",
 			Model:     "text-embedding-3-small",
