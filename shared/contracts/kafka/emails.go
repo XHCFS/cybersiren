@@ -6,15 +6,22 @@ import (
 )
 
 // EmailsRaw is the wire payload published by svc-01-ingestion to emails.raw
-// (architecture-spec §1, Step 1). The raw_message field holds the base64
+// (architecture-spec §1, Step 1). The raw_rfc822 field holds the base64
 // RFC-822 source so this struct stays JSON-friendly.
 type EmailsRaw struct {
-	Meta          MessageMeta       `json:"meta"`
-	FetchedAt     time.Time         `json:"fetched_at"`
-	SourceAdapter string            `json:"source_adapter"`
-	MessageID     string            `json:"message_id,omitempty"`
-	RawMessageB64 string            `json:"raw_message_b64"`
-	Headers       map[string]string `json:"headers,omitempty"`
+	Meta      MessageMeta `json:"meta"`
+	FetchedAt time.Time   `json:"fetched_at"`
+	// SourceAdapter is "gmail" | "outlook" | "imap" | "api" | "custom".
+	SourceAdapter string `json:"source_adapter"`
+	MessageID     string `json:"message_id,omitempty"`
+	// RawMessageB64 carries the full base64 RFC-822 bytes (spec field:
+	// raw_rfc822).
+	RawMessageB64 string `json:"raw_rfc822"`
+	// APIKeyID is the api_keys.id that authenticated the ingest, carried so
+	// svc-02 can attribute the email to its ingesting key. Zero when the
+	// source adapter did not authenticate via an API key.
+	APIKeyID int64             `json:"api_key_id,omitempty"`
+	Headers  map[string]string `json:"headers,omitempty"`
 }
 
 // ComponentDetails carries the full upstream score messages forward to the

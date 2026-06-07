@@ -157,7 +157,7 @@ func handle(ctx context.Context, msg kafkaconsumer.Message, deps svckit.Deps) er
 	worstLabel := "legitimate"
 
 	for _, raw := range input.URLs {
-		s := scanOne(ctx, raw, log)
+		s := scanOne(ctx, raw.URL, log)
 		scans = append(scans, s)
 		if s.Score > maxScore {
 			maxScore = s.Score

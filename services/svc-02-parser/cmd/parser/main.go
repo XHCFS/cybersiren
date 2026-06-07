@@ -82,7 +82,7 @@ func handle(ctx context.Context, msg kafkaconsumer.Message, deps svckit.Deps) er
 		topic   string
 		payload any
 	}{
-		{contracts.TopicAnalysisURLs, contracts.AnalysisURLs{Meta: meta, URLs: urls}},
+		{contracts.TopicAnalysisURLs, contracts.AnalysisURLs{Meta: meta, URLs: toExtractedURLs(urls)}},
 		{contracts.TopicAnalysisHeaders, headersMsg},
 		{contracts.TopicAnalysisAttachments, contracts.AnalysisAttachments{Meta: meta, Attachments: nil}},
 		{contracts.TopicAnalysisText, contracts.AnalysisText{Meta: meta, Subject: subject, Body: body}},
@@ -151,6 +151,18 @@ func parseRawEmail(raw contracts.EmailsRaw) (headers map[string]string, subject,
 
 	urls = uniqueStrings(urlRE.FindAllString(body, -1))
 	return headers, subject, body, urls
+}
+
+// toExtractedURLs adapts the parser's plain URL strings to the analysis.urls
+// contract's per-URL ExtractedURL shape. The richer {visible_text, position,
+// html_context} fields are populated by the full MIME extractor in P1.1; this
+// stub only carries the URL itself with body/plain-text defaults.
+func toExtractedURLs(urls []string) []contracts.ExtractedURL {
+	out := make([]contracts.ExtractedURL, 0, len(urls))
+	for _, u := range urls {
+		out = append(out, contracts.ExtractedURL{URL: u, Position: "body", HTMLContext: "plain_text"})
+	}
+	return out
 }
 
 // buildAnalysisHeaders projects the flat header map into svc-04's
