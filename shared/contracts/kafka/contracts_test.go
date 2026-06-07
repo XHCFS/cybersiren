@@ -31,50 +31,119 @@ func TestRoundTrip_AllPayloads(t *testing.T) {
 			name: "EmailsRaw",
 			payload: contracts.EmailsRaw{
 				Meta:          meta,
-				SourceAdapter: "http",
+				SourceAdapter: "api",
 				MessageID:     "<test@example.com>",
 				RawMessageB64: "Zm9v",
+				APIKeyID:      99,
 				Headers:       map[string]string{"From": "x@y"},
 			},
 			fresh: func() any { return &contracts.EmailsRaw{} },
 		},
 		{
-			name:    "AnalysisURLs",
-			payload: contracts.AnalysisURLs{Meta: meta, URLs: []string{"https://x"}},
-			fresh:   func() any { return &contracts.AnalysisURLs{} },
+			name: "AnalysisURLs",
+			payload: contracts.AnalysisURLs{Meta: meta, URLs: []contracts.ExtractedURL{
+				{URL: "https://x", VisibleText: "click", Position: "body", HTMLContext: "href"},
+				{URL: "https://y"},
+			}},
+			fresh: func() any { return &contracts.AnalysisURLs{} },
 		},
 		{
-			name:    "AnalysisHeaders",
-			payload: contracts.AnalysisHeaders{Meta: meta, Headers: map[string]string{"x": "y"}},
-			fresh:   func() any { return &contracts.AnalysisHeaders{} },
+			name: "AnalysisHeaders",
+			payload: contracts.AnalysisHeaders{
+				Meta:      meta,
+				Headers:   map[string]string{"x": "y"},
+				BodyHTML:  "<html><body>hi</body></html>",
+				BodyPlain: "hi",
+			},
+			fresh: func() any { return &contracts.AnalysisHeaders{} },
 		},
 		{
 			name: "AnalysisAttachments",
 			payload: contracts.AnalysisAttachments{
-				Meta:        meta,
-				Attachments: []contracts.Attachment{{Filename: "a.pdf", SHA256: "ff"}},
+				Meta: meta,
+				Attachments: []contracts.Attachment{{
+					Filename: "a.pdf", SHA256: "ff", MD5: "aa", SHA1: "bb",
+					ContentID: "cid-1", ContentType: "application/pdf",
+					Disposition: "attachment", SizeBytes: 1024,
+					Entropy: 7.6, DetectedType: "application/x-msdownload",
+				}},
 			},
 			fresh: func() any { return &contracts.AnalysisAttachments{} },
 		},
 		{
-			name:    "AnalysisText",
-			payload: contracts.AnalysisText{Meta: meta, Subject: "hi", Body: "body"},
-			fresh:   func() any { return &contracts.AnalysisText{} },
+			name: "AnalysisText",
+			payload: contracts.AnalysisText{
+				Meta: meta, Subject: "hi", Body: "body",
+				SenderName: "Acme", SenderDomain: "acme.example",
+				BodyLanguage: "en", WordCount: 1,
+			},
+			fresh: func() any { return &contracts.AnalysisText{} },
 		},
 		{
 			name: "AnalysisPlan",
 			payload: contracts.AnalysisPlan{
-				Meta:           meta,
-				ExpectedScores: []string{contracts.TopicScoresURL, contracts.TopicScoresHeader},
+				Meta:            meta,
+				ExpectedScores:  []string{contracts.TopicScoresURL, contracts.TopicScoresHeader},
+				URLCount:        2,
+				AttachmentCount: 1,
+				HasBody:         true,
+				CreatedAt:       now.UnixMilli(),
 			},
 			fresh: func() any { return &contracts.AnalysisPlan{} },
 		},
 		{
 			name: "ScoresURL",
-			payload: contracts.ScoresURL{ScoreEnvelope: contracts.ScoreEnvelope{
-				Meta: meta, Component: contracts.ComponentURL, Score: 42.0,
-			}},
+			payload: func() any {
+				src, age, ml := "phishtank", 30, 80
+				return contracts.ScoresURL{
+					Meta: meta, Component: contracts.ComponentURL, Score: 72,
+					URLCount: 1, TIBlockedCount: 1, MLScoredCount: 0,
+					CacheHitCount: 0, RiskiestURL: "https://x",
+					URLDetails: []contracts.URLDetail{{
+						URL: "https://x", Domain: "x", TIMatched: true,
+						TISource: &src, DomainAgeDays: &age, HasSSL: true,
+						RedirectCount: 0, MLScore: &ml, IsShortened: false,
+						EnrichmentAvailable: true,
+					}},
+					ProcessingTimeMs: 12,
+				}
+			}(),
 			fresh: func() any { return &contracts.ScoresURL{} },
+		},
+		{
+			name: "ScoresAttachment",
+			payload: contracts.ScoresAttachment{
+				Meta: meta, Component: contracts.ComponentAttachment, Score: 90,
+				AttachmentCount: 1, MaliciousCount: 1,
+				AttachmentDetails: []contracts.AttachmentDetail{{
+					SHA256: "ff", Filename: "a.exe", ContentType: "application/x-msdownload",
+					SizeBytes: 2048, Entropy: 7.8, IsMalicious: true,
+					ExtensionMismatch: true, HasMacros: false,
+					IsDangerousExtension: true, IndividualScore: 90,
+				}},
+				ProcessingTimeMs: 8,
+			},
+			fresh: func() any { return &contracts.ScoresAttachment{} },
+		},
+		{
+			name: "ScoresNLP",
+			payload: func() any {
+				brand := "PayPal"
+				return contracts.ScoresNLP{
+					Meta: meta, Component: contracts.ComponentNLP, Score: 60,
+					Facets: contracts.NLPFacets{
+						UrgencyScore: 0.7, IntentLabel: "credential_harvesting",
+						IntentConfidence: 0.82, ImpersonationScore: 0.4,
+						ImpersonatedBrand: &brand, DeceptionScore: 0.55,
+					},
+					ModelVersions: contracts.NLPModelVersions{
+						Urgency: "heur-v1", Intent: "distilbert-v1.0",
+						Impersonation: "heur-v1", Deception: "heur-v1",
+					},
+					ProcessingTimeMs: 30,
+				}
+			}(),
+			fresh: func() any { return &contracts.ScoresNLP{} },
 		},
 		{
 			name: "EmailsScored",
@@ -156,6 +225,80 @@ func TestRoundTrip_AllPayloads(t *testing.T) {
 
 func TestAllTopicsCount(t *testing.T) {
 	assert.Len(t, contracts.AllTopics, 12)
+}
+
+// TestSpecWireTags pins the spec field names so a rename doesn't silently
+// break the wire contract with the non-Go consumers / persisted columns.
+func TestSpecWireTags(t *testing.T) {
+	meta := contracts.NewMeta(1, 2)
+
+	raw, err := json.Marshal(contracts.EmailsRaw{Meta: meta, RawMessageB64: "Zg==", APIKeyID: 7})
+	require.NoError(t, err)
+	assert.Contains(t, string(raw), `"raw_rfc822"`)
+	assert.Contains(t, string(raw), `"api_key_id"`)
+	assert.NotContains(t, string(raw), `"raw_message_b64"`)
+
+	urls, err := json.Marshal(contracts.AnalysisURLs{Meta: meta, URLs: []contracts.ExtractedURL{
+		{URL: "https://x", VisibleText: "t", Position: "body", HTMLContext: "href"},
+	}})
+	require.NoError(t, err)
+	for _, k := range []string{`"visible_text"`, `"position"`, `"html_context"`} {
+		assert.Contains(t, string(urls), k)
+	}
+
+	att, err := json.Marshal(contracts.Attachment{
+		Filename: "a", SHA256: "ff", MD5: "aa", SHA1: "bb", ContentID: "c",
+		Disposition: "inline", Entropy: 1.5, DetectedType: "text/plain",
+	})
+	require.NoError(t, err)
+	for _, k := range []string{`"md5"`, `"sha1"`, `"content_id"`, `"disposition"`, `"entropy"`, `"detected_type"`} {
+		assert.Contains(t, string(att), k)
+	}
+
+	txt, err := json.Marshal(contracts.AnalysisText{Meta: meta, SenderDomain: "d", BodyLanguage: "en", WordCount: 3})
+	require.NoError(t, err)
+	for _, k := range []string{`"sender_domain"`, `"body_language"`, `"word_count"`} {
+		assert.Contains(t, string(txt), k)
+	}
+
+	hdr, err := json.Marshal(contracts.AnalysisHeaders{Meta: meta, BodyHTML: "<p>x</p>", BodyPlain: "x"})
+	require.NoError(t, err)
+	assert.Contains(t, string(hdr), `"body_html"`)
+	assert.Contains(t, string(hdr), `"body_plain"`)
+
+	plan, err := json.Marshal(contracts.AnalysisPlan{Meta: meta, URLCount: 1, AttachmentCount: 1, HasBody: true, CreatedAt: 5})
+	require.NoError(t, err)
+	for _, k := range []string{`"url_count"`, `"attachment_count"`, `"has_body"`, `"created_at"`} {
+		assert.Contains(t, string(plan), k)
+	}
+
+	nlp, err := json.Marshal(contracts.ScoresNLP{Meta: meta, Component: contracts.ComponentNLP, Score: 50})
+	require.NoError(t, err)
+	assert.Contains(t, string(nlp), `"facets"`)
+	assert.Contains(t, string(nlp), `"model_versions"`)
+	// score is an int, never a float on the wire.
+	assert.Contains(t, string(nlp), `"score":50`)
+}
+
+// TestTypedScoresScoreIsInt guards G13's float→int score change on the typed
+// payloads.
+func TestTypedScoresScoreIsInt(t *testing.T) {
+	meta := contracts.NewMeta(1, 2)
+	for _, b := range [][]byte{
+		mustJSON(t, contracts.ScoresURL{Meta: meta, Component: contracts.ComponentURL, Score: 100}),
+		mustJSON(t, contracts.ScoresAttachment{Meta: meta, Component: contracts.ComponentAttachment, Score: 100}),
+		mustJSON(t, contracts.ScoresNLP{Meta: meta, Component: contracts.ComponentNLP, Score: 100}),
+	} {
+		assert.Contains(t, string(b), `"score":100`)
+		assert.NotContains(t, string(b), `"score":100.0`)
+	}
+}
+
+func mustJSON(t *testing.T, v any) []byte {
+	t.Helper()
+	b, err := json.Marshal(v)
+	require.NoError(t, err)
+	return b
 }
 
 func TestNewMetaSchemaVersion(t *testing.T) {
