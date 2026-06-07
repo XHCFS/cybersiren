@@ -62,8 +62,8 @@ func TestGenerateAndValidate(t *testing.T) {
 	if gk.Hash == gk.Plaintext {
 		t.Error("hash must not equal plaintext")
 	}
-	if gk.Prefix != LookupPrefix(gk.Plaintext) {
-		t.Errorf("Prefix = %q, want %q", gk.Prefix, LookupPrefix(gk.Plaintext))
+	if gk.Prefix != km.LookupPrefix(gk.Plaintext) {
+		t.Errorf("Prefix = %q, want %q", gk.Prefix, km.LookupPrefix(gk.Plaintext))
 	}
 
 	// Correct key validates.
@@ -122,13 +122,72 @@ func TestHashKey(t *testing.T) {
 }
 
 func TestLookupPrefix(t *testing.T) {
+	km := newTestKeyManager(t) // prefix "cs_", suffixLen 24
+	wantLen := len("cs_") + maxLookupSuffixChars
 	long := "cs_abcdefghijklmnopqrstuvwxyz"
-	if got := LookupPrefix(long); len(got) != keyPrefixLookupLen {
-		t.Errorf("LookupPrefix(long) len = %d, want %d", len(got), keyPrefixLookupLen)
+	if got := km.LookupPrefix(long); len(got) != wantLen {
+		t.Errorf("LookupPrefix(long) len = %d, want %d", len(got), wantLen)
 	}
+	// An externally supplied key shorter than the lookup window is returned
+	// verbatim (only reachable via HashKey, never via this manager's Generate).
 	short := "cs_ab"
-	if got := LookupPrefix(short); got != short {
+	if got := km.LookupPrefix(short); got != short {
 		t.Errorf("LookupPrefix(short) = %q, want %q", got, short)
+	}
+}
+
+// TestLookupPrefixNeverRevealsFullKey is the regression guard for the cleartext
+// key_prefix leak: for every minted key the stored Prefix must be strictly
+// shorter than the plaintext and must omit at least reservedSuffixChars of the
+// random suffix. It exercises the smallest legal suffix and the package default.
+func TestLookupPrefixNeverRevealsFullKey(t *testing.T) {
+	cases := []struct {
+		name      string
+		prefix    string
+		suffixLen int
+	}{
+		{"minimum legal suffix", "cs_", reservedSuffixChars + 1},
+		{"default config suffix", "cs_", 32},
+		{"empty prefix", "", reservedSuffixChars + 4},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			km, err := NewKeyManager(tc.prefix, tc.suffixLen, testCost)
+			if err != nil {
+				t.Fatalf("NewKeyManager: %v", err)
+			}
+			for i := 0; i < 25; i++ {
+				gk, err := km.Generate()
+				if err != nil {
+					t.Fatalf("Generate: %v", err)
+				}
+				if gk.Prefix == gk.Plaintext {
+					t.Fatalf("stored Prefix equals full plaintext %q — whole secret leaked", gk.Plaintext)
+				}
+				if len(gk.Prefix) >= len(gk.Plaintext) {
+					t.Fatalf("Prefix len %d >= plaintext len %d", len(gk.Prefix), len(gk.Plaintext))
+				}
+				// At least reservedSuffixChars random characters must be omitted.
+				if omitted := len(gk.Plaintext) - len(gk.Prefix); omitted < reservedSuffixChars {
+					t.Fatalf("only %d random chars withheld from prefix, want >= %d",
+						omitted, reservedSuffixChars)
+				}
+				if !strings.HasPrefix(gk.Plaintext, gk.Prefix) {
+					t.Fatalf("Prefix %q is not a prefix of plaintext %q", gk.Prefix, gk.Plaintext)
+				}
+			}
+		})
+	}
+}
+
+// TestNewKeyManagerRejectsShortSuffix asserts the fail-fast guard: a suffix that
+// cannot keep reservedSuffixChars secret must be rejected at construction.
+func TestNewKeyManagerRejectsShortSuffix(t *testing.T) {
+	if _, err := NewKeyManager("cs_", reservedSuffixChars, testCost); err == nil {
+		t.Fatalf("NewKeyManager accepted suffixLen=%d, want error", reservedSuffixChars)
+	}
+	if _, err := NewKeyManager("cs_", reservedSuffixChars+1, testCost); err != nil {
+		t.Fatalf("NewKeyManager rejected minimum legal suffixLen=%d: %v", reservedSuffixChars+1, err)
 	}
 }
 

@@ -14,11 +14,20 @@ import (
 // and free of characters that get mangled in URLs or shells.
 const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
 
-// keyPrefixLookupLen is how many leading characters of the full key are stored
-// in api_keys.key_prefix for O(1) candidate lookup before the (expensive)
-// bcrypt comparison. It deliberately includes the configured prefix plus a few
-// random chars so it is reasonably selective without revealing the secret.
-const keyPrefixLookupLen = 12
+// reservedSuffixChars is the number of trailing random suffix characters that
+// must NEVER appear in the stored lookup prefix. Keeping these secret is what
+// makes api_keys.key_prefix non-reconstructible into the full key: even an
+// attacker with full read access to the cleartext key_prefix column still has
+// to brute-force at least this many alphabet characters. Generate refuses to
+// mint keys whose random suffix is not strictly longer than this reserve.
+const reservedSuffixChars = 8
+
+// maxLookupSuffixChars caps how many random suffix characters are folded into
+// the lookup prefix. The prefix only needs enough leading entropy to be
+// selective for an indexed point lookup; beyond a handful of chars there is no
+// selectivity benefit, only more of the secret exposed. The effective lookup
+// suffix is min(suffixLen-reservedSuffixChars, maxLookupSuffixChars).
+const maxLookupSuffixChars = 8
 
 // GeneratedKey is the result of minting a new API key. Plaintext is shown to
 // the user exactly once and never stored. Hash is what goes in
@@ -41,6 +50,11 @@ type KeyManager struct {
 	prefix     string // human prefix, e.g. "cs_"
 	suffixLen  int    // number of random chars after the prefix
 	bcryptCost int
+	// lookupLen is the length of the stored lookup prefix: len(prefix) plus a
+	// bounded slice of the random suffix. It is computed in NewKeyManager and is
+	// provably shorter than a full key (it omits the last reservedSuffixChars
+	// random characters), so the stored prefix never reveals the whole secret.
+	lookupLen int
 }
 
 // NewKeyManager builds a KeyManager. prefix is AuthConfig.APIKeyPrefix,
@@ -50,6 +64,15 @@ type KeyManager struct {
 func NewKeyManager(prefix string, suffixLen, bcryptCost int) (*KeyManager, error) {
 	if suffixLen <= 0 {
 		return nil, fmt.Errorf("auth: api key suffix length must be positive, got %d", suffixLen)
+	}
+	// The stored lookup prefix must omit at least reservedSuffixChars random
+	// characters, otherwise the cleartext key_prefix column would reveal the
+	// entire secret and defeat the bcrypt-only-storage design. Fail fast on any
+	// config whose random suffix is too short to keep that reserve secret.
+	if suffixLen <= reservedSuffixChars {
+		return nil, fmt.Errorf(
+			"auth: api key suffix length must exceed %d so the lookup prefix cannot cover the whole key, got %d",
+			reservedSuffixChars, suffixLen)
 	}
 	if bcryptCost < bcrypt.MinCost || bcryptCost > bcrypt.MaxCost {
 		return nil, fmt.Errorf("auth: bcrypt cost must be between %d and %d, got %d",
@@ -61,7 +84,18 @@ func NewKeyManager(prefix string, suffixLen, bcryptCost int) (*KeyManager, error
 		return nil, fmt.Errorf("auth: prefix(%d)+suffix(%d) exceeds bcrypt's 72-byte input limit",
 			len(prefix), suffixLen)
 	}
-	return &KeyManager{prefix: prefix, suffixLen: suffixLen, bcryptCost: bcryptCost}, nil
+	// lookupLen = prefix + a bounded slice of the suffix, always leaving the
+	// final reservedSuffixChars random characters out of the stored prefix.
+	lookupSuffix := suffixLen - reservedSuffixChars
+	if lookupSuffix > maxLookupSuffixChars {
+		lookupSuffix = maxLookupSuffixChars
+	}
+	return &KeyManager{
+		prefix:     prefix,
+		suffixLen:  suffixLen,
+		bcryptCost: bcryptCost,
+		lookupLen:  len(prefix) + lookupSuffix,
+	}, nil
 }
 
 // Generate mints a fresh API key: a cryptographically random suffix appended to
@@ -81,7 +115,7 @@ func (k *KeyManager) Generate() (GeneratedKey, error) {
 	return GeneratedKey{
 		Plaintext: plaintext,
 		Hash:      string(hash),
-		Prefix:    LookupPrefix(plaintext),
+		Prefix:    k.LookupPrefix(plaintext),
 	}, nil
 }
 
@@ -126,14 +160,21 @@ func ValidateKey(plaintext, storedHash string) error {
 }
 
 // LookupPrefix returns the api_keys.key_prefix fragment for a full plaintext
-// key: its leading keyPrefixLookupLen characters (or the whole key if shorter).
+// key: its leading k.lookupLen characters. By construction (see NewKeyManager)
+// lookupLen omits at least reservedSuffixChars random characters, so the stored
+// prefix is provably shorter than — and never reconstructs — the full key.
 // Indexing this column lets the caller fetch the single candidate row before
 // running the expensive bcrypt comparison.
-func LookupPrefix(plaintext string) string {
-	if len(plaintext) <= keyPrefixLookupLen {
+//
+// For a key produced by this manager's Generate, len(plaintext) is
+// len(prefix)+suffixLen, which always exceeds lookupLen; the bound below only
+// guards against externally supplied short keys (e.g. via HashKey) and never
+// returns the whole secret for a manager-minted key.
+func (k *KeyManager) LookupPrefix(plaintext string) string {
+	if len(plaintext) <= k.lookupLen {
 		return plaintext
 	}
-	return plaintext[:keyPrefixLookupLen]
+	return plaintext[:k.lookupLen]
 }
 
 // HasPrefix reports whether key carries the manager's configured prefix. It is

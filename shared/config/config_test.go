@@ -40,7 +40,7 @@ func validConfig() *Config {
 			JWTExpiry:       24 * time.Hour,
 			BcryptCost:      12,
 			APIKeyPrefix:    "cs_",
-			APIKeyPrefixLen: 8,
+			APIKeyPrefixLen: 32,
 		},
 		Log: LogConfig{
 			Level:  "info",
@@ -344,6 +344,11 @@ func TestLoad_Defaults(t *testing.T) {
 	}
 	if cfg.Auth.APIKeyPrefix != "cs_" {
 		t.Errorf("default Auth.APIKeyPrefix = %q, want %q", cfg.Auth.APIKeyPrefix, "cs_")
+	}
+	// The default random suffix must comfortably exceed the auth package's lookup
+	// window so the stored key_prefix never reveals the full key.
+	if cfg.Auth.APIKeyPrefixLen != 32 {
+		t.Errorf("default Auth.APIKeyPrefixLen = %d, want %d", cfg.Auth.APIKeyPrefixLen, 32)
 	}
 	if cfg.Enrichment.WorkerCount != 10 {
 		t.Errorf("default Enrichment.WorkerCount = %d, want %d", cfg.Enrichment.WorkerCount, 10)
