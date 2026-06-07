@@ -526,3 +526,263 @@ func TestLoad_MissingRequiredFails(t *testing.T) {
 func writeFile(path, content string) error {
 	return os.WriteFile(path, []byte(content), 0644)
 }
+
+// -- Attachment / Notification / Gmail defaults -------------------------------
+
+func TestLoad_AttachmentNotificationGmailDefaults(t *testing.T) {
+	setRequiredEnv(t)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() returned error: %v", err)
+	}
+
+	// Attachment defaults (ARCH-SPEC §1-step3c).
+	if cfg.Attachment.VTCacheTTL != 24*time.Hour {
+		t.Errorf("Attachment.VTCacheTTL = %v, want 24h", cfg.Attachment.VTCacheTTL)
+	}
+	if cfg.Attachment.EntropyThreshold != 7.5 {
+		t.Errorf("Attachment.EntropyThreshold = %v, want 7.5", cfg.Attachment.EntropyThreshold)
+	}
+	if cfg.Attachment.MaliciousHashScore != 90 {
+		t.Errorf("Attachment.MaliciousHashScore = %d, want 90", cfg.Attachment.MaliciousHashScore)
+	}
+	if cfg.Attachment.DoubleExtScore != 35 {
+		t.Errorf("Attachment.DoubleExtScore = %d, want 35", cfg.Attachment.DoubleExtScore)
+	}
+	if cfg.Attachment.ConsumeTopic != "analysis.attachments" {
+		t.Errorf("Attachment.ConsumeTopic = %q, want %q", cfg.Attachment.ConsumeTopic, "analysis.attachments")
+	}
+	if cfg.Attachment.ProduceTopic != "scores.attachment" {
+		t.Errorf("Attachment.ProduceTopic = %q, want %q", cfg.Attachment.ProduceTopic, "scores.attachment")
+	}
+
+	// Notification defaults — both channels off, sane transport defaults.
+	if cfg.Notification.SMTP.Enabled {
+		t.Errorf("Notification.SMTP.Enabled = true, want false by default")
+	}
+	if cfg.Notification.SMTP.Port != 587 {
+		t.Errorf("Notification.SMTP.Port = %d, want 587", cfg.Notification.SMTP.Port)
+	}
+	if !cfg.Notification.SMTP.StartTLS {
+		t.Errorf("Notification.SMTP.StartTLS = false, want true by default")
+	}
+	if cfg.Notification.SMTP.Timeout != 10*time.Second {
+		t.Errorf("Notification.SMTP.Timeout = %v, want 10s", cfg.Notification.SMTP.Timeout)
+	}
+	if cfg.Notification.Webhook.Enabled {
+		t.Errorf("Notification.Webhook.Enabled = true, want false by default")
+	}
+	if cfg.Notification.Webhook.MaxRetries != 3 {
+		t.Errorf("Notification.Webhook.MaxRetries = %d, want 3", cfg.Notification.Webhook.MaxRetries)
+	}
+
+	// Gmail defaults — adapter off, gmail.readonly scope, 5m fallback poll.
+	if cfg.Gmail.Enabled {
+		t.Errorf("Gmail.Enabled = true, want false by default")
+	}
+	if cfg.Gmail.PollInterval != 5*time.Minute {
+		t.Errorf("Gmail.PollInterval = %v, want 5m", cfg.Gmail.PollInterval)
+	}
+	if len(cfg.Gmail.Scopes) != 1 || cfg.Gmail.Scopes[0] != "https://www.googleapis.com/auth/gmail.readonly" {
+		t.Errorf("Gmail.Scopes = %v, want [gmail.readonly]", cfg.Gmail.Scopes)
+	}
+}
+
+func TestLoad_AttachmentNotificationGmailEnvOverride(t *testing.T) {
+	setRequiredEnv(t)
+	t.Setenv("CYBERSIREN_ATTACHMENT__VT_CACHE_TTL", "1h")
+	t.Setenv("CYBERSIREN_ATTACHMENT__DOUBLE_EXT_SCORE", "40")
+	t.Setenv("CYBERSIREN_NOTIFICATION__SMTP__ENABLED", "true")
+	t.Setenv("CYBERSIREN_NOTIFICATION__SMTP__HOST", "smtp.example.com")
+	t.Setenv("CYBERSIREN_NOTIFICATION__SMTP__FROM", "alerts@example.com")
+	t.Setenv("CYBERSIREN_NOTIFICATION__WEBHOOK__URL", "https://hook.example.com/in")
+	t.Setenv("CYBERSIREN_GMAIL__ENABLED", "true")
+	t.Setenv("CYBERSIREN_GMAIL__CLIENT_ID", "client-123")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() returned error: %v", err)
+	}
+
+	if cfg.Attachment.VTCacheTTL != time.Hour {
+		t.Errorf("Attachment.VTCacheTTL = %v, want 1h", cfg.Attachment.VTCacheTTL)
+	}
+	if cfg.Attachment.DoubleExtScore != 40 {
+		t.Errorf("Attachment.DoubleExtScore = %d, want 40", cfg.Attachment.DoubleExtScore)
+	}
+	if !cfg.Notification.SMTP.Enabled || cfg.Notification.SMTP.Host != "smtp.example.com" {
+		t.Errorf("Notification.SMTP = %+v, want enabled host=smtp.example.com", cfg.Notification.SMTP)
+	}
+	if cfg.Notification.Webhook.URL != "https://hook.example.com/in" {
+		t.Errorf("Notification.Webhook.URL = %q, want override", cfg.Notification.Webhook.URL)
+	}
+	if !cfg.Gmail.Enabled || cfg.Gmail.ClientID != "client-123" {
+		t.Errorf("Gmail = %+v, want enabled client-123", cfg.Gmail)
+	}
+}
+
+// -- AttachmentConfig.Validate ------------------------------------------------
+
+func validAttachmentConfig() AttachmentConfig {
+	return AttachmentConfig{
+		VTCacheTTL:             24 * time.Hour,
+		EntropyThreshold:       7.5,
+		HighEntropyScore:       20,
+		ExtensionMismatchScore: 30,
+		DangerousExtScore:      25,
+		MacroOfficeScore:       20,
+		DoubleExtScore:         35,
+		MaliciousHashScore:     90,
+		ConsumeTopic:           "analysis.attachments",
+		ProduceTopic:           "scores.attachment",
+		ConsumerGroup:          "cg-attachment-analysis",
+	}
+}
+
+func TestAttachmentConfig_Validate(t *testing.T) {
+	if err := validAttachmentConfig().Validate(); err != nil {
+		t.Fatalf("expected valid attachment config to pass, got: %v", err)
+	}
+
+	tests := []struct {
+		name    string
+		mutate  func(*AttachmentConfig)
+		wantErr string
+	}{
+		{"vt_cache_ttl zero", func(a *AttachmentConfig) { a.VTCacheTTL = 0 }, "attachment.vt_cache_ttl must be > 0"},
+		{"entropy too low", func(a *AttachmentConfig) { a.EntropyThreshold = 0 }, "attachment.entropy_threshold"},
+		{"entropy too high", func(a *AttachmentConfig) { a.EntropyThreshold = 9 }, "attachment.entropy_threshold"},
+		{"score negative", func(a *AttachmentConfig) { a.HighEntropyScore = -1 }, "attachment.high_entropy_score"},
+		{"score over 100", func(a *AttachmentConfig) { a.MaliciousHashScore = 101 }, "attachment.malicious_hash_score"},
+		{"missing consume topic", func(a *AttachmentConfig) { a.ConsumeTopic = "" }, "attachment.consume_topic"},
+		{"missing produce topic", func(a *AttachmentConfig) { a.ProduceTopic = "" }, "attachment.produce_topic"},
+		{"missing consumer group", func(a *AttachmentConfig) { a.ConsumerGroup = "" }, "attachment.consumer_group"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			a := validAttachmentConfig()
+			tt.mutate(&a)
+			err := a.Validate()
+			if err == nil {
+				t.Fatalf("expected error containing %q, got nil", tt.wantErr)
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("expected error containing %q, got %q", tt.wantErr, err.Error())
+			}
+		})
+	}
+}
+
+// -- NotificationConfig.Validate ----------------------------------------------
+
+func TestNotificationConfig_Validate(t *testing.T) {
+	// Both channels disabled → nothing to validate, passes.
+	if err := (NotificationConfig{}).Validate(); err != nil {
+		t.Fatalf("expected disabled channels to pass, got: %v", err)
+	}
+
+	// Valid enabled SMTP + webhook.
+	valid := NotificationConfig{
+		SMTP: SMTPConfig{
+			Enabled: true,
+			Host:    "smtp.example.com",
+			Port:    587,
+			From:    "alerts@example.com",
+			Timeout: 10 * time.Second,
+		},
+		Webhook: WebhookConfig{
+			Enabled:    true,
+			URL:        "https://hook.example.com/in",
+			Timeout:    10 * time.Second,
+			MaxRetries: 3,
+		},
+	}
+	if err := valid.Validate(); err != nil {
+		t.Fatalf("expected valid enabled channels to pass, got: %v", err)
+	}
+
+	tests := []struct {
+		name    string
+		mutate  func(*NotificationConfig)
+		wantErr string
+	}{
+		{"smtp missing host", func(n *NotificationConfig) { n.SMTP.Host = "" }, "notification.smtp.host"},
+		{"smtp bad port", func(n *NotificationConfig) { n.SMTP.Port = 0 }, "notification.smtp.port"},
+		{"smtp missing from", func(n *NotificationConfig) { n.SMTP.From = "" }, "notification.smtp.from"},
+		{"smtp timeout zero", func(n *NotificationConfig) { n.SMTP.Timeout = 0 }, "notification.smtp.timeout"},
+		{"webhook missing url", func(n *NotificationConfig) { n.Webhook.URL = "" }, "notification.webhook.url"},
+		{"webhook bad url", func(n *NotificationConfig) { n.Webhook.URL = "not-a-url" }, "notification.webhook.url must be a valid"},
+		{"webhook timeout zero", func(n *NotificationConfig) { n.Webhook.Timeout = 0 }, "notification.webhook.timeout"},
+		{"webhook negative retries", func(n *NotificationConfig) { n.Webhook.MaxRetries = -1 }, "notification.webhook.max_retries"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			n := valid
+			tt.mutate(&n)
+			err := n.Validate()
+			if err == nil {
+				t.Fatalf("expected error containing %q, got nil", tt.wantErr)
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("expected error containing %q, got %q", tt.wantErr, err.Error())
+			}
+		})
+	}
+}
+
+func TestNotificationConfig_DisabledChannelSkipsValidation(t *testing.T) {
+	// A disabled channel with otherwise-invalid fields must still pass —
+	// only enabled channels are validated.
+	n := NotificationConfig{
+		SMTP:    SMTPConfig{Enabled: false, Host: "", Port: 0},
+		Webhook: WebhookConfig{Enabled: false, URL: ""},
+	}
+	if err := n.Validate(); err != nil {
+		t.Fatalf("expected disabled-but-empty channels to pass, got: %v", err)
+	}
+}
+
+// -- GmailConfig.Validate -----------------------------------------------------
+
+func TestGmailConfig_Validate(t *testing.T) {
+	// Disabled adapter: Validate is opt-in and callers skip it when disabled,
+	// but calling it directly on a disabled-empty config still reports the
+	// missing creds — SVC-01 only calls it once the adapter is on.
+	valid := GmailConfig{
+		Enabled:      true,
+		ClientID:     "client-123",
+		ClientSecret: "secret-456",
+		RefreshToken: "refresh-789",
+		Scopes:       []string{"https://www.googleapis.com/auth/gmail.readonly"},
+		PollInterval: 5 * time.Minute,
+	}
+	if err := valid.Validate(); err != nil {
+		t.Fatalf("expected valid gmail config to pass, got: %v", err)
+	}
+
+	tests := []struct {
+		name    string
+		mutate  func(*GmailConfig)
+		wantErr string
+	}{
+		{"missing client_id", func(g *GmailConfig) { g.ClientID = "" }, "gmail.client_id"},
+		{"missing client_secret", func(g *GmailConfig) { g.ClientSecret = "" }, "gmail.client_secret"},
+		{"missing refresh_token", func(g *GmailConfig) { g.RefreshToken = "" }, "gmail.refresh_token"},
+		{"empty scopes", func(g *GmailConfig) { g.Scopes = nil }, "gmail.scopes"},
+		{"poll_interval zero", func(g *GmailConfig) { g.PollInterval = 0 }, "gmail.poll_interval"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g := valid
+			tt.mutate(&g)
+			err := g.Validate()
+			if err == nil {
+				t.Fatalf("expected error containing %q, got nil", tt.wantErr)
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("expected error containing %q, got %q", tt.wantErr, err.Error())
+			}
+		})
+	}
+}
