@@ -47,7 +47,7 @@ func extractPartitionFetchedAt(topic string, raw []byte) time.Time {
 			return h.FetchedAt
 		}
 	default:
-		var env contracts.ScoreEnvelope
+		var env contracts.ScoreEnvelope //nolint:staticcheck // G13: sanctioned legacy ScoreEnvelope decoder.
 		if err := json.Unmarshal(raw, &env); err != nil {
 			return time.Time{}
 		}

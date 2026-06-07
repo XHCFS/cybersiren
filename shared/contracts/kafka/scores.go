@@ -1,5 +1,18 @@
 package kafka
 
+import "fmt"
+
+// validateScore enforces the documented [0, 100] range on a score field. The
+// caller passes the wire field name so the error names the exact offender.
+// Returns nil for in-range values; used by the typed scores.* and emails.*
+// Validate() methods below.
+func validateScore(name string, v int) error {
+	if v < 0 || v > 100 {
+		return fmt.Errorf("scores: %s score out of range [0,100]: %d", name, v)
+	}
+	return nil
+}
+
 // Component discriminator values shared by every scores.* payload.
 const (
 	ComponentURL        = "url"
@@ -65,6 +78,12 @@ type ScoresURL struct {
 	ProcessingTimeMs int         `json:"processing_time_ms"`
 }
 
+// Validate enforces the documented [0, 100] range on the composite Score.
+// The count/size fields (URLCount, TIBlockedCount, ...) are not score-bounded.
+func (s ScoresURL) Validate() error {
+	return validateScore("url", s.Score)
+}
+
 // ── scores.attachment (svc-05) ───────────────────────────────────────────
 
 // AttachmentDetail is one per-attachment scoring record on scores.attachment
@@ -95,6 +114,12 @@ type ScoresAttachment struct {
 
 	AttachmentDetails []AttachmentDetail `json:"attachment_details,omitempty"`
 	ProcessingTimeMs  int                `json:"processing_time_ms"`
+}
+
+// Validate enforces the documented [0, 100] range on the composite Score.
+// AttachmentCount / MaliciousCount are counts, not score-bounded.
+func (s ScoresAttachment) Validate() error {
+	return validateScore("attachment", s.Score)
 }
 
 // ── scores.nlp (svc-06) ──────────────────────────────────────────────────
@@ -133,4 +158,11 @@ type ScoresNLP struct {
 	ModelVersions NLPModelVersions `json:"model_versions"`
 
 	ProcessingTimeMs int `json:"processing_time_ms"`
+}
+
+// Validate enforces the documented [0, 100] range on the composite Score. The
+// per-facet floats (urgency, intent confidence, ...) carry their own model-
+// defined ranges and are not the spec's [0, 100] score, so they are left alone.
+func (s ScoresNLP) Validate() error {
+	return validateScore("nlp", s.Score)
 }

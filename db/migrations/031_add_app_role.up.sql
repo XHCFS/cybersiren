@@ -56,9 +56,24 @@ GRANT USAGE ON SCHEMA public TO cybersiren_app;
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO cybersiren_app;
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO cybersiren_app;
 
--- Same DML on objects created by future migrations (which run as the
--- migration owner, postgres).
-ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA public
-    GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO cybersiren_app;
-ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA public
-    GRANT USAGE, SELECT ON SEQUENCES TO cybersiren_app;
+-- Same DML on objects created by future migrations. Default privileges are
+-- keyed to the role that CREATES the object — i.e. whoever runs the migrations.
+-- That is `postgres` in compose, but a differently-named superuser in CI
+-- (POSTGRES_USER=cybersiren) and in managed Postgres. Bind to current_user (the
+-- migrating role) instead of a hardcoded 'postgres', so the grants attach to
+-- future tables regardless of the migration role's name. Hardcoding 'postgres'
+-- makes this migration fail with `role "postgres" does not exist` anywhere the
+-- superuser is named otherwise. Same do-not-hardcode rationale as the CONNECT
+-- grant above; the format()/%I pattern guarantees the keyword resolves.
+DO $$
+BEGIN
+    EXECUTE format(
+        'ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA public '
+        'GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO cybersiren_app',
+        current_user);
+    EXECUTE format(
+        'ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA public '
+        'GRANT USAGE, SELECT ON SEQUENCES TO cybersiren_app',
+        current_user);
+END;
+$$;

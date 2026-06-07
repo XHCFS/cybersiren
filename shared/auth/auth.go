@@ -57,6 +57,10 @@ var (
 	// ErrEmptySecret is returned when a Manager/Hasher is constructed without
 	// the secret material it requires.
 	ErrEmptySecret = errors.New("auth: signing secret must not be empty")
+	// ErrWeakSecret is returned when a non-empty JWT signing secret is shorter
+	// than MinJWTSecretLen — too little entropy to resist offline brute-forcing
+	// of HS256 tokens.
+	ErrWeakSecret = errors.New("auth: signing secret too short")
 	// ErrEmptyCredential is returned when an empty token/key is passed for
 	// verification.
 	ErrEmptyCredential = errors.New("auth: empty credential")

@@ -58,9 +58,11 @@ func (r *URLRepository) ApplyEnrichment(ctx context.Context, orgID int64, p db.U
 	})
 }
 
-// RecordTIMatch appends a TI-match audit row for an email URL. The row inherits
-// tenant isolation from its parent email_urls row, so it is written under the
-// same org GUC as the rest of the URL graph.
+// RecordTIMatch appends a TI-match audit row for an email URL. email_url_ti_matches
+// is FORCE-RLS with its own org_id (migration 033), and the query derives that
+// org_id from the parent email_urls row under the same org GUC — so a match can
+// only ever be attached to a URL this org can see (foreign or missing email_url_id
+// inserts nothing). Runs in an org-scoped tx.
 func (r *URLRepository) RecordTIMatch(ctx context.Context, orgID int64, p db.InsertEmailURLTIMatchParams) error {
 	if r == nil || r.pool == nil {
 		return errors.New("url repository: nil pool")

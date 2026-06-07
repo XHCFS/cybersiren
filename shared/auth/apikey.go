@@ -29,6 +29,17 @@ const reservedSuffixChars = 8
 // suffix is min(suffixLen-reservedSuffixChars, maxLookupSuffixChars).
 const maxLookupSuffixChars = 8
 
+// MinAPIKeySuffixLen is the largest random-suffix length NewKeyManager will
+// reject: the configured suffix length must be STRICTLY GREATER than this so the
+// stored lookup prefix cannot cover the whole key. shared/config mirrors this
+// floor in Config.Validate via this exported constant so the two cannot drift.
+const MinAPIKeySuffixLen = reservedSuffixChars
+
+// MaxAPIKeyInputLen is bcrypt's hard input limit: bytes beyond it are silently
+// truncated, dropping trailing key entropy. len(prefix)+suffixLen must not
+// exceed it. shared/config mirrors this ceiling via this exported constant.
+const MaxAPIKeyInputLen = 72
+
 // GeneratedKey is the result of minting a new API key. Plaintext is shown to
 // the user exactly once and never stored. Hash is what goes in
 // api_keys.key_hash; Prefix is the api_keys.key_prefix lookup fragment.
@@ -80,9 +91,9 @@ func NewKeyManager(prefix string, suffixLen, bcryptCost int) (*KeyManager, error
 	}
 	// bcrypt silently truncates input past 72 bytes; reject configurations
 	// that could produce keys where trailing random entropy is ignored.
-	if len(prefix)+suffixLen > 72 {
-		return nil, fmt.Errorf("auth: prefix(%d)+suffix(%d) exceeds bcrypt's 72-byte input limit",
-			len(prefix), suffixLen)
+	if len(prefix)+suffixLen > MaxAPIKeyInputLen {
+		return nil, fmt.Errorf("auth: prefix(%d)+suffix(%d) exceeds bcrypt's %d-byte input limit",
+			len(prefix), suffixLen, MaxAPIKeyInputLen)
 	}
 	// lookupLen = prefix + a bounded slice of the suffix, always leaving the
 	// final reservedSuffixChars random characters out of the stored prefix.
@@ -193,7 +204,7 @@ func randomString(n int) (string, error) {
 	buf := make([]byte, n) // refill in batches; usually one read suffices
 	for len(out) < n {
 		if _, err := rand.Read(buf); err != nil {
-			return "", err
+			return "", fmt.Errorf("auth: read random bytes: %w", err)
 		}
 		for _, b := range buf {
 			if int(b) >= max {

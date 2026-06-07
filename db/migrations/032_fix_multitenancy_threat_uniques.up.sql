@@ -60,6 +60,41 @@ BEGIN
 END;
 $$;
 
+-- Pre-flight guard: ADD CONSTRAINT ... UNIQUE NULLS NOT DISTINCT aborts the
+-- whole migration mid-apply if the table already holds two rows colliding on
+-- (org_id, url). On the normal upgrade path that is impossible — the global
+-- UNIQUE(url) just dropped above made every url unique table-wide, so the
+-- per-org key cannot collide. This guard exists so a DB whose 001 constraint
+-- was dropped out-of-band fails LOUDLY with an actionable message instead of a
+-- raw 23505 from the ADD. GROUP BY folds NULL org_id rows into one group,
+-- matching the NULLS NOT DISTINCT semantics of the new constraint.
+DO $$
+DECLARE
+    v_dupes BIGINT;
+BEGIN
+    SELECT count(*) INTO v_dupes
+      FROM (
+          SELECT 1
+            FROM enriched_threats
+        GROUP BY org_id, url
+          HAVING count(*) > 1
+      ) d;
+    IF v_dupes > 0 THEN
+        RAISE EXCEPTION
+            'cannot add uq_enriched_threats_org_url: % (org_id, url) group(s) already '
+            'violate per-org uniqueness; dedupe enriched_threats before applying 032',
+            v_dupes;
+    END IF;
+END;
+$$;
+
+-- Note on soft-deletes: this is a table constraint over LIVE + soft-deleted
+-- (deleted_at IS NOT NULL) rows, NOT a partial index. So a soft-deleted row for
+-- (org_id, url) still participates: the bare UPSERT's ON CONFLICT (org_id, url)
+-- refreshes/resurrects it rather than inserting a fresh row. That is intentional
+-- and mirrors the campaigns fix (013 #9). A partial UNIQUE ... WHERE deleted_at
+-- IS NULL is deliberately NOT used: the ON CONFLICT in db/queries does not carry
+-- the predicate, so inference would break.
 DO $$
 BEGIN
     IF NOT EXISTS (
@@ -108,6 +143,11 @@ BEGIN
 END;
 $$;
 
+-- No pre-flight dupe guard here (unlike enriched_threats): the new key
+-- (org_id, entity_type, entity_id, provider) PREPENDS a column to the old global
+-- UNIQUE(entity_type, entity_id, provider), so it is strictly LOOSER — any data
+-- that satisfied the old constraint trivially satisfies the new one. The ADD
+-- cannot fail on existing rows. Soft-delete semantics match enriched_threats above.
 DO $$
 BEGIN
     IF NOT EXISTS (

@@ -22,8 +22,14 @@ func TestNewManager(t *testing.T) {
 		t.Errorf("empty secret: got %v, want ErrEmptySecret", err)
 	}
 
+	// A non-empty but too-short secret is rejected so HS256 tokens can never be
+	// signed with brute-forceable key material.
+	if _, err := NewManager("too-short", time.Hour); !errors.Is(err, ErrWeakSecret) {
+		t.Errorf("short secret: got %v, want ErrWeakSecret", err)
+	}
+
 	// Non-positive expiry must fall back to a default, not stay zero.
-	m, err := NewManager("secret", 0)
+	m, err := NewManager("test-secret-which-is-long-enough", 0)
 	if err != nil {
 		t.Fatalf("NewManager with zero expiry: %v", err)
 	}
@@ -105,7 +111,7 @@ func TestVerifyWrongSecret(t *testing.T) {
 		t.Fatalf("Issue: %v", err)
 	}
 
-	other, err := NewManager("a-completely-different-secret", time.Hour)
+	other, err := NewManager("another-secret-that-is-long-enough", time.Hour)
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
 	}

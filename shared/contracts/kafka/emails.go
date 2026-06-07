@@ -5,6 +5,16 @@ import (
 	"time"
 )
 
+// validatePtrScore enforces the documented [0, 100] range on a nullable score
+// pointer, treating nil (component absent / not yet scored) as valid. The wire
+// field name is included so the error names the exact offender.
+func validatePtrScore(name string, v *int) error {
+	if v == nil {
+		return nil
+	}
+	return validateScore(name, *v)
+}
+
 // EmailsRaw is the wire payload published by svc-01-ingestion to emails.raw
 // (architecture-spec §1, Step 1). The raw_rfc822 field holds the base64
 // RFC-822 source so this struct stays JSON-friendly.
@@ -80,6 +90,26 @@ type EmailsScored struct {
 	ComponentDetails ComponentDetails `json:"component_details"`
 }
 
+// Validate enforces the documented [0, 100] range on every component score.
+// The *Score fields are nullable (nil = component absent / aggregation timed
+// out before it arrived); nil pointers pass. The latency/internal_id/fetched_at
+// fields are not score-bounded.
+func (e EmailsScored) Validate() error {
+	if err := validatePtrScore("url", e.URLScore); err != nil {
+		return err
+	}
+	if err := validatePtrScore("header", e.HeaderScore); err != nil {
+		return err
+	}
+	if err := validatePtrScore("attachment", e.AttachmentScore); err != nil {
+		return err
+	}
+	if err := validatePtrScore("nlp", e.NLPScore); err != nil {
+		return err
+	}
+	return nil
+}
+
 // EmailsVerdict is published by svc-08-decision to emails.verdict
 // (architecture-spec §1, Step 5).
 //
@@ -110,6 +140,29 @@ type EmailsVerdict struct {
 	ModelVersion          string             `json:"model_version,omitempty"`
 	PartialAnalysis       bool               `json:"partial_analysis"`
 	ProcessingTimeTotalMS int64              `json:"processing_time_total_ms"`
+}
+
+// Validate enforces the documented [0, 100] range on the always-present
+// RiskScore and on each nullable component risk score (nil = partial analysis,
+// passes). Confidence carries a [0.0, 1.0] range, not the [0, 100] score
+// contract, and is left to the producer; campaign ids/timings are unbounded.
+func (v EmailsVerdict) Validate() error {
+	if err := validateScore("risk", v.RiskScore); err != nil {
+		return err
+	}
+	if err := validatePtrScore("header_risk", v.HeaderRiskScore); err != nil {
+		return err
+	}
+	if err := validatePtrScore("content_risk", v.ContentRiskScore); err != nil {
+		return err
+	}
+	if err := validatePtrScore("url_risk", v.URLRiskScore); err != nil {
+		return err
+	}
+	if err := validatePtrScore("attachment_risk", v.AttachmentRiskScore); err != nil {
+		return err
+	}
+	return nil
 }
 
 // VerdictFiredRule is the trimmed rule-fire summary attached to

@@ -173,7 +173,7 @@ func handle(ctx context.Context, msg kafkaconsumer.Message, deps svckit.Deps) er
 	if ft.IsZero() {
 		ft = time.Now().UTC()
 	}
-	out := contracts.ScoreEnvelope{
+	out := contracts.ScoreEnvelope{ //nolint:staticcheck // G13: sanctioned legacy ScoreEnvelope producer.
 		Meta:      contracts.NewMetaWithFetched(input.Meta.EmailID, input.Meta.OrgID, ft),
 		Component: contracts.ComponentURL,
 		Score:     float64(maxScore),

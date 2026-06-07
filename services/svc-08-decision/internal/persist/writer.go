@@ -383,7 +383,7 @@ func (w *Writer) GetCampaignHistory(ctx context.Context, orgID int64, fingerprin
 		return nil
 	})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("get campaign history: %w", err)
 	}
 	if !found {
 		return nil, nil

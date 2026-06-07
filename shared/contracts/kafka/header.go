@@ -32,6 +32,7 @@ package kafka
 
 import (
 	"encoding/json"
+	"fmt"
 	"time"
 )
 
@@ -143,6 +144,19 @@ type ScoresHeaderMessage struct {
 	Signals    HeaderSignals `json:"signals"`
 
 	ProcessingTimeMs int `json:"processing_time_ms"`
+}
+
+// Validate enforces the documented [0, 100] range on the composite Score and
+// rejects a message carrying neither id. The auth/reputation/structural sub-
+// scores are dimension contributions, not the spec's [0, 100] score, so they
+// are left unbounded. EmailID and InternalID are the two-id pair (ARCH-SPEC §1
+// / §16 D11): consumers fall back to EmailID until SVC-02 populates InternalID,
+// so a message with both zero addresses nothing and is rejected.
+func (m ScoresHeaderMessage) Validate() error {
+	if m.EmailID == 0 && m.InternalID == 0 {
+		return fmt.Errorf("scores: message has neither email_id nor internal_id")
+	}
+	return validateScore("header", m.Score)
 }
 
 // FiredRule is one rule that contributed to a sub-score.

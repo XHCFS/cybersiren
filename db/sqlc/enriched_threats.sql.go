@@ -46,6 +46,7 @@ SET
     analysis_metadata = COALESCE($30::jsonb, analysis_metadata),
     last_checked     = NOW()
 WHERE id = $1
+  AND is_global = FALSE
 `
 
 type UpdateEnrichedThreatEnrichmentParams struct {
@@ -84,6 +85,12 @@ type UpdateEnrichedThreatEnrichmentParams struct {
 // Applies enrichment results to an existing threat row. Each parameter that is
 // NULL leaves the corresponding column unchanged (COALESCE pattern), so a
 // partial enricher (e.g. geo-only) does not clobber WHOIS data and vice versa.
+//
+// WHERE pins org-owned rows only (is_global = FALSE). The enriched_threats RLS
+// policy admits is_global = TRUE OR org_id = current, so without this guard one
+// tenant's enrichment pass could UPDATE a SHARED global row by id. The bare
+// UPSERT always writes is_global = FALSE, so the email pipeline only ever
+// enriches its own org rows; a stray global id simply matches zero rows.
 func (q *Queries) UpdateEnrichedThreatEnrichment(ctx context.Context, arg UpdateEnrichedThreatEnrichmentParams) error {
 	_, err := q.db.Exec(ctx, updateEnrichedThreatEnrichment,
 		arg.ID,

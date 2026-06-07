@@ -96,7 +96,7 @@ func setRequiredEnv(t *testing.T) {
 	t.Setenv("CYBERSIREN_DB__NAME", "testdb")
 	t.Setenv("CYBERSIREN_DB__USER", "testuser")
 	t.Setenv("CYBERSIREN_DB__PASSWORD", "testpassword")
-	t.Setenv("CYBERSIREN_AUTH__JWT_SECRET", "testsecret")
+	t.Setenv("CYBERSIREN_AUTH__JWT_SECRET", "test-secret-which-is-long-enough")
 	t.Setenv("CYBERSIREN_CONFIG_PATH", "./nonexistent-config.yaml")
 }
 
@@ -266,7 +266,10 @@ func TestValidate_InvalidValues(t *testing.T) {
 		{"zero embedding dimension", func(c *Config) { c.Embedding.Dimension = 0 }, "embedding.dimension must be greater than 0"},
 		{"negative embedding dimension", func(c *Config) { c.Embedding.Dimension = -1 }, "embedding.dimension must be greater than 0"},
 		// auth
-		{"api_key_prefix_len zero", func(c *Config) { c.Auth.APIKeyPrefixLen = 0 }, "auth.api_key_prefix_len must be greater than 0"},
+		{"jwt_secret too short", func(c *Config) { c.Auth.JWTSecret = "short-secret" }, "auth.jwt_secret must be at least"},
+		{"api_key_prefix_len zero", func(c *Config) { c.Auth.APIKeyPrefixLen = 0 }, "auth.api_key_prefix_len must be greater than"},
+		{"api_key_prefix_len at floor", func(c *Config) { c.Auth.APIKeyPrefixLen = 8 }, "auth.api_key_prefix_len must be greater than"},
+		{"api_key prefix+len exceeds bcrypt limit", func(c *Config) { c.Auth.APIKeyPrefix = "cs_"; c.Auth.APIKeyPrefixLen = 70 }, "must not exceed"},
 		{"bcrypt_cost too low", func(c *Config) { c.Auth.BcryptCost = 3 }, "auth.bcrypt_cost must be between 4 and 31"},
 		{"bcrypt_cost too high", func(c *Config) { c.Auth.BcryptCost = 32 }, "auth.bcrypt_cost must be between 4 and 31"},
 		// server
@@ -362,7 +365,7 @@ func TestLoad_EnvOverridesWithDoubleUnderscore(t *testing.T) {
 	t.Setenv("CYBERSIREN_DB__NAME", "env_db")
 	t.Setenv("CYBERSIREN_DB__USER", "env_user")
 	t.Setenv("CYBERSIREN_DB__PASSWORD", "env_password")
-	t.Setenv("CYBERSIREN_AUTH__JWT_SECRET", "supersecret")
+	t.Setenv("CYBERSIREN_AUTH__JWT_SECRET", "supersecret-that-is-long-enough-now")
 	t.Setenv("CYBERSIREN_CONFIG_PATH", "./nonexistent-config.yaml")
 
 	cfg, err := Load()
@@ -379,8 +382,8 @@ func TestLoad_EnvOverridesWithDoubleUnderscore(t *testing.T) {
 	if cfg.DB.Password != "env_password" {
 		t.Errorf("expected DB.Password from env to be %q, got %q", "env_password", cfg.DB.Password)
 	}
-	if cfg.Auth.JWTSecret != "supersecret" {
-		t.Errorf("expected Auth.JWTSecret from env to be %q, got %q", "supersecret", cfg.Auth.JWTSecret)
+	if cfg.Auth.JWTSecret != "supersecret-that-is-long-enough-now" {
+		t.Errorf("expected Auth.JWTSecret from env to be %q, got %q", "supersecret-that-is-long-enough-now", cfg.Auth.JWTSecret)
 	}
 }
 
@@ -434,7 +437,7 @@ db:
   max_conn_idle_time: 1h
   health_check_period: 5m
 auth:
-  jwt_secret: yaml-jwt-secret-long-enough
+  jwt_secret: yaml-jwt-secret-long-enough-padded
   bcrypt_cost: 10
   api_key_prefix: "yk_"
   api_key_prefix_len: 12
@@ -481,7 +484,7 @@ db:
   max_conn_idle_time: 30m
   health_check_period: 1m
 auth:
-  jwt_secret: yaml-jwt-secret-long-enough
+  jwt_secret: yaml-jwt-secret-long-enough-padded
   bcrypt_cost: 10
   api_key_prefix: "yk_"
   api_key_prefix_len: 12

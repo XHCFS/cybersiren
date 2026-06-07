@@ -13,6 +13,15 @@ import (
 // if it happened to share a secret.
 const issuer = "cybersiren"
 
+// MinJWTSecretLen is the smallest HS256 signing secret NewManager accepts. HS256
+// security rests entirely on the secret's entropy; RFC 7518 §3.2 requires a key
+// at least as long as the hash output (32 bytes for SHA-256). A shorter secret
+// is offline-brute-forceable, which would allow full token forgery and defeat
+// tenant isolation, so it is rejected at construction. shared/config mirrors
+// this floor in Config.Validate via this exported constant so the two cannot
+// drift.
+const MinJWTSecretLen = 32
+
 // Claims is the typed JWT payload for an authenticated dashboard user. The
 // custom fields sit alongside the standard registered claims (exp/iat/iss/sub).
 //
@@ -51,11 +60,16 @@ type Manager struct {
 
 // NewManager builds a Manager from the JWT half of shared/config.AuthConfig.
 // secret is AuthConfig.JWTSecret and expiry is AuthConfig.JWTExpiry. An empty
-// secret is rejected (ErrEmptySecret); a non-positive expiry falls back to 24h
-// so a misconfigured zero value never mints non-expiring tokens.
+// secret is rejected (ErrEmptySecret) and a non-empty secret shorter than
+// MinJWTSecretLen is rejected (ErrWeakSecret) so a misconfigured service fails
+// fast instead of minting brute-forceable tokens; a non-positive expiry falls
+// back to 24h so a misconfigured zero value never mints non-expiring tokens.
 func NewManager(secret string, expiry time.Duration) (*Manager, error) {
 	if secret == "" {
 		return nil, ErrEmptySecret
+	}
+	if len(secret) < MinJWTSecretLen {
+		return nil, fmt.Errorf("%w: need at least %d bytes, got %d", ErrWeakSecret, MinJWTSecretLen, len(secret))
 	}
 	if expiry <= 0 {
 		expiry = 24 * time.Hour

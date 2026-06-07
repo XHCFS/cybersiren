@@ -318,6 +318,93 @@ func mustJSON(t *testing.T, v any) []byte {
 	return b
 }
 
+// validator is implemented by every typed payload that carries score data.
+type validator interface{ Validate() error }
+
+func ptr(i int) *int { return &i }
+
+// TestValidate_ScorePayloads checks the additive Validate() methods: in-range
+// + ids-present pass, out-of-range scores (negative and >100) fail, the two-id
+// header pair rejects both-zero, and nil pointer scores do not trip.
+func TestValidate_ScorePayloads(t *testing.T) {
+	meta := contracts.NewMeta(1001, 42)
+
+	cases := []struct {
+		name    string
+		payload validator
+		wantErr bool
+	}{
+		// ── ScoresURL ───────────────────────────────────────────────────
+		{"ScoresURL/ok", contracts.ScoresURL{Meta: meta, Component: contracts.ComponentURL, Score: 72, URLCount: 5}, false},
+		{"ScoresURL/zero", contracts.ScoresURL{Meta: meta, Component: contracts.ComponentURL, Score: 0}, false},
+		{"ScoresURL/max", contracts.ScoresURL{Meta: meta, Component: contracts.ComponentURL, Score: 100}, false},
+		{"ScoresURL/negative", contracts.ScoresURL{Meta: meta, Component: contracts.ComponentURL, Score: -1}, true},
+		{"ScoresURL/over", contracts.ScoresURL{Meta: meta, Component: contracts.ComponentURL, Score: 101}, true},
+
+		// ── ScoresAttachment ────────────────────────────────────────────
+		{"ScoresAttachment/ok", contracts.ScoresAttachment{Meta: meta, Component: contracts.ComponentAttachment, Score: 90, AttachmentCount: 3}, false},
+		{"ScoresAttachment/negative", contracts.ScoresAttachment{Meta: meta, Component: contracts.ComponentAttachment, Score: -5}, true},
+		{"ScoresAttachment/over", contracts.ScoresAttachment{Meta: meta, Component: contracts.ComponentAttachment, Score: 200}, true},
+
+		// ── ScoresNLP ───────────────────────────────────────────────────
+		{"ScoresNLP/ok", contracts.ScoresNLP{Meta: meta, Component: contracts.ComponentNLP, Score: 60}, false},
+		{"ScoresNLP/negative", contracts.ScoresNLP{Meta: meta, Component: contracts.ComponentNLP, Score: -1}, true},
+		{"ScoresNLP/over", contracts.ScoresNLP{Meta: meta, Component: contracts.ComponentNLP, Score: 101}, true},
+
+		// ── ScoresHeaderMessage (score range + two-id pair) ─────────────
+		{"ScoresHeaderMessage/ok", contracts.ScoresHeaderMessage{EmailID: 1001, InternalID: 5005, OrgID: 42, Component: contracts.ComponentHeader, Score: 50, AuthSubScore: 200}, false},
+		{"ScoresHeaderMessage/emailID-only", contracts.ScoresHeaderMessage{EmailID: 1001, OrgID: 42, Component: contracts.ComponentHeader, Score: 50}, false},
+		{"ScoresHeaderMessage/internalID-only", contracts.ScoresHeaderMessage{InternalID: 5005, OrgID: 42, Component: contracts.ComponentHeader, Score: 50}, false},
+		{"ScoresHeaderMessage/both-ids-zero", contracts.ScoresHeaderMessage{OrgID: 42, Component: contracts.ComponentHeader, Score: 50}, true},
+		{"ScoresHeaderMessage/negative", contracts.ScoresHeaderMessage{EmailID: 1001, Component: contracts.ComponentHeader, Score: -1}, true},
+		{"ScoresHeaderMessage/over", contracts.ScoresHeaderMessage{EmailID: 1001, Component: contracts.ComponentHeader, Score: 101}, true},
+
+		// ── EmailsScored (nullable component scores) ────────────────────
+		{"EmailsScored/all-nil", contracts.EmailsScored{Meta: meta, InternalID: 1001}, false},
+		{"EmailsScored/in-range", contracts.EmailsScored{Meta: meta, InternalID: 1001, URLScore: ptr(72), HeaderScore: ptr(0), AttachmentScore: ptr(100), NLPScore: ptr(60)}, false},
+		{"EmailsScored/url-negative", contracts.EmailsScored{Meta: meta, InternalID: 1001, URLScore: ptr(-1)}, true},
+		{"EmailsScored/header-over", contracts.EmailsScored{Meta: meta, InternalID: 1001, HeaderScore: ptr(101)}, true},
+		{"EmailsScored/attachment-over", contracts.EmailsScored{Meta: meta, InternalID: 1001, AttachmentScore: ptr(150)}, true},
+		{"EmailsScored/nlp-negative", contracts.EmailsScored{Meta: meta, InternalID: 1001, NLPScore: ptr(-3)}, true},
+
+		// ── EmailsVerdict (RiskScore + nullable component risk scores) ──
+		{"EmailsVerdict/ok", contracts.EmailsVerdict{Meta: meta, InternalID: 1001, RiskScore: 78, HeaderRiskScore: ptr(85), Confidence: 0.82}, false},
+		{"EmailsVerdict/nil-components", contracts.EmailsVerdict{Meta: meta, InternalID: 1001, RiskScore: 0}, false},
+		{"EmailsVerdict/risk-negative", contracts.EmailsVerdict{Meta: meta, InternalID: 1001, RiskScore: -1}, true},
+		{"EmailsVerdict/risk-over", contracts.EmailsVerdict{Meta: meta, InternalID: 1001, RiskScore: 101}, true},
+		{"EmailsVerdict/header-risk-over", contracts.EmailsVerdict{Meta: meta, InternalID: 1001, RiskScore: 50, HeaderRiskScore: ptr(200)}, true},
+		{"EmailsVerdict/url-risk-negative", contracts.EmailsVerdict{Meta: meta, InternalID: 1001, RiskScore: 50, URLRiskScore: ptr(-2)}, true},
+		{"EmailsVerdict/content-risk-over", contracts.EmailsVerdict{Meta: meta, InternalID: 1001, RiskScore: 50, ContentRiskScore: ptr(101)}, true},
+		{"EmailsVerdict/attachment-risk-negative", contracts.EmailsVerdict{Meta: meta, InternalID: 1001, RiskScore: 50, AttachmentRiskScore: ptr(-1)}, true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.payload.Validate()
+			if tc.wantErr {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
+// TestValidate_DoesNotMutateWire confirms Validate() is read-only: a payload
+// that passes validation round-trips byte-for-byte identically to one that was
+// never validated.
+func TestValidate_DoesNotMutateWire(t *testing.T) {
+	meta := contracts.NewMeta(1001, 42)
+	s := contracts.ScoresURL{Meta: meta, Component: contracts.ComponentURL, Score: 72, URLCount: 5}
+
+	before, err := json.Marshal(s)
+	require.NoError(t, err)
+	require.NoError(t, s.Validate())
+	after, err := json.Marshal(s)
+	require.NoError(t, err)
+	assert.JSONEq(t, string(before), string(after))
+}
+
 func TestNewMetaSchemaVersion(t *testing.T) {
 	m := contracts.NewMeta(7, 8)
 	assert.Equal(t, contracts.SchemaVersion, m.SchemaVersion)

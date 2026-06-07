@@ -658,6 +658,8 @@ type EmailUrlTiMatch struct {
 	TiIndicatorID int64              `db:"ti_indicator_id" json:"ti_indicator_id"`
 	MatchType     string             `db:"match_type" json:"match_type"`
 	MatchedAt     pgtype.Timestamptz `db:"matched_at" json:"matched_at"`
+	// Owning tenant, mirrored from the parent email_urls row. Drives the tenant_isolation RLS policy (033). NOT NULL: every match is org-scoped.
+	OrgID int64 `db:"org_id" json:"org_id"`
 }
 
 type Emails202501 struct {

@@ -14,6 +14,8 @@ import (
 	"github.com/knadh/koanf/providers/file"
 	"github.com/knadh/koanf/providers/structs"
 	"github.com/knadh/koanf/v2"
+
+	"github.com/saif/cybersiren/shared/auth"
 )
 
 // Config is the root configuration object. All sub-configs are loaded
@@ -514,8 +516,22 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("embedding.dimension must be greater than 0, got %d", c.Embedding.Dimension)
 	}
 
-	if c.Auth.APIKeyPrefixLen <= 0 {
-		return fmt.Errorf("auth.api_key_prefix_len must be greater than 0, got %d", c.Auth.APIKeyPrefixLen)
+	// JWT secret is non-empty here (caught above); enforce the entropy floor so
+	// a weak secret fails at boot, not when auth.NewManager is later constructed.
+	if len(c.Auth.JWTSecret) < auth.MinJWTSecretLen {
+		return fmt.Errorf("auth.jwt_secret must be at least %d bytes, got %d", auth.MinJWTSecretLen, len(c.Auth.JWTSecret))
+	}
+
+	// Mirror auth.NewKeyManager's bounds so a misconfigured prefix length fails
+	// at boot rather than when a service first mints/looks up an API key. The
+	// suffix must exceed MinAPIKeySuffixLen (so the stored lookup prefix can
+	// never cover the whole key), and prefix+suffix must fit bcrypt's input limit.
+	if c.Auth.APIKeyPrefixLen <= auth.MinAPIKeySuffixLen {
+		return fmt.Errorf("auth.api_key_prefix_len must be greater than %d, got %d", auth.MinAPIKeySuffixLen, c.Auth.APIKeyPrefixLen)
+	}
+	if len(c.Auth.APIKeyPrefix)+c.Auth.APIKeyPrefixLen > auth.MaxAPIKeyInputLen {
+		return fmt.Errorf("auth.api_key_prefix(%d)+api_key_prefix_len(%d) must not exceed %d (bcrypt input limit)",
+			len(c.Auth.APIKeyPrefix), c.Auth.APIKeyPrefixLen, auth.MaxAPIKeyInputLen)
 	}
 
 	if c.Auth.BcryptCost < 4 || c.Auth.BcryptCost > 31 {
