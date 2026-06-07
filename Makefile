@@ -128,24 +128,24 @@ _db-setup-if-needed:
 # ── Dev environment (full infra) ─────────────────────────────────────────────
 # =============================================================================
 
-## up: Start all infra (postgres, valkey, kafka, jaeger)
+## up: Start all infra (postgres, valkey, kafka, minio, jaeger)
 up: check-docker
 	$(DOCKER_COMPOSE) --profile postgres --profile valkey \
-	                  --profile kafka --profile observability up -d --wait
+	                  --profile kafka --profile minio --profile observability up -d --wait
 
 ## up-infra: Start core infra without observability
 up-infra: check-docker
-	$(DOCKER_COMPOSE) --profile postgres --profile valkey --profile kafka up -d --wait
+	$(DOCKER_COMPOSE) --profile postgres --profile valkey --profile kafka --profile minio up -d --wait
 
 ## down: Stop all infra containers (preserves volumes)
 down: check-docker
 	$(DOCKER_COMPOSE) --profile postgres --profile valkey \
-	                  --profile kafka --profile observability down
+	                  --profile kafka --profile minio --profile observability down
 
 ## down-v: Stop all infra and destroy volumes — WARNING: destroys all data
 down-v: check-docker
 	$(DOCKER_COMPOSE) --profile postgres --profile valkey \
-	                  --profile kafka --profile observability down -v
+	                  --profile kafka --profile minio --profile observability down -v
 
 ## logs: Tail logs. Usage: make logs  OR  make logs svc=postgres
 logs: check-docker

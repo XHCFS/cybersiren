@@ -74,19 +74,17 @@ func validConfig() *Config {
 // are not polluted by the integration job's database credentials.
 func clearCybersirenEnv(t *testing.T) {
 	t.Helper()
-	keys := []string{
-		"CYBERSIREN_DB__HOST", "CYBERSIREN_DB__PORT",
-		"CYBERSIREN_DB__NAME", "CYBERSIREN_DB__USER",
-		"CYBERSIREN_DB__PASSWORD", "CYBERSIREN_DB__SSLMODE",
-		"CYBERSIREN_AUTH__JWT_SECRET", "CYBERSIREN_CONFIG_PATH",
-	}
-	for _, k := range keys {
-		if orig, ok := os.LookupEnv(k); ok {
-			os.Unsetenv(k)
-			k := k
-			orig := orig
-			t.Cleanup(func() { os.Setenv(k, orig) })
+	for _, kv := range os.Environ() {
+		k, orig, ok := strings.Cut(kv, "=")
+		if !ok || !strings.HasPrefix(k, "CYBERSIREN_") {
+			continue
 		}
+		if err := os.Unsetenv(k); err != nil {
+			t.Fatalf("unsetting %s: %v", k, err)
+		}
+		t.Cleanup(func(k, orig string) func() {
+			return func() { os.Setenv(k, orig) }
+		}(k, orig))
 	}
 }
 
@@ -351,6 +349,9 @@ func TestLoad_Defaults(t *testing.T) {
 	if cfg.Embedding.Dimension != 1536 {
 		t.Errorf("default Embedding.Dimension = %d, want %d", cfg.Embedding.Dimension, 1536)
 	}
+	if cfg.Notification.SMTP.Port != 587 {
+		t.Errorf("default Notification.SMTP.Port = %d, want %d", cfg.Notification.SMTP.Port, 587)
+	}
 }
 
 func TestLoad_EnvOverridesWithDoubleUnderscore(t *testing.T) {
@@ -382,6 +383,10 @@ func TestLoad_EnvOverridesWithDoubleUnderscore(t *testing.T) {
 func TestLoad_DeepNestedEnvOverride(t *testing.T) {
 	setRequiredEnv(t)
 	t.Setenv("CYBERSIREN_ENRICHMENT__VIRUSTOTAL__TIMEOUT", "99s")
+	t.Setenv("CYBERSIREN_ATTACHMENT__VIRUSTOTAL_API_KEY", "attachment-vt-key")
+	t.Setenv("CYBERSIREN_NOTIFICATION__SMTP__PORT", "2525")
+	t.Setenv("CYBERSIREN_NOTIFICATION__WEBHOOK__URL", "https://hooks.example.test/cybersiren")
+	t.Setenv("CYBERSIREN_GMAIL__PUBSUB_TOPIC", "projects/test/topics/gmail")
 	t.Setenv("CYBERSIREN_SERVER__PORT", "9090")
 
 	cfg, err := Load()
@@ -394,6 +399,18 @@ func TestLoad_DeepNestedEnvOverride(t *testing.T) {
 	}
 	if cfg.Server.Port != 9090 {
 		t.Errorf("Server.Port = %d, want 9090", cfg.Server.Port)
+	}
+	if cfg.Attachment.VirusTotalAPIKey != "attachment-vt-key" {
+		t.Errorf("Attachment.VirusTotalAPIKey = %q, want %q", cfg.Attachment.VirusTotalAPIKey, "attachment-vt-key")
+	}
+	if cfg.Notification.SMTP.Port != 2525 {
+		t.Errorf("Notification.SMTP.Port = %d, want 2525", cfg.Notification.SMTP.Port)
+	}
+	if cfg.Notification.Webhook.URL != "https://hooks.example.test/cybersiren" {
+		t.Errorf("Notification.Webhook.URL = %q, want webhook URL", cfg.Notification.Webhook.URL)
+	}
+	if cfg.Gmail.PubSubTopic != "projects/test/topics/gmail" {
+		t.Errorf("Gmail.PubSubTopic = %q, want %q", cfg.Gmail.PubSubTopic, "projects/test/topics/gmail")
 	}
 }
 
@@ -433,6 +450,23 @@ auth:
   bcrypt_cost: 10
   api_key_prefix: "yk_"
   api_key_prefix_len: 12
+attachment:
+  virustotal_api_key: yaml-attachment-vt-key
+notification:
+  smtp:
+    host: smtp.example.test
+    port: 1025
+    username: yaml-smtp-user
+    password: yaml-smtp-pass
+    from: alerts@example.test
+  webhook:
+    url: https://hooks.example.test/yaml
+    secret: yaml-webhook-secret
+gmail:
+  client_id: yaml-client-id
+  client_secret: yaml-client-secret
+  refresh_token: yaml-refresh-token
+  pubsub_topic: projects/yaml/topics/gmail
 `
 	tmpFile := t.TempDir() + "/config.yaml"
 	if err := writeFile(tmpFile, yamlContent); err != nil {
@@ -456,6 +490,24 @@ auth:
 	}
 	if cfg.Auth.APIKeyPrefix != "yk_" {
 		t.Errorf("Auth.APIKeyPrefix = %q, want %q", cfg.Auth.APIKeyPrefix, "yk_")
+	}
+	if cfg.Attachment.VirusTotalAPIKey != "yaml-attachment-vt-key" {
+		t.Errorf("Attachment.VirusTotalAPIKey = %q, want YAML value", cfg.Attachment.VirusTotalAPIKey)
+	}
+	if cfg.Notification.SMTP.Host != "smtp.example.test" {
+		t.Errorf("Notification.SMTP.Host = %q, want YAML value", cfg.Notification.SMTP.Host)
+	}
+	if cfg.Notification.SMTP.Port != 1025 {
+		t.Errorf("Notification.SMTP.Port = %d, want 1025", cfg.Notification.SMTP.Port)
+	}
+	if cfg.Notification.Webhook.Secret != "yaml-webhook-secret" {
+		t.Errorf("Notification.Webhook.Secret = %q, want YAML value", cfg.Notification.Webhook.Secret)
+	}
+	if cfg.Gmail.ClientID != "yaml-client-id" {
+		t.Errorf("Gmail.ClientID = %q, want YAML value", cfg.Gmail.ClientID)
+	}
+	if cfg.Gmail.PubSubTopic != "projects/yaml/topics/gmail" {
+		t.Errorf("Gmail.PubSubTopic = %q, want YAML value", cfg.Gmail.PubSubTopic)
 	}
 }
 

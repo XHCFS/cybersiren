@@ -5,7 +5,7 @@
 # via `make dev svc=<service-name>`.
 #
 # Usage:
-#   make up              — start all infra (postgres, valkey, kafka, jaeger)
+#   make up              — start all infra (postgres, valkey, kafka, minio, jaeger)
 #   make up-infra        — start core infra without observability
 #   make dev svc=svc-11  — start only the infra that svc-11-ti-sync needs
 #   make demo svc=svc-03-url-analysis — full demo with monitoring stack
@@ -17,6 +17,7 @@
 #   postgres      — PostgreSQL 15
 #   valkey        — Valkey cache
 #   kafka         — Redpanda broker + topic init + Redpanda Console (Kafka API on :9092)
+#   minio         — MinIO object storage
 #   observability — Jaeger tracing UI
 #   monitoring    — Prometheus + Grafana (metrics dashboards)
 #   svc-03        — svc-03-url-analysis container
@@ -36,6 +37,7 @@ volumes:
   pgdata:
   valkeydata:
   redpandadata:
+  miniodata:
 
 services:
 
@@ -140,6 +142,29 @@ services:
     networks:
       - cybersiren
     restart: "no"
+
+  # ── MinIO (S3-compatible object storage) ───────────────────────────────────
+  minio:
+    image: minio/minio:latest
+    profiles: ["minio"]
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    ports:
+      - "${MINIO_API_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - miniodata:/data
+    networks:
+      - cybersiren
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+    restart: unless-stopped
 
   # ── Demo seed (one-shot migrations + seed data) ──────────────────────────
   # Runs automatically when any service profile is activated.
