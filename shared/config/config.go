@@ -150,7 +150,10 @@ type AuthConfig struct {
 	JWTExpiry    time.Duration `koanf:"jwt_expiry"`
 	BcryptCost   int           `koanf:"bcrypt_cost"`
 	APIKeyPrefix string        `koanf:"api_key_prefix"`
-	// Length of random suffix after prefix (e.g., "cs_" + 8 random chars).
+	// Length of the random suffix appended after the prefix (e.g. "cs_" + 32
+	// random chars). Must be large enough that the stored lookup prefix omits
+	// several trailing random characters; auth.NewKeyManager rejects values that
+	// are too small to keep that reserve secret.
 	APIKeyPrefixLen int `koanf:"api_key_prefix_len"`
 }
 
@@ -298,7 +301,7 @@ func Load() (*Config, error) {
 			JWTExpiry:       24 * time.Hour,
 			BcryptCost:      12,
 			APIKeyPrefix:    "cs_",
-			APIKeyPrefixLen: 8,
+			APIKeyPrefixLen: 32,
 		},
 		Log: LogConfig{
 			Level:  "info",
