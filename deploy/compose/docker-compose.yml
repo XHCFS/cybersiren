@@ -178,7 +178,14 @@ services:
   # upload has a target the moment infra is up. Idempotent (mb --ignore-existing).
   minio-init:
     image: minio/mc:RELEASE.2025-04-08T15-39-49Z
-    profiles: ["postgres", "valkey", "kafka", "minio", "demo"]
+    # NOT in the core infra profiles (postgres/valkey/kafka): this is a one-shot
+    # bucket-bootstrap that exits 0, and `make up-infra`/`up`/`demo-all` use
+    # `up -d --wait`, which errors on a one-shot exit unless it is whitelisted as
+    # a service_completed_successfully dependency (as kafka-init is). The minio
+    # SERVER stays in the core profiles (it is healthchecked); the bucket is
+    # created here under the minio/demo profiles, and otherwise lazily by
+    # shared/objectstore on first use.
+    profiles: ["minio", "demo"]
     container_name: cybersiren-minio-init
     depends_on:
       minio:
