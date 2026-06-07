@@ -88,15 +88,19 @@ INSERT INTO emails (
     auth_dkim,
     auth_dmarc,
     auth_arc,
+    x_originating_ip,
     mailer_agent,
     in_reply_to,
     references_list,
+    content_charset,
+    precedence,
+    list_id,
+    vendor_security_tags,
     subject,
     sent_timestamp,
     headers_json,
     body_plain,
-    body_html,
-    analysis_metadata
+    body_html
 ) VALUES (
     $1,
     $2,
@@ -119,34 +123,42 @@ INSERT INTO emails (
     $19,
     $20,
     $21,
-    $22
+    $22,
+    $23,
+    $24,
+    $25,
+    $26
 )
 RETURNING internal_id, fetched_at
 `
 
 type InsertEmailParams struct {
-	FetchedAt        pgtype.Timestamptz `db:"fetched_at" json:"fetched_at"`
-	OrgID            pgtype.Int8        `db:"org_id" json:"org_id"`
-	MessageID        pgtype.Text        `db:"message_id" json:"message_id"`
-	SenderName       pgtype.Text        `db:"sender_name" json:"sender_name"`
-	SenderEmail      pgtype.Text        `db:"sender_email" json:"sender_email"`
-	SenderDomain     pgtype.Text        `db:"sender_domain" json:"sender_domain"`
-	ReplyToEmail     pgtype.Text        `db:"reply_to_email" json:"reply_to_email"`
-	ReturnPath       pgtype.Text        `db:"return_path" json:"return_path"`
-	OriginatingIp    *netip.Addr        `db:"originating_ip" json:"originating_ip"`
-	AuthSpf          pgtype.Text        `db:"auth_spf" json:"auth_spf"`
-	AuthDkim         pgtype.Text        `db:"auth_dkim" json:"auth_dkim"`
-	AuthDmarc        pgtype.Text        `db:"auth_dmarc" json:"auth_dmarc"`
-	AuthArc          pgtype.Text        `db:"auth_arc" json:"auth_arc"`
-	MailerAgent      pgtype.Text        `db:"mailer_agent" json:"mailer_agent"`
-	InReplyTo        pgtype.Text        `db:"in_reply_to" json:"in_reply_to"`
-	ReferencesList   []string           `db:"references_list" json:"references_list"`
-	Subject          pgtype.Text        `db:"subject" json:"subject"`
-	SentTimestamp    pgtype.Int8        `db:"sent_timestamp" json:"sent_timestamp"`
-	HeadersJson      []byte             `db:"headers_json" json:"headers_json"`
-	BodyPlain        pgtype.Text        `db:"body_plain" json:"body_plain"`
-	BodyHtml         pgtype.Text        `db:"body_html" json:"body_html"`
-	AnalysisMetadata []byte             `db:"analysis_metadata" json:"analysis_metadata"`
+	FetchedAt          pgtype.Timestamptz `db:"fetched_at" json:"fetched_at"`
+	OrgID              pgtype.Int8        `db:"org_id" json:"org_id"`
+	MessageID          pgtype.Text        `db:"message_id" json:"message_id"`
+	SenderName         pgtype.Text        `db:"sender_name" json:"sender_name"`
+	SenderEmail        pgtype.Text        `db:"sender_email" json:"sender_email"`
+	SenderDomain       pgtype.Text        `db:"sender_domain" json:"sender_domain"`
+	ReplyToEmail       pgtype.Text        `db:"reply_to_email" json:"reply_to_email"`
+	ReturnPath         pgtype.Text        `db:"return_path" json:"return_path"`
+	OriginatingIp      *netip.Addr        `db:"originating_ip" json:"originating_ip"`
+	AuthSpf            pgtype.Text        `db:"auth_spf" json:"auth_spf"`
+	AuthDkim           pgtype.Text        `db:"auth_dkim" json:"auth_dkim"`
+	AuthDmarc          pgtype.Text        `db:"auth_dmarc" json:"auth_dmarc"`
+	AuthArc            pgtype.Text        `db:"auth_arc" json:"auth_arc"`
+	XOriginatingIp     *netip.Addr        `db:"x_originating_ip" json:"x_originating_ip"`
+	MailerAgent        pgtype.Text        `db:"mailer_agent" json:"mailer_agent"`
+	InReplyTo          pgtype.Text        `db:"in_reply_to" json:"in_reply_to"`
+	ReferencesList     []string           `db:"references_list" json:"references_list"`
+	ContentCharset     pgtype.Text        `db:"content_charset" json:"content_charset"`
+	Precedence         pgtype.Text        `db:"precedence" json:"precedence"`
+	ListID             pgtype.Text        `db:"list_id" json:"list_id"`
+	VendorSecurityTags []byte             `db:"vendor_security_tags" json:"vendor_security_tags"`
+	Subject            pgtype.Text        `db:"subject" json:"subject"`
+	SentTimestamp      pgtype.Int8        `db:"sent_timestamp" json:"sent_timestamp"`
+	HeadersJson        []byte             `db:"headers_json" json:"headers_json"`
+	BodyPlain          pgtype.Text        `db:"body_plain" json:"body_plain"`
+	BodyHtml           pgtype.Text        `db:"body_html" json:"body_html"`
 }
 
 type InsertEmailRow struct {
@@ -173,6 +185,13 @@ type InsertEmailRow struct {
 // plus the partition key needed by every downstream child-row insert.
 // fetched_at is supplied by the caller (assigned at ingestion) so it stays
 // stable across the whole persist transaction.
+//
+// Columns are exactly the set ARCH-SPEC §14 step 2 assigns to the parser
+// (including x_originating_ip / content_charset / precedence / list_id /
+// vendor_security_tags, which also ride analysis.headers). The score / verdict
+// columns (risk_score, header/content/url/attachment_risk_score, campaign_id,
+// analysis_metadata) are DELIBERATELY omitted — §14 step 2 keeps them at
+// DEFAULT 0 / NULL until the Decision Engine UPDATEs them in step 5.
 func (q *Queries) InsertEmail(ctx context.Context, arg InsertEmailParams) (InsertEmailRow, error) {
 	row := q.db.QueryRow(ctx, insertEmail,
 		arg.FetchedAt,
@@ -188,15 +207,19 @@ func (q *Queries) InsertEmail(ctx context.Context, arg InsertEmailParams) (Inser
 		arg.AuthDkim,
 		arg.AuthDmarc,
 		arg.AuthArc,
+		arg.XOriginatingIp,
 		arg.MailerAgent,
 		arg.InReplyTo,
 		arg.ReferencesList,
+		arg.ContentCharset,
+		arg.Precedence,
+		arg.ListID,
+		arg.VendorSecurityTags,
 		arg.Subject,
 		arg.SentTimestamp,
 		arg.HeadersJson,
 		arg.BodyPlain,
 		arg.BodyHtml,
-		arg.AnalysisMetadata,
 	)
 	var i InsertEmailRow
 	err := row.Scan(&i.InternalID, &i.FetchedAt)

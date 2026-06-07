@@ -19,9 +19,12 @@
 //	    the partitioned `emails` composite PK, and it is what SVC-04 writes
 //	    to `rule_hits.entity_id` (ARCH-SPEC §14 step 3b).
 //
-//	Both ids are carried on analysis.headers (and emails.scored) so
-//	consumers reconstruct the `(internal_id, fetched_at)` PK without a DB
-//	lookup. SVC-02 (P1.1) populates `internal_id` from the INSERT RETURNING;
+//	Both ids are carried on analysis.headers, scores.header, and
+//	emails.scored so consumers reconstruct the `(internal_id, fetched_at)`
+//	PK without a DB lookup. scores.header forwards `internal_id` because the
+//	aggregator (SVC-07) that builds emails.scored has no DB access (§4) and
+//	header is the always-present component.
+//	SVC-02 (P1.1) populates `internal_id` from the INSERT RETURNING;
 //	until then it is zero and consumers fall back to `email_id` (the interim
 //	int64 email_id == internal_id equivalence). There is NO permanent
 //	`email_id == internal_id` invariant.
@@ -113,9 +116,19 @@ type ReceivedHop struct {
 // ScoresHeaderMessage matches the `scores.header` topic payload.
 type ScoresHeaderMessage struct {
 	EmailID int64 `json:"email_id"`
-	OrgID   int64 `json:"org_id"`
-	// FetchedAt is emails.fetched_at (composite PK); required for partitioned
-	// emails updates from svc-08 when propagated through emails.scored.
+	// InternalID is the DB BIGSERIAL surrogate (emails.internal_id), forwarded
+	// by SVC-04 from analysis.headers so SVC-07 — which has no DB access (§4) —
+	// can place it on emails.scored without a lookup. Header is the always-
+	// present component (emails.scored.header_score is non-nullable), so this is
+	// the reliable carrier for the surrogate id. With FetchedAt it forms the
+	// partitioned emails composite PK that SVC-08 writes against. Zero until
+	// SVC-02 populates internal_id from the INSERT RETURNING (P1.1); consumers
+	// fall back to EmailID (interim int64 email_id == internal_id equivalence).
+	InternalID int64 `json:"internal_id,omitempty"`
+	OrgID      int64 `json:"org_id"`
+	// FetchedAt is emails.fetched_at; with InternalID it is the composite PK
+	// SVC-08 needs for partitioned emails updates, propagated SVC-04 → SVC-07 →
+	// emails.scored.
 	FetchedAt time.Time `json:"fetched_at,omitempty"`
 
 	Component string `json:"component"` // always "header"

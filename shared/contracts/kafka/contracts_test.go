@@ -281,6 +281,18 @@ func TestSpecWireTags(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, string(nlp), `"facets"`)
 	assert.Contains(t, string(nlp), `"model_versions"`)
+
+	// scores.header forwards internal_id so the aggregator (no DB access) can
+	// place the surrogate PK on emails.scored without a lookup.
+	shdr, err := json.Marshal(contracts.ScoresHeaderMessage{
+		EmailID: 1, InternalID: 9, OrgID: 2, Component: contracts.ComponentHeader, Score: 50,
+	})
+	require.NoError(t, err)
+	assert.Contains(t, string(shdr), `"internal_id":9`)
+	var shdrOut contracts.ScoresHeaderMessage
+	require.NoError(t, json.Unmarshal(shdr, &shdrOut))
+	assert.Equal(t, int64(9), shdrOut.InternalID)
+
 	// score is an int, never a float on the wire.
 	assert.Contains(t, string(nlp), `"score":50`)
 }
