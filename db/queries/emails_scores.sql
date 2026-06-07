@@ -6,7 +6,7 @@
 -- key.
 -- =============================================================================
 
--- name: UpdateEmailScores :exec
+-- name: UpdateEmailScores :execrows
 -- Sets the final risk scores and campaign linkage for a fully-scored email.
 -- analysis_metadata is JSONB; NULL keeps the existing value unchanged.
 UPDATE emails
