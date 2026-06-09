@@ -25,6 +25,9 @@ func pgInt8(v int64) pgtype.Int8 {
 }
 
 func pgInt4(v int32) pgtype.Int4 {
+	if v == 0 {
+		return pgtype.Int4{}
+	}
 	return pgtype.Int4{Int32: v, Valid: true}
 }
 
