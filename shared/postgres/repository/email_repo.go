@@ -33,36 +33,6 @@ type EmailKey struct {
 	FetchedAt  pgtype.Timestamptz
 }
 
-// PersistParsedEmail bundles the email row plus its child artefacts so they can
-// be written atomically under one org GUC. The child rows do not carry the
-// email key yet; it is filled in from the InsertEmail result before they are
-// inserted.
-type PersistParsedEmail struct {
-	Email       db.InsertEmailParams
-	URLs        []ChildURL
-	Attachments []ChildAttachment
-	Recipients  []ChildRecipient
-}
-
-// ChildURL is one extracted URL plus its enriched_threats linkage. ThreatID is
-// resolved by the caller via UpsertBareEnrichedThreat before this is built.
-type ChildURL struct {
-	ThreatID    pgtype.Int8
-	VisibleText pgtype.Text
-}
-
-// ChildAttachment links a parsed attachment to its attachment_library row.
-// Per ARCH-SPEC §14 the parser writes only the link columns; risk_score and
-// analysis_metadata are SVC-05's to UPDATE after scoring (§15 gap #2), so they
-// are intentionally absent here.
-type ChildAttachment struct {
-	AttachmentID int64
-	Filename     pgtype.Text
-	ContentType  pgtype.Text
-	ContentID    pgtype.Text
-	Disposition  pgtype.Text
-}
-
 // ChildRecipient is one to/cc/bcc recipient of the email.
 type ChildRecipient struct {
 	Address       string
@@ -100,10 +70,10 @@ type ParsedAttachment struct {
 
 // PersistParsedFull bundles the full SVC-02 parser output so the 6 write-groups
 // (emails, enriched_threats, email_urls, attachment_library, email_attachments,
-// email_recipients) execute atomically under one org GUC. Unlike
-// PersistParsedEmail the URL/attachment children carry their parent-table
-// inputs (enriched_threats / attachment_library) so the repo resolves the FKs
-// itself inside the same transaction.
+// email_recipients) execute atomically under one org GUC. The URL/attachment
+// children carry their parent-table inputs (enriched_threats /
+// attachment_library) so the repo resolves the FKs itself inside the same
+// transaction.
 type PersistParsedFull struct {
 	Email       db.InsertEmailParams
 	URLs        []ParsedURL
@@ -168,69 +138,6 @@ func (r *EmailRepository) PersistParsed(ctx context.Context, orgID int64, in Per
 				EmailID:        key.InternalID,
 				EmailFetchedAt: key.FetchedAt,
 				AttachmentID:   attachmentID,
-				Filename:       a.Filename,
-				ContentType:    a.ContentType,
-				ContentID:      a.ContentID,
-				Disposition:    a.Disposition,
-				OrgID:          orgParam,
-			}); err != nil {
-				return fmt.Errorf("insert email_attachment[%d]: %w", i, err)
-			}
-		}
-
-		for i, rc := range in.Recipients {
-			if _, err := q.InsertEmailRecipient(ctx, db.InsertEmailRecipientParams{
-				EmailID:        key.InternalID,
-				EmailFetchedAt: key.FetchedAt,
-				OrgID:          orgParam,
-				Address:        rc.Address,
-				DisplayName:    rc.DisplayName,
-				RecipientType:  rc.RecipientType,
-			}); err != nil {
-				return fmt.Errorf("insert email_recipient[%d]: %w", i, err)
-			}
-		}
-		return nil
-	})
-	if err != nil {
-		return EmailKey{}, err
-	}
-	return key, nil
-}
-
-// Insert writes the email and all child rows in a single org-scoped tx and
-// returns the DB-assigned composite key. orgID must match in.Email.OrgID.
-func (r *EmailRepository) Insert(ctx context.Context, orgID int64, in PersistParsedEmail) (EmailKey, error) {
-	if r == nil || r.pool == nil {
-		return EmailKey{}, errors.New("email repository: nil pool")
-	}
-
-	var key EmailKey
-	err := WithOrgTx(ctx, r.pool, orgID, func(q *db.Queries) error {
-		row, err := q.InsertEmail(ctx, in.Email)
-		if err != nil {
-			return fmt.Errorf("insert email: %w", err)
-		}
-		key = EmailKey{InternalID: row.InternalID, FetchedAt: row.FetchedAt}
-		orgParam := pgtype.Int8{Int64: orgID, Valid: true}
-
-		for i, u := range in.URLs {
-			if _, err := q.InsertEmailURL(ctx, db.InsertEmailURLParams{
-				EmailID:        key.InternalID,
-				EmailFetchedAt: key.FetchedAt,
-				ThreatID:       u.ThreatID,
-				VisibleText:    u.VisibleText,
-				OrgID:          orgParam,
-			}); err != nil {
-				return fmt.Errorf("insert email_url[%d]: %w", i, err)
-			}
-		}
-
-		for i, a := range in.Attachments {
-			if err := q.InsertEmailAttachment(ctx, db.InsertEmailAttachmentParams{
-				EmailID:        key.InternalID,
-				EmailFetchedAt: key.FetchedAt,
-				AttachmentID:   a.AttachmentID,
 				Filename:       a.Filename,
 				ContentType:    a.ContentType,
 				ContentID:      a.ContentID,

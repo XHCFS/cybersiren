@@ -65,12 +65,12 @@ func TestDetectContentTypeMagicBytes(t *testing.T) {
 	}
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := detectContentType("f", tt.data); got != tt.want {
+			if got := detectContentType(tt.data); got != tt.want {
 				t.Errorf("detectContentType() = %q, want %q", got, tt.want)
 			}
 		})
 	}
-	if got := detectContentType("f", nil); got != "" {
+	if got := detectContentType(nil); got != "" {
 		t.Errorf("detectContentType(nil) = %q, want empty", got)
 	}
 }

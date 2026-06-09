@@ -49,7 +49,7 @@ func analyzeAttachment(filename, contentType, contentID, disposition string, dat
 		SHA1:         hex.EncodeToString(sum1[:]),
 		MD5:          hex.EncodeToString(sum5[:]),
 		Entropy:      ShannonEntropy(data),
-		DetectedType: detectContentType(filename, data),
+		DetectedType: detectContentType(data),
 	}
 }
 
@@ -100,7 +100,7 @@ var magicSignatures = []struct {
 
 // detectContentType returns the magic-byte-derived content type for data,
 // falling back to net/http content sniffing (then "application/octet-stream").
-func detectContentType(filename string, data []byte) string {
+func detectContentType(data []byte) string {
 	if len(data) == 0 {
 		return ""
 	}

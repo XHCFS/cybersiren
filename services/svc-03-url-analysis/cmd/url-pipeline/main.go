@@ -17,7 +17,6 @@ import (
 	"fmt"
 	"os"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -252,12 +251,13 @@ func persistEnrichment(
 		if ref == "" {
 			ref = s.URL
 		}
+		apex := url.ApexFromURL(ref)
 		results = append(results, persist.URLResult{
 			RawURL:       s.URL,
 			Normalized:   s.Normalized,
 			Domain:       url.HostnameFromURL(ref),
-			TLD:          tldFromApex(url.ApexFromURL(ref)),
-			Apex:         url.ApexFromURL(ref),
+			TLD:          normalization.TLDLabel(apex),
+			Apex:         apex,
 			Score:        s.Score,
 			Label:        s.Label,
 			GuardHit:     s.GuardHit,
@@ -291,17 +291,6 @@ func persistEnrichment(
 			Int64("email_id", input.Meta.EmailID).
 			Msg("enrichment persistence reported errors (scores already published)")
 	}
-}
-
-// tldFromApex returns the public-suffix label of an apex domain (e.g.
-// "evil.example.com" apex "example.com" → "com"). Returns "" for an empty apex
-// or an IP literal (no dot-delimited TLD).
-func tldFromApex(apex string) string {
-	i := strings.LastIndex(apex, ".")
-	if i < 0 || i == len(apex)-1 {
-		return ""
-	}
-	return apex[i+1:]
 }
 
 // scanOne mirrors the standalone /scan handler: normalise, run ML + TI in

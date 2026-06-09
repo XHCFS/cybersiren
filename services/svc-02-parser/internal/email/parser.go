@@ -48,6 +48,12 @@ type ParsedEmail struct {
 	URLs        []ExtractedURL
 	Attachments []Attachment
 	Recipients  []Recipient
+
+	// htmlBuf / plainBuf accumulate body parts during the MIME walk so repeated
+	// concatenation stays linear; finalize() stringifies them into BodyHTML /
+	// BodyPlain once the walk is done.
+	htmlBuf  strings.Builder
+	plainBuf strings.Builder
 }
 
 // HasBody reports whether the parsed email carries any body content (HTML or
@@ -85,9 +91,11 @@ func Parse(raw []byte) (*ParsedEmail, error) {
 	return pe, nil
 }
 
-// finalize derives the plain-text body from HTML when only HTML was present and
-// dedupes the URL list.
+// finalize stringifies the accumulated body buffers, derives the plain-text
+// body from HTML when only HTML was present, and dedupes the URL list.
 func (p *ParsedEmail) finalize() {
+	p.BodyHTML = p.htmlBuf.String()
+	p.BodyPlain = p.plainBuf.String()
 	if strings.TrimSpace(p.BodyPlain) == "" && p.BodyHTML != "" {
 		p.BodyPlain = HTMLToText(p.BodyHTML)
 	}
@@ -148,9 +156,9 @@ func walkPart(mediaType string, params map[string]string, cte, disposition, cont
 
 	switch {
 	case mediaType == "text/html":
-		pe.BodyHTML += string(decoded)
+		pe.htmlBuf.Write(decoded)
 	case mediaType == "text/plain", isText:
-		pe.BodyPlain += string(decoded)
+		pe.plainBuf.Write(decoded)
 	default:
 		// Unknown non-text leaf with no disposition: keep as an attachment so
 		// nothing is silently dropped.
@@ -176,10 +184,9 @@ func decodeBody(r io.Reader, cte string) []byte {
 		}
 		return dst[:n]
 	case "quoted-printable":
-		out, err := io.ReadAll(quotedprintable.NewReader(r))
-		if err != nil {
-			return out
-		}
+		// On a malformed QP stream io.ReadAll returns the bytes decoded so far;
+		// keep those partial bytes intentionally rather than losing the part.
+		out, _ := io.ReadAll(quotedprintable.NewReader(r))
 		return out
 	default:
 		raw, _ := io.ReadAll(r)
@@ -188,7 +195,9 @@ func decodeBody(r io.Reader, cte string) []byte {
 }
 
 func stripWhitespaceBytes(b []byte) []byte {
-	out := b[:0:len(b)]
+	// Build into a fresh slice — never mutate b's backing array, so the base64
+	// error path in decodeBody can hand back the original raw bytes intact.
+	out := make([]byte, 0, len(b))
 	for _, c := range b {
 		switch c {
 		case '\n', '\r', '\t', ' ':

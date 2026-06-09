@@ -1,6 +1,9 @@
 package email
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestExtractURLsFromHTML(t *testing.T) {
 	html := `
@@ -72,6 +75,32 @@ func TestExtractURLsFromText(t *testing.T) {
 		if u.HTMLContext != "plain_text" {
 			t.Errorf("%q html_context = %q, want plain_text", u.URL, u.HTMLContext)
 		}
+	}
+}
+
+// TestExtractURLsFromHTMLTruncatesVisibleText guards the nodeText cap: a huge
+// text subtree inside an anchor must be truncated to maxVisibleText rather than
+// bloating the message with the entire subtree.
+func TestExtractURLsFromHTMLTruncatesVisibleText(t *testing.T) {
+	huge := strings.Repeat("A", maxVisibleText*4)
+	htmlBody := `<html><body><a href="https://big.example.com/x">` + huge + `</a></body></html>`
+
+	got := ExtractURLsFromHTML(htmlBody)
+	var anchor *ExtractedURL
+	for i := range got {
+		if got[i].URL == "https://big.example.com/x" {
+			anchor = &got[i]
+			break
+		}
+	}
+	if anchor == nil {
+		t.Fatalf("anchor URL not extracted: %+v", got)
+	}
+	if len(anchor.VisibleText) > maxVisibleText {
+		t.Errorf("visible_text len = %d, want <= %d (truncated)", len(anchor.VisibleText), maxVisibleText)
+	}
+	if len(anchor.VisibleText) >= len(huge) {
+		t.Errorf("visible_text was not truncated: len = %d, original = %d", len(anchor.VisibleText), len(huge))
 	}
 }
 

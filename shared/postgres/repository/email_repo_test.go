@@ -2,7 +2,10 @@ package repository
 
 import (
 	"context"
+	"errors"
 	"testing"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	db "github.com/saif/cybersiren/db/sqlc"
 )
@@ -26,20 +29,20 @@ func TestPersistParsedNilPool(t *testing.T) {
 
 func TestPersistParsedRejectsMissingOrg(t *testing.T) {
 	t.Parallel()
-	r := NewEmailRepository(nil)
-	// orgID <= 0 must be rejected by the same WithOrgTx guard the repo relies on,
-	// independent of pool state — a write with no org is unroutable under RLS.
-	_, err := r.PersistParsed(context.Background(), 0, PersistParsedFull{})
-	if err == nil {
-		t.Fatal("expected error for org_id = 0")
+	// A real (non-nil) pool is needed to reach the orgID<=0 guard: WithOrgTx
+	// checks the nil-pool case first, so passing nil would short-circuit on the
+	// pool error and never exercise org rejection. pgxpool.New does not connect
+	// eagerly (pool_min_conns defaults to 0), so a dummy DSN yields a live *Pool
+	// without touching the network, and the orgID<=0 guard returns before any
+	// query — a write with no org is unroutable under RLS.
+	pool, err := pgxpool.New(context.Background(), "postgres://user:pass@127.0.0.1:1/db")
+	if err != nil {
+		t.Fatalf("construct lazy pool: %v", err)
 	}
-}
-
-func TestInsertEmailNilPool(t *testing.T) {
-	t.Parallel()
-	var r *EmailRepository
-	if _, err := r.Insert(context.Background(), 1, PersistParsedEmail{}); err == nil {
-		t.Fatal("expected error for nil repository")
+	defer pool.Close()
+	r := NewEmailRepository(pool)
+	if _, err := r.PersistParsed(context.Background(), 0, PersistParsedFull{}); !errors.Is(err, ErrNoOrgContext) {
+		t.Fatalf("expected ErrNoOrgContext for org_id = 0, got %v", err)
 	}
 }
 

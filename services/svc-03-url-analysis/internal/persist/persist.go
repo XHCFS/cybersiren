@@ -30,6 +30,7 @@ import (
 	"github.com/rs/zerolog"
 
 	db "github.com/saif/cybersiren/db/sqlc"
+	"github.com/saif/cybersiren/shared/postgres/pgconv"
 	"github.com/saif/cybersiren/shared/postgres/repository"
 )
 
@@ -155,7 +156,7 @@ func (p *Persister) Persist(ctx context.Context, e Email) error {
 		return nil
 	}
 
-	fetchedAt := pgTimestamptz(e.FetchedAt)
+	fetchedAt := pgconv.TimestamptzOrNull(e.FetchedAt)
 
 	// Resolve the email_urls SVC-02 persisted so TI matches can be audited
 	// against the correct email_url id. A miss (SVC-02 P1.1 not yet wired, or an
@@ -191,7 +192,7 @@ func (p *Persister) Persist(ctx context.Context, e Email) error {
 // Returns an empty (non-nil) map when SVC-02 has not yet persisted the URLs.
 func (p *Persister) emailURLIndex(ctx context.Context, e Email) map[int64]int64 {
 	idx := make(map[int64]int64)
-	rows, err := p.store.ListEmailURLs(ctx, e.OrgID, e.InternalID, pgTimestamptz(e.FetchedAt))
+	rows, err := p.store.ListEmailURLs(ctx, e.OrgID, e.InternalID, pgconv.TimestamptzOrNull(e.FetchedAt))
 	if err != nil {
 		p.log.Warn().Err(err).
 			Int64("internal_id", e.InternalID).
@@ -217,9 +218,9 @@ func (p *Persister) persistURL(
 	// (1) Resolve the enriched_threats row id by URL (idempotent bare upsert).
 	threatID, err := p.store.ResolveThreatID(ctx, e.OrgID, db.UpsertBareEnrichedThreatParams{
 		Url:    u.RawURL,
-		Domain: pgText(u.Domain),
-		Tld:    pgText(u.TLD),
-		OrgID:  pgInt8(e.OrgID),
+		Domain: pgconv.Text(u.Domain),
+		Tld:    pgconv.Text(u.TLD),
+		OrgID:  pgconv.Int8(e.OrgID),
 	})
 	if err != nil {
 		return err
@@ -243,13 +244,18 @@ func (p *Persister) persistURL(
 		p.log.Warn().Err(priorErr).Str("domain", u.Domain).Msg("prior-enrichment read failed")
 	}
 
+	// Serialise the analysis_metadata blob once per URL; both the enriched_threats
+	// UPDATE (analysis_metadata jsonb) and the enrichment_results UPSERT
+	// (raw_response) reuse the same bytes.
+	blob := u.analysisMetadata()
+
 	// (3) enriched_threats UPDATE — persist this URL's computed enrichment.
-	if err := p.store.ApplyThreatEnrichment(ctx, e.OrgID, p.buildEnrichmentUpdate(threatID, u)); err != nil {
+	if err := p.store.ApplyThreatEnrichment(ctx, e.OrgID, p.buildEnrichmentUpdate(threatID, u, blob)); err != nil {
 		return err
 	}
 
 	// (4) enrichment_results UPSERT — cache the fused verdict for this entity.
-	if _, err := p.store.UpsertResult(ctx, e.OrgID, p.buildEnrichmentResult(threatID, fetchedAt, e.OrgID, u)); err != nil {
+	if _, err := p.store.UpsertResult(ctx, e.OrgID, p.buildEnrichmentResult(threatID, fetchedAt, e.OrgID, u, blob)); err != nil {
 		return err
 	}
 
@@ -281,7 +287,7 @@ func (p *Persister) persistURL(
 		MaxAttempts:    defaultMaxAttempts,
 		TimeoutSeconds: defaultTimeoutSeconds,
 		Priority:       defaultPriority,
-		OrgID:          pgInt8(e.OrgID),
+		OrgID:          pgconv.Int8(e.OrgID),
 	})
 	if err != nil {
 		return err
@@ -295,19 +301,22 @@ func (p *Persister) persistURL(
 }
 
 // buildEnrichmentUpdate shapes the enriched_threats UPDATE params from the
-// already-computed scan. Only the columns SVC-03 actually derives are set; the
-// rest stay NULL and the COALESCE query leaves them untouched (so a later WHOIS/
-// geo enrichment pass — or SVC-04 — does not get clobbered). risk_score and
+// already-computed scan. blob is the analysis_metadata jsonb computed once by
+// the caller. Only the columns SVC-03 actually derives are set; the rest stay
+// NULL and the COALESCE query leaves them untouched (so a later WHOIS/geo
+// enrichment pass — or SVC-04 — does not get clobbered). risk_score and
 // threat_type are the URL verdict; analysis_metadata captures the signal trail.
-func (p *Persister) buildEnrichmentUpdate(threatID int64, u *URLResult) db.UpdateEnrichedThreatEnrichmentParams {
+// risk_score uses the zero-to-NULL variant so a benign re-observation (Score=0)
+// does not clobber a prior malicious verdict.
+func (p *Persister) buildEnrichmentUpdate(threatID int64, u *URLResult, blob []byte) db.UpdateEnrichedThreatEnrichmentParams {
 	params := db.UpdateEnrichedThreatEnrichmentParams{
 		ID:        threatID,
-		RiskScore: pgInt4(int32(u.Score)),
+		RiskScore: pgconv.Int4OrNull(int32(u.Score)),
 	}
 	if tt := threatTypeForLabel(u.Label); tt != "" {
-		params.ThreatType = pgText(tt)
+		params.ThreatType = pgconv.Text(tt)
 	}
-	if blob := u.analysisMetadata(); len(blob) > 0 {
+	if len(blob) > 0 {
 		params.Column30 = blob // analysis_metadata jsonb
 	}
 	return params
@@ -324,6 +333,7 @@ func (p *Persister) buildEnrichmentResult(
 	fetchedAt pgtype.Timestamptz,
 	orgID int64,
 	u *URLResult,
+	blob []byte,
 ) db.UpsertEnrichmentResultParams {
 	const ttlSeconds = 24 * 60 * 60 // 24h, mirrors the URL-enrichment cache TTL
 	return db.UpsertEnrichmentResultParams{
@@ -331,11 +341,11 @@ func (p *Persister) buildEnrichmentResult(
 		EntityID:        threatID,
 		EmailFetchedAt:  fetchedAt,
 		Provider:        enrichmentProvider,
-		RawResponse:     u.analysisMetadata(),
-		ReputationScore: pgFloat8(float64(u.Score)),
-		TtlSeconds:      pgInt4(ttlSeconds),
-		ExpiresAt:       pgTimestamptz(time.Now().Add(ttlSeconds * time.Second)),
-		OrgID:           pgInt8(orgID),
+		RawResponse:     blob,
+		ReputationScore: pgconv.Float8(float64(u.Score)),
+		TtlSeconds:      pgconv.Int4OrNull(ttlSeconds),
+		ExpiresAt:       pgconv.TimestamptzOrNull(time.Now().Add(ttlSeconds * time.Second)),
+		OrgID:           pgconv.Int8(orgID),
 	}
 }
 

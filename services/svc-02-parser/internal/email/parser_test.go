@@ -1,6 +1,7 @@
 package email
 
 import (
+	"bytes"
 	"encoding/base64"
 	"strings"
 	"testing"
@@ -139,6 +140,23 @@ func TestParseHeaderOnlyMessage(t *testing.T) {
 	}
 	if len(pe.Attachments) != 0 {
 		t.Errorf("got %d attachments, want 0", len(pe.Attachments))
+	}
+}
+
+// TestDecodeBodyMalformedBase64ReturnsOriginal guards the stripWhitespaceBytes
+// aliasing bug: when a base64 part has interior whitespace but is malformed once
+// stripped, decodeBody must hand back the ORIGINAL raw bytes unchanged — not a
+// compacted prefix left behind by mutating the caller's backing array.
+func TestDecodeBodyMalformedBase64ReturnsOriginal(t *testing.T) {
+	// "ABCD@@@@" is not valid base64 (`@` is not in the alphabet); the embedded
+	// spaces/newlines exercise stripWhitespaceBytes before the decode fails.
+	raw := []byte("AB CD\r\n@@@@")
+	original := append([]byte(nil), raw...) // independent copy of the input
+
+	got := decodeBody(bytes.NewReader(raw), "base64")
+
+	if !bytes.Equal(got, original) {
+		t.Fatalf("decodeBody on malformed base64 = %q, want original %q", got, original)
 	}
 }
 

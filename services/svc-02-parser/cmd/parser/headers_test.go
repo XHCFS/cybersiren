@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"net/mail"
 	"testing"
 )
@@ -60,5 +61,70 @@ func TestReceivedChainEmpty(t *testing.T) {
 	}
 	if got := originatingAddr(h); got != nil {
 		t.Errorf("originatingAddr = %v, want nil", got)
+	}
+}
+
+// headers_json must keep every value of a repeated header. The old code stored
+// only vv[0], silently dropping all but the first Received line; the map is now
+// map[string][]string so the full chain survives the round-trip.
+func TestHeaderMapJSONPreservesRepeatedHeaders(t *testing.T) {
+	h := mail.Header{
+		"Received": []string{
+			"from relay.receiver.com by mx.receiver.com",
+			"from mail.sender.com by relay.receiver.com",
+			"from origin.example by mail.sender.com",
+		},
+		"Authentication-Results": []string{
+			"mx.receiver.com; spf=pass",
+			"relay.receiver.com; dkim=pass",
+		},
+		"Subject": []string{"hello"},
+	}
+
+	raw := headerMapJSON(h)
+	var got map[string][]string
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("headers_json is not a map[string][]string: %v (raw=%s)", err, raw)
+	}
+
+	if len(got["Received"]) != 3 {
+		t.Fatalf("headers_json Received len = %d, want 3 (repeated values must be preserved): %v", len(got["Received"]), got["Received"])
+	}
+	for i, want := range h["Received"] {
+		if got["Received"][i] != want {
+			t.Errorf("headers_json Received[%d] = %q, want %q", i, got["Received"][i], want)
+		}
+	}
+
+	if len(got["Authentication-Results"]) != 2 {
+		t.Errorf("headers_json Authentication-Results len = %d, want 2: %v", len(got["Authentication-Results"]), got["Authentication-Results"])
+	}
+
+	if len(got["Subject"]) != 1 || got["Subject"][0] != "hello" {
+		t.Errorf("headers_json Subject = %v, want [hello]", got["Subject"])
+	}
+}
+
+// attachmentObjectKey is content-addressed and org-agnostic: identical bytes
+// must map to one global key regardless of tenant, with the sha256 two-level
+// fan-out preserved (attachment_library is a global content-addressed table).
+func TestAttachmentObjectKeyIsOrgAgnostic(t *testing.T) {
+	sha := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	got := attachmentObjectKey(sha)
+	want := "attachments/01/23/" + sha
+	if got != want {
+		t.Fatalf("attachmentObjectKey = %q, want %q", got, want)
+	}
+}
+
+// A missing/short hash still yields a stable two-level key (defensive path).
+func TestAttachmentObjectKeyShortHash(t *testing.T) {
+	got := attachmentObjectKey("ab")
+	if got == "attachments/ab" || len(got) <= len("attachments///") {
+		t.Fatalf("attachmentObjectKey(short) = %q, want a stable fanned key", got)
+	}
+	// Same short input must be deterministic.
+	if again := attachmentObjectKey("ab"); again != got {
+		t.Fatalf("attachmentObjectKey(short) not deterministic: %q vs %q", got, again)
 	}
 }

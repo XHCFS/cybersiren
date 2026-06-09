@@ -18,11 +18,13 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/mail"
 	"net/netip"
@@ -31,7 +33,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/rs/zerolog"
 
 	db "github.com/saif/cybersiren/db/sqlc"
@@ -40,6 +42,7 @@ import (
 	kafkaconsumer "github.com/saif/cybersiren/shared/kafka/consumer"
 	"github.com/saif/cybersiren/shared/normalization"
 	"github.com/saif/cybersiren/shared/objectstore"
+	"github.com/saif/cybersiren/shared/postgres/pgconv"
 	"github.com/saif/cybersiren/shared/postgres/repository"
 	"github.com/saif/cybersiren/shared/svckit"
 )
@@ -73,11 +76,13 @@ func main() {
 }
 
 // parserApp holds the resources the handler needs beyond svckit.Deps: the
-// object store (attachment binaries, G6) and the email repository (the 6
-// org-scoped write-groups). They are constructed once in onReady.
+// object store (attachment binaries, G6), the email repository (the 6
+// org-scoped write-groups), and the per-message metrics. They are constructed
+// once in onReady.
 type parserApp struct {
-	store objectstore.Store
-	repo  *repository.EmailRepository
+	store   objectstore.Store
+	repo    *repository.EmailRepository
+	metrics *parserMetrics
 }
 
 // onReady connects the object store and builds the email repository. The store
@@ -85,6 +90,7 @@ type parserApp struct {
 // persists, just without storage_uri (logged as a warning).
 func (a *parserApp) onReady(ctx context.Context, deps svckit.Deps) error {
 	a.repo = repository.NewEmailRepository(deps.Pool)
+	a.metrics = newParserMetrics(deps.Registry)
 
 	store, err := objectstore.New(ctx, objectstore.Config{
 		Endpoint:     deps.Cfg.Storage.Endpoint,
@@ -106,21 +112,53 @@ func (a *parserApp) onReady(ctx context.Context, deps svckit.Deps) error {
 func (a *parserApp) handle(ctx context.Context, msg kafkaconsumer.Message, deps svckit.Deps) error {
 	var raw contracts.EmailsRaw
 	if err := json.Unmarshal(msg.Value, &raw); err != nil {
-		return fmt.Errorf("decode emails.raw: %w", err)
+		// Permanent bad data: a payload that does not decode will never decode
+		// on redelivery, so drop it and let the offset commit rather than block
+		// the partition.
+		a.metrics.dropped()
+		deps.Log.Error().Err(err).
+			Int("partition", msg.Partition).
+			Int64("offset", msg.Offset).
+			Int64("email_id", raw.Meta.EmailID).
+			Msg("malformed emails.raw payload; skipping (offset will commit)")
+		return nil
 	}
 	if raw.Meta.OrgID <= 0 {
-		// RLS requires a real org on every write; a missing org is unroutable.
-		return fmt.Errorf("svc-02: emails.raw email_id=%d has no org_id", raw.Meta.EmailID)
+		// Permanent bad data: RLS requires a real org on every write; a missing
+		// org is unroutable and cannot be fixed by redelivery, so drop it.
+		a.metrics.dropped()
+		deps.Log.Error().Err(fmt.Errorf("emails.raw has no org_id")).
+			Int("partition", msg.Partition).
+			Int64("offset", msg.Offset).
+			Int64("email_id", raw.Meta.EmailID).
+			Msg("emails.raw missing org_id; skipping (offset will commit)")
+		return nil
 	}
 
 	rawBytes, err := base64.StdEncoding.DecodeString(raw.RawMessageB64)
 	if err != nil {
-		return fmt.Errorf("decode raw_rfc822: %w", err)
+		// Permanent bad data: an undecodable base64 body will never decode on
+		// redelivery, so drop it and let the offset commit.
+		a.metrics.dropped()
+		deps.Log.Error().Err(err).
+			Int("partition", msg.Partition).
+			Int64("offset", msg.Offset).
+			Int64("email_id", raw.Meta.EmailID).
+			Msg("undecodable raw_rfc822 base64; skipping (offset will commit)")
+		return nil
 	}
 
 	parsed, err := email.Parse(rawBytes)
 	if err != nil {
-		return fmt.Errorf("parse rfc822: %w", err)
+		// Permanent bad data: an unparsable RFC-822 message will never parse on
+		// redelivery, so drop it and let the offset commit.
+		a.metrics.dropped()
+		deps.Log.Error().Err(err).
+			Int("partition", msg.Partition).
+			Int64("offset", msg.Offset).
+			Int64("email_id", raw.Meta.EmailID).
+			Msg("unparsable rfc822 message; skipping (offset will commit)")
+		return nil
 	}
 
 	fetchedAt := raw.FetchedAt
@@ -128,21 +166,27 @@ func (a *parserApp) handle(ctx context.Context, msg kafkaconsumer.Message, deps 
 		fetchedAt = time.Now().UTC()
 	}
 
+	// Derive the sender identity, auth results, and flattened headers JSON ONCE
+	// and thread them through the builders so splitAddress/ParseAuthResults/
+	// headerMapJSON each run a single time per email.
+	hv := newHeaderView(parsed)
+
 	// Upload each attachment binary to object storage (G6) and record the
 	// storage_uri so attachment_library points at the persisted blob.
-	storageURIs := a.uploadAttachments(ctx, deps, raw.Meta.OrgID, parsed.Attachments)
+	storageURIs := a.uploadAttachments(ctx, deps, parsed.Attachments)
 
 	// Persist the 6 write-groups atomically under one org GUC, capturing the
 	// DB-assigned (internal_id, fetched_at) composite key (G5/G17).
-	key, err := a.repo.PersistParsed(ctx, raw.Meta.OrgID, buildPersist(raw, parsed, fetchedAt, storageURIs))
+	key, err := a.repo.PersistParsed(ctx, raw.Meta.OrgID, buildPersist(raw, parsed, hv, fetchedAt, storageURIs))
 	if err != nil {
 		return fmt.Errorf("persist parsed email: %w", err)
 	}
 
-	if err := a.publishAll(ctx, deps, raw, parsed, key, fetchedAt, storageURIs); err != nil {
+	if err := a.publishAll(ctx, deps, raw, parsed, hv, key, fetchedAt, storageURIs); err != nil {
 		return err
 	}
 
+	a.metrics.processed()
 	deps.Log.Info().
 		Int64("email_id", raw.Meta.EmailID).
 		Int64("internal_id", key.InternalID).
@@ -157,14 +201,14 @@ func (a *parserApp) handle(ctx context.Context, msg kafkaconsumer.Message, deps 
 // uploadAttachments stores each attachment binary in object storage and returns
 // the storage_uri per attachment index (empty string when the store is absent
 // or the upload failed — persistence still proceeds without the pointer).
-func (a *parserApp) uploadAttachments(ctx context.Context, deps svckit.Deps, orgID int64, atts []email.Attachment) []string {
+func (a *parserApp) uploadAttachments(ctx context.Context, deps svckit.Deps, atts []email.Attachment) []string {
 	uris := make([]string, len(atts))
 	if a.store == nil {
 		return uris
 	}
 	for i, att := range atts {
-		key := attachmentObjectKey(orgID, att.SHA256)
-		info, err := a.store.Put(ctx, key, strings.NewReader(string(att.Data)), objectstore.PutOptions{
+		key := attachmentObjectKey(att.SHA256)
+		info, err := a.store.Put(ctx, key, bytes.NewReader(att.Data), objectstore.PutOptions{
 			ContentType: att.ContentType,
 			Size:        att.SizeBytes,
 		})
@@ -178,27 +222,28 @@ func (a *parserApp) uploadAttachments(ctx context.Context, deps svckit.Deps, org
 }
 
 // attachmentObjectKey is the content-addressed object key for an attachment:
-// org-scoped and sha256-fanned (ab/cd/<sha256>) so a tenant's blobs stay under
-// one prefix and the directory does not grow unbounded in one node.
-func attachmentObjectKey(orgID int64, sha256hex string) string {
+// sha256-fanned (ab/cd/<sha256>) so the directory does not grow unbounded in
+// one node. attachment_library is a global content-addressed table, so the key
+// is org-agnostic — identical bytes map to one blob across tenants.
+func attachmentObjectKey(sha256hex string) string {
 	h := sha256hex
 	if len(h) < 4 {
 		// Defensive: a missing/short hash should still produce a stable key.
 		sum := sha256.Sum256([]byte(sha256hex))
 		h = hex.EncodeToString(sum[:])
 	}
-	return fmt.Sprintf("attachments/%d/%s/%s/%s", orgID, h[0:2], h[2:4], h)
+	return fmt.Sprintf("attachments/%s/%s/%s", h[0:2], h[2:4], h)
 }
 
 // publishAll marshals and publishes the 5 analysis.* messages, keyed by the
 // logical email_id partition key.
-func (a *parserApp) publishAll(ctx context.Context, deps svckit.Deps, raw contracts.EmailsRaw, parsed *email.ParsedEmail, key repository.EmailKey, fetchedAt time.Time, storageURIs []string) error {
+func (a *parserApp) publishAll(ctx context.Context, deps svckit.Deps, raw contracts.EmailsRaw, parsed *email.ParsedEmail, hv headerView, key repository.EmailKey, fetchedAt time.Time, storageURIs []string) error {
 	emailID := raw.Meta.EmailID
 	orgID := raw.Meta.OrgID
 	meta := contracts.NewMetaWithFetched(emailID, orgID, fetchedAt)
 	kafkaKey := []byte(strconv.FormatInt(emailID, 10))
 
-	headersMsg := buildAnalysisHeaders(emailID, key.InternalID, orgID, fetchedAt, parsed)
+	headersMsg := buildAnalysisHeaders(emailID, key.InternalID, orgID, fetchedAt, parsed, hv)
 
 	out := []struct {
 		topic   string
@@ -207,7 +252,7 @@ func (a *parserApp) publishAll(ctx context.Context, deps svckit.Deps, raw contra
 		{contracts.TopicAnalysisURLs, contracts.AnalysisURLs{Meta: meta, URLs: toContractURLs(parsed.URLs)}},
 		{contracts.TopicAnalysisHeaders, headersMsg},
 		{contracts.TopicAnalysisAttachments, contracts.AnalysisAttachments{Meta: meta, Attachments: toContractAttachments(parsed.Attachments)}},
-		{contracts.TopicAnalysisText, buildAnalysisText(meta, parsed)},
+		{contracts.TopicAnalysisText, buildAnalysisText(meta, parsed, hv)},
 		{contracts.TopicAnalysisPlans, buildAnalysisPlan(meta, parsed)},
 	}
 
@@ -228,40 +273,35 @@ func (a *parserApp) publishAll(ctx context.Context, deps svckit.Deps, raw contra
 }
 
 // buildPersist maps the parsed email onto the repository's 6-write-group input.
-func buildPersist(raw contracts.EmailsRaw, parsed *email.ParsedEmail, fetchedAt time.Time, storageURIs []string) repository.PersistParsedFull {
+func buildPersist(raw contracts.EmailsRaw, parsed *email.ParsedEmail, hv headerView, fetchedAt time.Time, storageURIs []string) repository.PersistParsedFull {
 	h := parsed.Header
-	fromAddr, fromName := splitAddress(h.Get("From"))
-	senderDomain := domainOf(fromAddr)
-	auth := email.ParseAuthResults(h.Get("Authentication-Results"))
-
-	headersJSON := headerMapJSON(h)
 
 	emailParams := db.InsertEmailParams{
-		FetchedAt:      pgTimestamptz(fetchedAt),
-		OrgID:          pgInt8(raw.Meta.OrgID),
-		MessageID:      pgText(messageID(raw, h)),
-		SenderName:     pgText(fromName),
-		SenderEmail:    pgText(fromAddr),
-		SenderDomain:   pgText(senderDomain),
-		ReplyToEmail:   pgText(addressOnly(h.Get("Reply-To"))),
-		ReturnPath:     pgText(addressOnly(h.Get("Return-Path"))),
+		FetchedAt:      pgconv.Timestamptz(fetchedAt),
+		OrgID:          pgconv.Int8(raw.Meta.OrgID),
+		MessageID:      pgconv.Text(messageID(raw, h)),
+		SenderName:     pgconv.Text(hv.fromName),
+		SenderEmail:    pgconv.Text(hv.fromAddr),
+		SenderDomain:   pgconv.Text(hv.senderDomain),
+		ReplyToEmail:   pgconv.Text(addressOnly(h.Get("Reply-To"))),
+		ReturnPath:     pgconv.Text(addressOnly(h.Get("Return-Path"))),
 		OriginatingIp:  originatingAddr(h),
-		AuthSpf:        pgText(auth["spf"]),
-		AuthDkim:       pgText(auth["dkim"]),
-		AuthDmarc:      pgText(auth["dmarc"]),
-		AuthArc:        pgText(auth["arc"]),
+		AuthSpf:        pgconv.Text(hv.auth["spf"]),
+		AuthDkim:       pgconv.Text(hv.auth["dkim"]),
+		AuthDmarc:      pgconv.Text(hv.auth["dmarc"]),
+		AuthArc:        pgconv.Text(hv.auth["arc"]),
 		XOriginatingIp: parseIP(h.Get("X-Originating-IP")),
-		MailerAgent:    pgText(h.Get("X-Mailer")),
-		InReplyTo:      pgText(h.Get("In-Reply-To")),
+		MailerAgent:    pgconv.Text(h.Get("X-Mailer")),
+		InReplyTo:      pgconv.Text(h.Get("In-Reply-To")),
 		ReferencesList: splitReferences(h.Get("References")),
-		ContentCharset: pgText(charsetFrom(h.Get("Content-Type"))),
-		Precedence:     pgText(h.Get("Precedence")),
-		ListID:         pgText(h.Get("List-Id")),
-		Subject:        pgText(parsed.Subject),
-		SentTimestamp:  pgSentTimestamp(h.Get("Date")),
-		HeadersJson:    headersJSON,
-		BodyPlain:      pgText(parsed.BodyPlain),
-		BodyHtml:       pgText(parsed.BodyHTML),
+		ContentCharset: pgconv.Text(charsetFrom(h.Get("Content-Type"))),
+		Precedence:     pgconv.Text(h.Get("Precedence")),
+		ListID:         pgconv.Text(h.Get("List-Id")),
+		Subject:        pgconv.Text(parsed.Subject),
+		SentTimestamp:  pgconv.Int8OrNull(sentTimestamp(h.Get("Date"))),
+		HeadersJson:    hv.headersJSON,
+		BodyPlain:      pgconv.Text(parsed.BodyPlain),
+		BodyHtml:       pgconv.Text(parsed.BodyHTML),
 	}
 
 	urls := make([]repository.ParsedURL, 0, len(parsed.URLs))
@@ -269,9 +309,9 @@ func buildPersist(raw contracts.EmailsRaw, parsed *email.ParsedEmail, fetchedAt 
 		domain, _ := normalization.ExtractDomain(u.URL)
 		urls = append(urls, repository.ParsedURL{
 			URL:         u.URL,
-			Domain:      pgText(domain),
-			TLD:         pgText(tldOf(domain)),
-			VisibleText: pgText(u.VisibleText),
+			Domain:      pgconv.Text(domain),
+			TLD:         pgconv.Text(normalization.TLDLabel(domain)),
+			VisibleText: pgconv.Text(u.VisibleText),
 		})
 	}
 
@@ -280,17 +320,17 @@ func buildPersist(raw contracts.EmailsRaw, parsed *email.ParsedEmail, fetchedAt 
 		atts = append(atts, repository.ParsedAttachment{
 			Library: db.UpsertParsedAttachmentParams{
 				Sha256:          att.SHA256,
-				Md5:             pgText(att.MD5),
-				Sha1:            pgText(att.SHA1),
-				ActualExtension: pgText(att.ActualExtension()),
-				SizeBytes:       pgInt8(att.SizeBytes),
-				Entropy:         pgFloat8(att.Entropy),
-				StorageUri:      pgText(storageURIAt(storageURIs, i)),
+				Md5:             pgconv.Text(att.MD5),
+				Sha1:            pgconv.Text(att.SHA1),
+				ActualExtension: pgconv.Text(att.ActualExtension()),
+				SizeBytes:       pgconv.Int8(att.SizeBytes),
+				Entropy:         pgconv.Float8(att.Entropy),
+				StorageUri:      pgconv.Text(storageURIAt(storageURIs, i)),
 			},
-			Filename:    pgText(att.Filename),
-			ContentType: pgText(att.ContentType),
-			ContentID:   pgText(att.ContentID),
-			Disposition: pgText(att.Disposition),
+			Filename:    pgconv.Text(att.Filename),
+			ContentType: pgconv.Text(att.ContentType),
+			ContentID:   pgconv.Text(att.ContentID),
+			Disposition: pgconv.Text(att.Disposition),
 		})
 	}
 
@@ -298,7 +338,7 @@ func buildPersist(raw contracts.EmailsRaw, parsed *email.ParsedEmail, fetchedAt 
 	for _, rc := range parsed.Recipients {
 		recips = append(recips, repository.ChildRecipient{
 			Address:       rc.Address,
-			DisplayName:   pgText(rc.DisplayName),
+			DisplayName:   pgconv.Text(rc.DisplayName),
 			RecipientType: rc.Type,
 		})
 	}
@@ -314,28 +354,26 @@ func buildPersist(raw contracts.EmailsRaw, parsed *email.ParsedEmail, fetchedAt 
 // buildAnalysisHeaders projects the parsed headers + body onto svc-04's
 // AnalysisHeadersMessage, carrying BOTH ids (G5/G17) and the body content (D9 —
 // the parser ships the body, svc-04 computes the structural flags).
-func buildAnalysisHeaders(emailID, internalID, orgID int64, fetchedAt time.Time, parsed *email.ParsedEmail) contracts.AnalysisHeadersMessage {
+func buildAnalysisHeaders(emailID, internalID, orgID int64, fetchedAt time.Time, parsed *email.ParsedEmail, hv headerView) contracts.AnalysisHeadersMessage {
 	h := parsed.Header
-	fromAddr, fromName := splitAddress(h.Get("From"))
-	auth := email.ParseAuthResults(h.Get("Authentication-Results"))
 
 	return contracts.AnalysisHeadersMessage{
 		EmailID:        emailID,
 		InternalID:     internalID,
 		FetchedAt:      fetchedAt,
 		OrgID:          orgID,
-		SenderEmail:    fromAddr,
-		SenderDomain:   domainOf(fromAddr),
-		SenderName:     fromName,
+		SenderEmail:    hv.fromAddr,
+		SenderDomain:   hv.senderDomain,
+		SenderName:     hv.fromName,
 		ReplyToEmail:   addressOnly(h.Get("Reply-To")),
 		ReturnPath:     addressOnly(h.Get("Return-Path")),
 		MailerAgent:    h.Get("X-Mailer"),
 		OriginatingIP:  addrString(originatingAddr(h)),
 		XOriginatingIP: addrString(parseIP(h.Get("X-Originating-IP"))),
-		AuthSPF:        auth["spf"],
-		AuthDKIM:       auth["dkim"],
-		AuthDMARC:      auth["dmarc"],
-		AuthARC:        auth["arc"],
+		AuthSPF:        hv.auth["spf"],
+		AuthDKIM:       hv.auth["dkim"],
+		AuthDMARC:      hv.auth["dmarc"],
+		AuthARC:        hv.auth["arc"],
 		InReplyTo:      h.Get("In-Reply-To"),
 		ReferencesList: splitReferences(h.Get("References")),
 		SentTimestamp:  sentTimestamp(h.Get("Date")),
@@ -344,19 +382,18 @@ func buildAnalysisHeaders(emailID, internalID, orgID int64, fetchedAt time.Time,
 		ListID:         h.Get("List-Id"),
 		HopCount:       hopCount(h),
 		ReceivedChain:  receivedChain(h),
-		HeadersJSON:    headerMapJSON(h),
+		HeadersJSON:    hv.headersJSON,
 		BodyHTML:       parsed.BodyHTML,
 		BodyPlain:      parsed.BodyPlain,
 	}
 }
 
-func buildAnalysisText(meta contracts.MessageMeta, parsed *email.ParsedEmail) contracts.AnalysisText {
-	fromAddr, fromName := splitAddress(parsed.Header.Get("From"))
+func buildAnalysisText(meta contracts.MessageMeta, parsed *email.ParsedEmail, hv headerView) contracts.AnalysisText {
 	return contracts.AnalysisText{
 		Meta:         meta,
 		Subject:      parsed.Subject,
-		SenderName:   fromName,
-		SenderDomain: domainOf(fromAddr),
+		SenderName:   hv.fromName,
+		SenderDomain: hv.senderDomain,
 		Body:         parsed.BodyPlain,
 		WordCount:    email.WordCount(parsed.BodyPlain),
 	}
@@ -415,6 +452,33 @@ func toContractAttachments(in []email.Attachment) []contracts.Attachment {
 	return out
 }
 
+// ── derived header view ─────────────────────────────────────────────────────
+
+// headerView holds the values derived once per email from the raw headers so
+// that splitAddress(From), ParseAuthResults, and headerMapJSON each run a
+// single time and are shared by buildPersist / buildAnalysisHeaders /
+// buildAnalysisText instead of being recomputed in each builder.
+type headerView struct {
+	fromAddr     string
+	fromName     string
+	senderDomain string
+	auth         map[string]string
+	headersJSON  []byte
+}
+
+// newHeaderView derives the shared header view from a parsed email.
+func newHeaderView(parsed *email.ParsedEmail) headerView {
+	h := parsed.Header
+	fromAddr, fromName := splitAddress(h.Get("From"))
+	return headerView{
+		fromAddr:     fromAddr,
+		fromName:     fromName,
+		senderDomain: domainOf(fromAddr),
+		auth:         email.ParseAuthResults(h.Get("Authentication-Results")),
+		headersJSON:  headerMapJSON(h),
+	}
+}
+
 // ── small header / value helpers ────────────────────────────────────────────
 
 func storageURIAt(uris []string, i int) string {
@@ -456,17 +520,6 @@ func domainOf(addr string) string {
 		return ""
 	}
 	return strings.ToLower(addr[at+1:])
-}
-
-func tldOf(domain string) string {
-	domain = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(domain)), ".")
-	if domain == "" {
-		return ""
-	}
-	if dot := strings.LastIndex(domain, "."); dot >= 0 {
-		return domain[dot+1:]
-	}
-	return ""
 }
 
 func splitReferences(raw string) []string {
@@ -603,42 +656,73 @@ func receivedToken(s, keyword string) string {
 	return ""
 }
 
+// ── metrics ─────────────────────────────────────────────────────────────────
+
+// parserMetrics holds the per-message Prometheus collectors for SVC-02 (the
+// shared/kafka package owns the consumer/producer-level counters).
+type parserMetrics struct {
+	// MessagesTotal is partitioned by result: "ok" for a fully
+	// parsed-persisted-published message and "dropped" for a permanent
+	// bad-data message whose offset is committed without processing.
+	MessagesTotal *prometheus.CounterVec // result=ok|dropped
+}
+
+// newParserMetrics registers the SVC-02 metrics and returns the holder.
+func newParserMetrics(reg *prometheus.Registry) *parserMetrics {
+	m := &parserMetrics{}
+	m.MessagesTotal = registerParserCounterVec(reg, prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "parser_messages_total",
+			Help: "Total emails.raw messages handled by SVC-02 partitioned by result.",
+		},
+		[]string{"result"},
+	))
+	return m
+}
+
+func (m *parserMetrics) processed() {
+	if m == nil || m.MessagesTotal == nil {
+		return
+	}
+	m.MessagesTotal.WithLabelValues("ok").Inc()
+}
+
+func (m *parserMetrics) dropped() {
+	if m == nil || m.MessagesTotal == nil {
+		return
+	}
+	m.MessagesTotal.WithLabelValues("dropped").Inc()
+}
+
+func registerParserCounterVec(reg *prometheus.Registry, c *prometheus.CounterVec) *prometheus.CounterVec {
+	if reg == nil {
+		return c
+	}
+	if err := reg.Register(c); err != nil {
+		var already prometheus.AlreadyRegisteredError
+		if errors.As(err, &already) {
+			if existing, ok := already.ExistingCollector.(*prometheus.CounterVec); ok {
+				return existing
+			}
+		}
+	}
+	return c
+}
+
+// headerMapJSON flattens the raw header map into headers_json, preserving the
+// full list of values per key so repeated headers (e.g. Received,
+// Authentication-Results) are not collapsed to their first occurrence.
 func headerMapJSON(h mail.Header) []byte {
-	flat := make(map[string]string, len(h))
+	flat := make(map[string][]string, len(h))
 	for k, vv := range h {
 		if len(vv) == 0 {
 			continue
 		}
-		flat[k] = vv[0]
+		flat[k] = vv
 	}
 	b, err := json.Marshal(flat)
 	if err != nil {
 		return nil
 	}
 	return b
-}
-
-// ── pgtype constructors ─────────────────────────────────────────────────────
-
-func pgText(s string) pgtype.Text {
-	if s == "" {
-		return pgtype.Text{}
-	}
-	return pgtype.Text{String: s, Valid: true}
-}
-
-func pgInt8(v int64) pgtype.Int8 { return pgtype.Int8{Int64: v, Valid: true} }
-
-func pgFloat8(v float64) pgtype.Float8 { return pgtype.Float8{Float64: v, Valid: true} }
-
-func pgTimestamptz(t time.Time) pgtype.Timestamptz {
-	return pgtype.Timestamptz{Time: t.UTC(), Valid: true}
-}
-
-func pgSentTimestamp(dateStr string) pgtype.Int8 {
-	ts := sentTimestamp(dateStr)
-	if ts == 0 {
-		return pgtype.Int8{}
-	}
-	return pgtype.Int8{Int64: ts, Valid: true}
 }

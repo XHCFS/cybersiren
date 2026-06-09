@@ -148,22 +148,37 @@ func attr(n *html.Node, name string) (string, bool) {
 	return "", false
 }
 
+// maxVisibleText caps the bytes nodeText accumulates so a runaway subtree
+// (e.g. a huge anchor wrapping a whole document) cannot bloat the message.
+const maxVisibleText = 8192
+
 // nodeText returns the collapsed visible text of an element subtree (the anchor
-// label), bounded so a runaway subtree cannot bloat the message.
+// label), bounded by maxVisibleText so a runaway subtree cannot bloat the
+// message.
 func nodeText(n *html.Node) string {
 	var b strings.Builder
 	var walk func(*html.Node)
 	walk = func(node *html.Node) {
+		if b.Len() >= maxVisibleText {
+			return
+		}
 		if node.Type == html.TextNode {
 			b.WriteString(node.Data)
 			return
 		}
 		for c := node.FirstChild; c != nil; c = c.NextSibling {
+			if b.Len() >= maxVisibleText {
+				return
+			}
 			walk(c)
 		}
 	}
 	walk(n)
-	return strings.TrimSpace(collapseWhitespace(b.String()))
+	out := b.String()
+	if len(out) > maxVisibleText {
+		out = out[:maxVisibleText]
+	}
+	return strings.TrimSpace(collapseWhitespace(out))
 }
 
 func isHTTPish(raw string) bool {
