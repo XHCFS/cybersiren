@@ -12,6 +12,88 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const getPriorEnrichedThreat = `-- name: GetPriorEnrichedThreat :one
+SELECT id, url, domain, online, http_status_code, ip_address, cidr_block, asn, asn_name, isp, country, country_name, region, city, latitude, longitude, ssl_enabled, cert_issuer, cert_subject, cert_valid_from, cert_valid_to, cert_serial, tld, registrar, creation_date, expiry_date, updated_date, name_servers, page_language, page_title, threat_type, target_brand, threat_tags, source_feed, source_id, first_seen, last_seen, last_checked, notes, analysis_metadata, risk_score, deleted_at, created_at, updated_at, org_id, feed_id, is_global, brand_id
+FROM enriched_threats
+WHERE domain = $1
+  AND id <> $2
+  AND is_global = FALSE
+  AND deleted_at IS NULL
+  AND last_checked IS NOT NULL
+ORDER BY last_checked DESC
+LIMIT 1
+`
+
+type GetPriorEnrichedThreatParams struct {
+	Domain pgtype.Text `db:"domain" json:"domain"`
+	ID     int64       `db:"id" json:"id"`
+}
+
+// Prior-email enrichment reuse (ARCH-SPEC §14 step 3a: "R enriched_threats
+// (prior-email URL lookup)"). Returns the most-recently-enriched row this org
+// has already populated for the SAME domain, so SVC-03 can reuse the WHOIS /
+// geo / ASN / cert enrichment instead of re-running the L2 sidecar for a host
+// it has already analysed (cross-email correlation). Excludes the just-inserted
+// bare row (id <> $2) and only returns rows that actually carry enrichment
+// (last_checked IS NOT NULL), so a freshly-bare row never masquerades as a hit.
+// RLS scopes the read to the current org (is_global rows are admitted too but
+// carry no email-pipeline enrichment, so they are filtered by last_checked).
+func (q *Queries) GetPriorEnrichedThreat(ctx context.Context, arg GetPriorEnrichedThreatParams) (EnrichedThreat, error) {
+	row := q.db.QueryRow(ctx, getPriorEnrichedThreat, arg.Domain, arg.ID)
+	var i EnrichedThreat
+	err := row.Scan(
+		&i.ID,
+		&i.Url,
+		&i.Domain,
+		&i.Online,
+		&i.HttpStatusCode,
+		&i.IpAddress,
+		&i.CidrBlock,
+		&i.Asn,
+		&i.AsnName,
+		&i.Isp,
+		&i.Country,
+		&i.CountryName,
+		&i.Region,
+		&i.City,
+		&i.Latitude,
+		&i.Longitude,
+		&i.SslEnabled,
+		&i.CertIssuer,
+		&i.CertSubject,
+		&i.CertValidFrom,
+		&i.CertValidTo,
+		&i.CertSerial,
+		&i.Tld,
+		&i.Registrar,
+		&i.CreationDate,
+		&i.ExpiryDate,
+		&i.UpdatedDate,
+		&i.NameServers,
+		&i.PageLanguage,
+		&i.PageTitle,
+		&i.ThreatType,
+		&i.TargetBrand,
+		&i.ThreatTags,
+		&i.SourceFeed,
+		&i.SourceID,
+		&i.FirstSeen,
+		&i.LastSeen,
+		&i.LastChecked,
+		&i.Notes,
+		&i.AnalysisMetadata,
+		&i.RiskScore,
+		&i.DeletedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.OrgID,
+		&i.FeedID,
+		&i.IsGlobal,
+		&i.BrandID,
+	)
+	return i, err
+}
+
 const updateEnrichedThreatEnrichment = `-- name: UpdateEnrichedThreatEnrichment :exec
 UPDATE enriched_threats
 SET
