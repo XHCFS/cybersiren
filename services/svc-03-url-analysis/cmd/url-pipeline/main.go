@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -26,6 +27,7 @@ import (
 
 	"github.com/saif/cybersiren/internal/phishing"
 	phclient "github.com/saif/cybersiren/internal/phishing/client"
+	"github.com/saif/cybersiren/services/svc-03-url-analysis/internal/persist"
 	"github.com/saif/cybersiren/services/svc-03-url-analysis/internal/url"
 	contracts "github.com/saif/cybersiren/shared/contracts/kafka"
 	kafkaconsumer "github.com/saif/cybersiren/shared/kafka/consumer"
@@ -45,6 +47,7 @@ var (
 	tiChecker        *url.TIChecker
 	phishingDetector *phishing.Detector
 	scanMetrics      *url.ScanMetrics
+	persister        *persist.Persister
 	pipelineTracer   = otel.Tracer("svc-03-url-pipeline/scan-one")
 )
 
@@ -89,6 +92,17 @@ func main() {
 			// the phishing client's cache + sidecar HTTP path.
 			scanMetrics = url.NewScanMetrics(deps.Registry)
 			phishingMetrics := phclient.NewMetrics(deps.Registry)
+
+			// Enrichment persistence (ARCH-SPEC §14 step 3a). NeedsDB is true, so
+			// deps.Pool is set; NewRepoStore wires the org-scoped repository layer
+			// (every write tx sets app.current_org_id — G10 RLS). A nil pool would
+			// disable persistence rather than crash the consumer.
+			if store := persist.NewRepoStore(deps.Pool); store != nil {
+				persister = persist.New(store, persist.NewMetrics(deps.Registry), log)
+				log.Info().Msg("enrichment persistence ready")
+			} else {
+				log.Warn().Msg("no DB pool; enrichment persistence disabled")
+			}
 
 			// Layer-2 ML phishing detector (fail-open: missing GeoIP or unreachable
 			// sidecar should not prevent the service from starting). When GeoIPDir
@@ -204,7 +218,90 @@ func handle(ctx context.Context, msg kafkaconsumer.Message, deps svckit.Deps) er
 		Int("max_ti_risk", maxTIRisk).
 		Str("worst_label", worstLabel).
 		Msg("scored URLs")
+
+	// Persist enrichment (ARCH-SPEC §14 step 3a). Runs AFTER the scores.url
+	// publish so a DB hiccup never blocks the primary pipeline output. All
+	// writes are idempotent (bare upsert ON CONFLICT, enriched_threats UPDATE,
+	// enrichment_results UPSERT, ti-match ON CONFLICT DO NOTHING), so the
+	// at-least-once redelivery of this message re-converges rather than
+	// duplicating. A persist failure is logged + counted, not returned: the
+	// score is already on the wire, and failing the message would only replay
+	// the (idempotent) writes. No scoring value is recomputed here — persist
+	// only shapes DB rows from the scan results above.
+	persistEnrichment(ctx, input, ft, scans, log)
 	return nil
+}
+
+// persistEnrichment projects the in-memory scan results into the persistence
+// input and writes them through the org-scoped repository layer. It is a no-op
+// when persistence is disabled (no DB pool).
+func persistEnrichment(
+	ctx context.Context,
+	input contracts.AnalysisURLs,
+	fetchedAt time.Time,
+	scans []urlScan,
+	log zerolog.Logger,
+) {
+	if persister == nil {
+		return
+	}
+
+	results := make([]persist.URLResult, 0, len(scans))
+	for _, s := range scans {
+		ref := s.Normalized
+		if ref == "" {
+			ref = s.URL
+		}
+		results = append(results, persist.URLResult{
+			RawURL:       s.URL,
+			Normalized:   s.Normalized,
+			Domain:       url.HostnameFromURL(ref),
+			TLD:          tldFromApex(url.ApexFromURL(ref)),
+			Apex:         url.ApexFromURL(ref),
+			Score:        s.Score,
+			Label:        s.Label,
+			GuardHit:     s.GuardHit,
+			TIMatch:      s.TIMatch,
+			TIThreatType: s.TIThreatType,
+			TIRiskScore:  s.TIRiskScore,
+			// TIIndicatorID is left zero: the Valkey-cached TI checker matches on
+			// domain and does not surface ti_indicators.id, so the
+			// email_url_ti_matches audit row is written only once the TI path
+			// carries the indicator id. The write path itself is fully wired.
+			MLDeployP:  s.MLDeployP,
+			MLVerdict:  s.MLVerdict,
+			MLCacheHit: s.MLCacheHit,
+		})
+	}
+
+	email := persist.Email{
+		OrgID: input.Meta.OrgID,
+		// Two-id model (G17): SVC-03 consumes the internal_id SVC-02 carried.
+		// analysis.urls does not carry internal_id, so we use the interim
+		// email_id == internal_id equivalence (SVC-01 still emits an int64
+		// email_id; #142 swaps it to UUIDv7 and SVC-02 carries internal_id
+		// separately). We do NOT re-derive internal_id via a DB lookup.
+		InternalID: input.Meta.EmailID,
+		FetchedAt:  fetchedAt,
+		URLs:       results,
+	}
+
+	if err := persister.Persist(ctx, email); err != nil {
+		log.Warn().Err(err).
+			Int64("email_id", input.Meta.EmailID).
+			Msg("enrichment persistence reported errors (scores already published)")
+	}
+}
+
+// tldFromApex returns the public-suffix label of an apex domain (e.g.
+// "evil.example.com" apex "example.com" → "com"). Returns "" for an empty apex
+// or an IP literal (no dot-delimited TLD).
+func tldFromApex(apex string) string {
+	i := strings.LastIndex(apex, ".")
+	if i < 0 || i == len(apex)-1 {
+		return ""
+	}
+	return apex[i+1:]
 }
 
 // scanOne mirrors the standalone /scan handler: normalise, run ML + TI in

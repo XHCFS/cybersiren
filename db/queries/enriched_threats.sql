@@ -55,6 +55,26 @@ ON CONFLICT (org_id, url) DO UPDATE SET
     last_seen = NOW()
 RETURNING id;
 
+-- name: GetPriorEnrichedThreat :one
+-- Prior-email enrichment reuse (ARCH-SPEC §14 step 3a: "R enriched_threats
+-- (prior-email URL lookup)"). Returns the most-recently-enriched row this org
+-- has already populated for the SAME domain, so SVC-03 can reuse the WHOIS /
+-- geo / ASN / cert enrichment instead of re-running the L2 sidecar for a host
+-- it has already analysed (cross-email correlation). Excludes the just-inserted
+-- bare row (id <> $2) and only returns rows that actually carry enrichment
+-- (last_checked IS NOT NULL), so a freshly-bare row never masquerades as a hit.
+-- RLS scopes the read to the current org (is_global rows are admitted too but
+-- carry no email-pipeline enrichment, so they are filtered by last_checked).
+SELECT *
+FROM enriched_threats
+WHERE domain = $1
+  AND id <> $2
+  AND is_global = FALSE
+  AND deleted_at IS NULL
+  AND last_checked IS NOT NULL
+ORDER BY last_checked DESC
+LIMIT 1;
+
 -- name: UpdateEnrichedThreatEnrichment :exec
 -- Applies enrichment results to an existing threat row. Each parameter that is
 -- NULL leaves the corresponding column unchanged (COALESCE pattern), so a
