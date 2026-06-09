@@ -90,3 +90,30 @@ FROM emails
 WHERE internal_id = $1
   AND fetched_at = $2
   AND deleted_at IS NULL;
+
+-- name: GetEmailIdentity :one
+-- Looks up the canonical (internal_id, fetched_at) for an (org_id, message_id)
+-- pair in the cross-partition dedup registry. Runs inside WithOrgTx; the RLS
+-- GUC scopes the row. Returns no row when the message was never registered.
+SELECT internal_id, fetched_at
+FROM email_identities
+WHERE org_id = $1
+  AND message_id = $2;
+
+-- name: RegisterEmailIdentity :one
+-- Claims (org_id, message_id) for this ingestion. ON CONFLICT DO NOTHING makes
+-- the claim atomic: a returned internal_id means we won the claim (new message),
+-- while no row means another ingestion already registered it (duplicate signal).
+-- Runs inside WithOrgTx so the RLS GUC scopes the write.
+INSERT INTO email_identities (org_id, message_id, internal_id, fetched_at)
+VALUES ($1, $2, $3, $4)
+ON CONFLICT (org_id, message_id) DO NOTHING
+RETURNING internal_id;
+
+-- name: DeleteEmailByKey :exec
+-- Orphan cleanup: removes the emails row this ingestion inserted when it then
+-- lost the email_identities claim to a racing ingestion. Keyed on the composite
+-- partition key. Runs inside WithOrgTx so the RLS GUC scopes the delete.
+DELETE FROM emails
+WHERE internal_id = $1
+  AND fetched_at = $2;

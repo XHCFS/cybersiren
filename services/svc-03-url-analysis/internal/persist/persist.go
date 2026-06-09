@@ -264,14 +264,25 @@ func (p *Persister) persistURL(
 	// and we resolved the owning email_url row).
 	if u.TIMatch && u.TIIndicatorID > 0 {
 		if emailURLID, ok := threatToEmailURL[threatID]; ok {
+			// The TI-match audit row is best-effort. Its ti_indicator_id comes from
+			// the TTL'd TI cache and can outlive its ti_indicators row, so a stale
+			// id FK-violates. The verdict-critical enrichment writes above already
+			// succeeded, so a failure here is logged + counted, NOT returned —
+			// returning it would NACK and re-wedge the partition on every redelivery
+			// (until the cache entry expires) for a non-critical audit trail.
 			if err := p.store.RecordTIMatch(ctx, e.OrgID, db.InsertEmailURLTIMatchParams{
 				EmailUrlID:    emailURLID,
 				TiIndicatorID: u.TIIndicatorID,
 				MatchType:     tiMatchType(u),
 			}); err != nil {
-				return fmt.Errorf("record ti match: %w", err)
+				p.metrics.IncWrite("ti_match", "error")
+				p.log.Warn().Err(err).
+					Int64("email_url_id", emailURLID).
+					Int64("ti_indicator_id", u.TIIndicatorID).
+					Msg("ti-match audit write failed (best-effort, skipped)")
+			} else {
+				p.metrics.IncWrite("ti_match", "ok")
 			}
-			p.metrics.IncWrite("ti_match", "ok")
 		} else {
 			p.metrics.IncWrite("ti_match", "skipped")
 		}

@@ -19,6 +19,10 @@ type TIResult struct {
 	Domain     string
 	RiskScore  int
 	ThreatType string
+	// IndicatorID is the matched ti_indicators.id, surfaced so the persistence
+	// layer can write the email_url_ti_matches audit row. Zero when the cache
+	// entry predates the id being stored (a legacy entry); the audit then skips.
+	IndicatorID int64
 }
 
 // TIChecker performs threat-intelligence lookups against the Valkey domain cache.
@@ -43,7 +47,7 @@ func (tc *TIChecker) Check(ctx context.Context, rawURL string) (TIResult, error)
 		return TIResult{}, nil // graceful degradation
 	}
 
-	matched, riskScore, threatType, err := tc.cache.IsBlocklisted(ctx, domain)
+	lookup, err := tc.cache.LookupDomain(ctx, domain)
 	if err != nil {
 		tc.log.Warn().Err(err).Str("domain", domain).Msg("TI cache lookup failed")
 		span.RecordError(err)
@@ -52,9 +56,10 @@ func (tc *TIChecker) Check(ctx context.Context, rawURL string) (TIResult, error)
 	}
 
 	return TIResult{
-		Matched:    matched,
-		Domain:     domain,
-		RiskScore:  riskScore,
-		ThreatType: threatType,
+		Matched:     lookup.Blocked,
+		Domain:      domain,
+		RiskScore:   lookup.RiskScore,
+		ThreatType:  lookup.ThreatType,
+		IndicatorID: lookup.IndicatorID,
 	}, nil
 }

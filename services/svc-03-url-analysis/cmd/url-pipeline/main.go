@@ -145,6 +145,9 @@ type urlScan struct {
 	TIMatch      bool    `json:"ti_match"`
 	TIThreatType string  `json:"ti_threat_type,omitempty"`
 	TIRiskScore  int     `json:"ti_risk_score"`
+	// TIIndicatorID is the matched ti_indicators.id (0 when the TI cache entry
+	// predates the id being stored); persist uses it for the audit row.
+	TIIndicatorID int64 `json:"ti_indicator_id,omitempty"`
 	// GuardHit is set when the domain guard short-circuits scoring.
 	// "allowlisted" / "typosquat:<brand>" / "brand-in-subdomain:<brand>".
 	GuardHit string `json:"guard_hit,omitempty"`
@@ -219,30 +222,35 @@ func handle(ctx context.Context, msg kafkaconsumer.Message, deps svckit.Deps) er
 		Msg("scored URLs")
 
 	// Persist enrichment (ARCH-SPEC §14 step 3a). Runs AFTER the scores.url
-	// publish so a DB hiccup never blocks the primary pipeline output. All
-	// writes are idempotent (bare upsert ON CONFLICT, enriched_threats UPDATE,
+	// publish so the score is already on the wire before any DB work. All writes
+	// are idempotent (bare upsert ON CONFLICT, enriched_threats UPDATE,
 	// enrichment_results UPSERT, ti-match ON CONFLICT DO NOTHING), so the
-	// at-least-once redelivery of this message re-converges rather than
-	// duplicating. A persist failure is logged + counted, not returned: the
-	// score is already on the wire, and failing the message would only replay
-	// the (idempotent) writes. No scoring value is recomputed here — persist
-	// only shapes DB rows from the scan results above.
-	persistEnrichment(ctx, input, ft, scans, log)
+	// at-least-once redelivery of a NACKed message re-converges the writes
+	// rather than duplicating, and svc-07 dedups the re-published scores.url. We
+	// therefore RETURN a persist failure so the consumer NACKs and redelivery
+	// retries the (idempotent) writes — a DB outage must not silently drop the
+	// required P1.2 writes. No scoring value is recomputed here.
+	if err := persistEnrichment(ctx, input, ft, scans, log); err != nil {
+		// Already wrapped by persistEnrichment; returning it NACKs the message.
+		return err
+	}
 	return nil
 }
 
 // persistEnrichment projects the in-memory scan results into the persistence
 // input and writes them through the org-scoped repository layer. It is a no-op
-// when persistence is disabled (no DB pool).
+// (nil error) when persistence is disabled (no DB pool). It returns the first
+// write error so handle() can NACK the message and let redelivery retry the
+// idempotent writes.
 func persistEnrichment(
 	ctx context.Context,
 	input contracts.AnalysisURLs,
 	fetchedAt time.Time,
 	scans []urlScan,
 	log zerolog.Logger,
-) {
+) error {
 	if persister == nil {
-		return
+		return nil
 	}
 
 	results := make([]persist.URLResult, 0, len(scans))
@@ -264,24 +272,29 @@ func persistEnrichment(
 			TIMatch:      s.TIMatch,
 			TIThreatType: s.TIThreatType,
 			TIRiskScore:  s.TIRiskScore,
-			// TIIndicatorID is left zero: the Valkey-cached TI checker matches on
-			// domain and does not surface ti_indicators.id, so the
-			// email_url_ti_matches audit row is written only once the TI path
-			// carries the indicator id. The write path itself is fully wired.
-			MLDeployP:  s.MLDeployP,
-			MLVerdict:  s.MLVerdict,
-			MLCacheHit: s.MLCacheHit,
+			// TIIndicatorID carries the matched ti_indicators.id the cache lookup
+			// surfaced, so persist writes the email_url_ti_matches audit row. It is
+			// zero only for legacy cache entries that predate the id being stored;
+			// the audit then skips (persist gates on > 0).
+			TIIndicatorID: s.TIIndicatorID,
+			MLDeployP:     s.MLDeployP,
+			MLVerdict:     s.MLVerdict,
+			MLCacheHit:    s.MLCacheHit,
 		})
 	}
 
+	// Two-id model (G17): SVC-03 keys the email_urls lookup on the DB BIGSERIAL
+	// internal_id SVC-02 assigned and carried on analysis.urls. Prefer that real
+	// internal_id; fall back to Meta.EmailID only while SVC-02 has not yet
+	// populated it (the interim email_id == internal_id equivalence). We do NOT
+	// re-derive internal_id via a DB lookup.
+	internalID := input.InternalID
+	if internalID == 0 {
+		internalID = input.Meta.EmailID
+	}
 	email := persist.Email{
-		OrgID: input.Meta.OrgID,
-		// Two-id model (G17): SVC-03 consumes the internal_id SVC-02 carried.
-		// analysis.urls does not carry internal_id, so we use the interim
-		// email_id == internal_id equivalence (SVC-01 still emits an int64
-		// email_id; #142 swaps it to UUIDv7 and SVC-02 carries internal_id
-		// separately). We do NOT re-derive internal_id via a DB lookup.
-		InternalID: input.Meta.EmailID,
+		OrgID:      input.Meta.OrgID,
+		InternalID: internalID,
 		FetchedAt:  fetchedAt,
 		URLs:       results,
 	}
@@ -289,8 +302,11 @@ func persistEnrichment(
 	if err := persister.Persist(ctx, email); err != nil {
 		log.Warn().Err(err).
 			Int64("email_id", input.Meta.EmailID).
-			Msg("enrichment persistence reported errors (scores already published)")
+			Int64("internal_id", internalID).
+			Msg("enrichment persistence reported errors (scores already published; NACKing for retry)")
+		return fmt.Errorf("persist email enrichment: %w", err)
 	}
+	return nil
 }
 
 // scanOne mirrors the standalone /scan handler: normalise, run ML + TI in
@@ -415,6 +431,7 @@ func scanOne(ctx context.Context, raw string, log zerolog.Logger) urlScan {
 	out.TIMatch = tiRes.Matched
 	out.TIThreatType = tiRes.ThreatType
 	out.TIRiskScore = tiRes.RiskScore
+	out.TIIndicatorID = tiRes.IndicatorID
 
 	// Layer 2: ML phishing check fires when TI didn't match OR when TI
 	// matched with low confidence (< 80 risk). classifyLabel ignores

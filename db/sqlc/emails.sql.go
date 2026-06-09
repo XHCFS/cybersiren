@@ -12,6 +12,25 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const deleteEmailByKey = `-- name: DeleteEmailByKey :exec
+DELETE FROM emails
+WHERE internal_id = $1
+  AND fetched_at = $2
+`
+
+type DeleteEmailByKeyParams struct {
+	InternalID int64              `db:"internal_id" json:"internal_id"`
+	FetchedAt  pgtype.Timestamptz `db:"fetched_at" json:"fetched_at"`
+}
+
+// Orphan cleanup: removes the emails row this ingestion inserted when it then
+// lost the email_identities claim to a racing ingestion. Keyed on the composite
+// partition key. Runs inside WithOrgTx so the RLS GUC scopes the delete.
+func (q *Queries) DeleteEmailByKey(ctx context.Context, arg DeleteEmailByKeyParams) error {
+	_, err := q.db.Exec(ctx, deleteEmailByKey, arg.InternalID, arg.FetchedAt)
+	return err
+}
+
 const getEmailByInternalID = `-- name: GetEmailByInternalID :one
 SELECT internal_id, fetched_at, message_id, campaign_id, sender_name, sender_email, sender_domain, reply_to_email, return_path, originating_ip, auth_spf, auth_dkim, auth_dmarc, auth_arc, x_originating_ip, mailer_agent, in_reply_to, references_list, content_charset, precedence, list_id, vendor_security_tags, subject, sent_timestamp, headers_json, body_plain, body_html, header_risk_score, content_risk_score, attachment_risk_score, url_risk_score, analysis_metadata, risk_score, deleted_at, org_id, current_verdict_label, updated_at, sent_at
 FROM emails
@@ -69,6 +88,33 @@ func (q *Queries) GetEmailByInternalID(ctx context.Context, arg GetEmailByIntern
 		&i.UpdatedAt,
 		&i.SentAt,
 	)
+	return i, err
+}
+
+const getEmailIdentity = `-- name: GetEmailIdentity :one
+SELECT internal_id, fetched_at
+FROM email_identities
+WHERE org_id = $1
+  AND message_id = $2
+`
+
+type GetEmailIdentityParams struct {
+	OrgID     int64  `db:"org_id" json:"org_id"`
+	MessageID string `db:"message_id" json:"message_id"`
+}
+
+type GetEmailIdentityRow struct {
+	InternalID int64              `db:"internal_id" json:"internal_id"`
+	FetchedAt  pgtype.Timestamptz `db:"fetched_at" json:"fetched_at"`
+}
+
+// Looks up the canonical (internal_id, fetched_at) for an (org_id, message_id)
+// pair in the cross-partition dedup registry. Runs inside WithOrgTx; the RLS
+// GUC scopes the row. Returns no row when the message was never registered.
+func (q *Queries) GetEmailIdentity(ctx context.Context, arg GetEmailIdentityParams) (GetEmailIdentityRow, error) {
+	row := q.db.QueryRow(ctx, getEmailIdentity, arg.OrgID, arg.MessageID)
+	var i GetEmailIdentityRow
+	err := row.Scan(&i.InternalID, &i.FetchedAt)
 	return i, err
 }
 
@@ -224,4 +270,34 @@ func (q *Queries) InsertEmail(ctx context.Context, arg InsertEmailParams) (Inser
 	var i InsertEmailRow
 	err := row.Scan(&i.InternalID, &i.FetchedAt)
 	return i, err
+}
+
+const registerEmailIdentity = `-- name: RegisterEmailIdentity :one
+INSERT INTO email_identities (org_id, message_id, internal_id, fetched_at)
+VALUES ($1, $2, $3, $4)
+ON CONFLICT (org_id, message_id) DO NOTHING
+RETURNING internal_id
+`
+
+type RegisterEmailIdentityParams struct {
+	OrgID      int64              `db:"org_id" json:"org_id"`
+	MessageID  string             `db:"message_id" json:"message_id"`
+	InternalID int64              `db:"internal_id" json:"internal_id"`
+	FetchedAt  pgtype.Timestamptz `db:"fetched_at" json:"fetched_at"`
+}
+
+// Claims (org_id, message_id) for this ingestion. ON CONFLICT DO NOTHING makes
+// the claim atomic: a returned internal_id means we won the claim (new message),
+// while no row means another ingestion already registered it (duplicate signal).
+// Runs inside WithOrgTx so the RLS GUC scopes the write.
+func (q *Queries) RegisterEmailIdentity(ctx context.Context, arg RegisterEmailIdentityParams) (int64, error) {
+	row := q.db.QueryRow(ctx, registerEmailIdentity,
+		arg.OrgID,
+		arg.MessageID,
+		arg.InternalID,
+		arg.FetchedAt,
+	)
+	var internal_id int64
+	err := row.Scan(&internal_id)
+	return internal_id, err
 }

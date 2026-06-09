@@ -150,15 +150,18 @@ func (a *parserApp) handle(ctx context.Context, msg kafkaconsumer.Message, deps 
 
 	parsed, err := email.Parse(rawBytes)
 	if err != nil {
-		// Permanent bad data: an unparsable RFC-822 message will never parse on
-		// redelivery, so drop it and let the offset commit.
-		a.metrics.dropped()
-		deps.Log.Error().Err(err).
+		// A non-RFC822 / malformed-MIME body must NOT be silently dropped: it may
+		// still carry a phish URL or body text that has to reach a verdict. Build
+		// a DEGRADED parse from the raw bytes (best-effort body + URL extraction)
+		// and fall through to the normal persist+publish flow rather than losing
+		// the email.
+		a.metrics.degraded()
+		deps.Log.Warn().Err(err).
 			Int("partition", msg.Partition).
 			Int64("offset", msg.Offset).
 			Int64("email_id", raw.Meta.EmailID).
-			Msg("unparsable rfc822 message; skipping (offset will commit)")
-		return nil
+			Msg("unparsable rfc822 message; persisting a degraded parse (no headers, best-effort body)")
+		parsed = degradedParse(rawBytes)
 	}
 
 	fetchedAt := raw.FetchedAt
@@ -172,8 +175,13 @@ func (a *parserApp) handle(ctx context.Context, msg kafkaconsumer.Message, deps 
 	hv := newHeaderView(parsed)
 
 	// Upload each attachment binary to object storage (G6) and record the
-	// storage_uri so attachment_library points at the persisted blob.
-	storageURIs := a.uploadAttachments(ctx, deps, parsed.Attachments)
+	// storage_uri so attachment_library points at the persisted blob. A real
+	// upload failure (store configured) is surfaced so handle() returns and Kafka
+	// redelivers — G6 requires the binary be retained, not persisted blob-less.
+	storageURIs, err := a.uploadAttachments(ctx, deps, parsed.Attachments)
+	if err != nil {
+		return fmt.Errorf("upload attachments: %w", err)
+	}
 
 	// Persist the 6 write-groups atomically under one org GUC, capturing the
 	// DB-assigned (internal_id, fetched_at) composite key (G5/G17).
@@ -199,12 +207,15 @@ func (a *parserApp) handle(ctx context.Context, msg kafkaconsumer.Message, deps 
 }
 
 // uploadAttachments stores each attachment binary in object storage and returns
-// the storage_uri per attachment index (empty string when the store is absent
-// or the upload failed — persistence still proceeds without the pointer).
-func (a *parserApp) uploadAttachments(ctx context.Context, deps svckit.Deps, atts []email.Attachment) []string {
+// the storage_uri per attachment index. When the store is absent (Batch-7 env
+// gap) it returns empty URIs and a nil error so persistence proceeds without the
+// pointer. When the store IS configured a Put failure is RETURNED (not swallowed)
+// so handle() fails and Kafka redelivers the message — G6 requires the binary be
+// retained rather than persisting an attachment_library row with no storage_uri.
+func (a *parserApp) uploadAttachments(ctx context.Context, deps svckit.Deps, atts []email.Attachment) ([]string, error) {
 	uris := make([]string, len(atts))
 	if a.store == nil {
-		return uris
+		return uris, nil
 	}
 	for i, att := range atts {
 		key := attachmentObjectKey(att.SHA256)
@@ -213,12 +224,12 @@ func (a *parserApp) uploadAttachments(ctx context.Context, deps svckit.Deps, att
 			Size:        att.SizeBytes,
 		})
 		if err != nil {
-			deps.Log.Warn().Err(err).Str("sha256", att.SHA256).Msg("attachment upload failed; persisting without storage_uri")
-			continue
+			deps.Log.Warn().Err(err).Str("sha256", att.SHA256).Msg("attachment upload failed; will retry on redelivery")
+			return nil, fmt.Errorf("put attachment %s: %w", att.SHA256, err)
 		}
 		uris[i] = fmt.Sprintf("s3://%s/%s", a.store.Bucket(), info.Key)
 	}
-	return uris
+	return uris, nil
 }
 
 // attachmentObjectKey is the content-addressed object key for an attachment:
@@ -233,6 +244,40 @@ func attachmentObjectKey(sha256hex string) string {
 		h = hex.EncodeToString(sum[:])
 	}
 	return fmt.Sprintf("attachments/%s/%s/%s", h[0:2], h[2:4], h)
+}
+
+// degradedParse builds a best-effort *email.ParsedEmail from raw bytes that
+// could not be parsed as RFC-822, so a malformed message still reaches a verdict
+// instead of being dropped. It carries no headers (empty mail.Header) and no
+// attachments/recipients; the body is the raw text (HTML-stripped when it looks
+// like markup) and the URL list is whatever ExtractURLsFromText finds — a
+// malformed phish link is still scored.
+func degradedParse(rawBytes []byte) *email.ParsedEmail {
+	raw := string(rawBytes)
+	var urls []email.ExtractedURL
+	bodyPlain := raw
+	if strings.Contains(raw, "<") {
+		// Looks like HTML: pull URLs out of href/src/action/meta-refresh BEFORE
+		// stripping (HTMLToText drops attribute values, so extracting only from the
+		// stripped text would lose every anchor link — the dominant phish case),
+		// then render the markup to clean text for the NLP body.
+		urls = email.ExtractURLsFromHTML(raw)
+		bodyPlain = email.HTMLToText(raw)
+	}
+	bodyPlain = collapseSpaces(bodyPlain)
+	urls = email.DedupeURLs(append(urls, email.ExtractURLsFromText(bodyPlain)...))
+	return &email.ParsedEmail{
+		Header:    mail.Header{},
+		BodyPlain: bodyPlain,
+		URLs:      urls,
+	}
+}
+
+// collapseSpaces collapses runs of whitespace in s to single spaces and trims
+// the ends, matching the clean plain-text shape the parser produces for a
+// well-formed body.
+func collapseSpaces(s string) string {
+	return strings.Join(strings.Fields(s), " ")
 }
 
 // publishAll marshals and publishes the 5 analysis.* messages, keyed by the
@@ -258,7 +303,7 @@ func (a *parserApp) publishAll(
 		topic   string
 		payload any
 	}{
-		{contracts.TopicAnalysisURLs, contracts.AnalysisURLs{Meta: meta, URLs: toContractURLs(parsed.URLs)}},
+		{contracts.TopicAnalysisURLs, buildAnalysisURLs(meta, key.InternalID, parsed)},
 		{contracts.TopicAnalysisHeaders, headersMsg},
 		{
 			contracts.TopicAnalysisAttachments,
@@ -293,11 +338,12 @@ func buildPersist(
 	storageURIs []string,
 ) repository.PersistParsedFull {
 	h := parsed.Header
+	msgID := messageID(raw, h)
 
 	emailParams := db.InsertEmailParams{
 		FetchedAt:      pgconv.Timestamptz(fetchedAt),
 		OrgID:          pgconv.Int8(raw.Meta.OrgID),
-		MessageID:      pgconv.Text(messageID(raw, h)),
+		MessageID:      pgconv.Text(msgID),
 		SenderName:     pgconv.Text(hv.fromName),
 		SenderEmail:    pgconv.Text(hv.fromAddr),
 		SenderDomain:   pgconv.Text(hv.senderDomain),
@@ -363,6 +409,7 @@ func buildPersist(
 
 	return repository.PersistParsedFull{
 		Email:       emailParams,
+		MessageID:   msgID,
 		URLs:        urls,
 		Attachments: atts,
 		Recipients:  recips,
@@ -408,6 +455,18 @@ func buildAnalysisHeaders(
 		HeadersJSON:    hv.headersJSON,
 		BodyHTML:       parsed.BodyHTML,
 		BodyPlain:      parsed.BodyPlain,
+	}
+}
+
+// buildAnalysisURLs projects the extracted URLs onto the analysis.urls contract,
+// stamping the DB-assigned internal_id so svc-03 can look up email_urls by the
+// real surrogate key (mirrors analysis.headers' InternalID — G5/G17 two-id
+// model; Meta.EmailID stays the logical id).
+func buildAnalysisURLs(meta contracts.MessageMeta, internalID int64, parsed *email.ParsedEmail) contracts.AnalysisURLs {
+	return contracts.AnalysisURLs{
+		Meta:       meta,
+		InternalID: internalID,
+		URLs:       toContractURLs(parsed.URLs),
 	}
 }
 
@@ -685,9 +744,11 @@ func receivedToken(s, keyword string) string {
 // shared/kafka package owns the consumer/producer-level counters).
 type parserMetrics struct {
 	// MessagesTotal is partitioned by result: "ok" for a fully
-	// parsed-persisted-published message and "dropped" for a permanent
-	// bad-data message whose offset is committed without processing.
-	MessagesTotal *prometheus.CounterVec // result=ok|dropped
+	// parsed-persisted-published message, "degraded" for a malformed-MIME message
+	// persisted+published from a best-effort parse (no headers), and "dropped"
+	// for a permanent bad-data message whose offset is committed without
+	// processing.
+	MessagesTotal *prometheus.CounterVec // result=ok|degraded|dropped
 }
 
 // newParserMetrics registers the SVC-02 metrics and returns the holder.
@@ -708,6 +769,13 @@ func (m *parserMetrics) processed() {
 		return
 	}
 	m.MessagesTotal.WithLabelValues("ok").Inc()
+}
+
+func (m *parserMetrics) degraded() {
+	if m == nil || m.MessagesTotal == nil {
+		return
+	}
+	m.MessagesTotal.WithLabelValues("degraded").Inc()
 }
 
 func (m *parserMetrics) dropped() {
