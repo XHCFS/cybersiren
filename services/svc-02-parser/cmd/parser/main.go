@@ -245,7 +245,7 @@ func buildPersist(raw contracts.EmailsRaw, parsed *email.ParsedEmail, fetchedAt 
 		SenderDomain:   pgText(senderDomain),
 		ReplyToEmail:   pgText(addressOnly(h.Get("Reply-To"))),
 		ReturnPath:     pgText(addressOnly(h.Get("Return-Path"))),
-		OriginatingIp:  parseIP(h.Get("Received")),
+		OriginatingIp:  originatingAddr(h),
 		AuthSpf:        pgText(auth["spf"]),
 		AuthDkim:       pgText(auth["dkim"]),
 		AuthDmarc:      pgText(auth["dmarc"]),
@@ -330,6 +330,8 @@ func buildAnalysisHeaders(emailID, internalID, orgID int64, fetchedAt time.Time,
 		ReplyToEmail:   addressOnly(h.Get("Reply-To")),
 		ReturnPath:     addressOnly(h.Get("Return-Path")),
 		MailerAgent:    h.Get("X-Mailer"),
+		OriginatingIP:  addrString(originatingAddr(h)),
+		XOriginatingIP: addrString(parseIP(h.Get("X-Originating-IP"))),
 		AuthSPF:        auth["spf"],
 		AuthDKIM:       auth["dkim"],
 		AuthDMARC:      auth["dmarc"],
@@ -341,6 +343,7 @@ func buildAnalysisHeaders(emailID, internalID, orgID int64, fetchedAt time.Time,
 		Precedence:     h.Get("Precedence"),
 		ListID:         h.Get("List-Id"),
 		HopCount:       hopCount(h),
+		ReceivedChain:  receivedChain(h),
 		HeadersJSON:    headerMapJSON(h),
 		BodyHTML:       parsed.BodyHTML,
 		BodyPlain:      parsed.BodyPlain,
@@ -522,6 +525,82 @@ func parseIP(raw string) *netip.Addr {
 		}
 	}
 	return nil
+}
+
+// isPublicAddr reports whether a is a routable public unicast address (not
+// private / loopback / link-local / unspecified) — used to pick the
+// originating sender's hop out of the Received chain.
+func isPublicAddr(a netip.Addr) bool {
+	return a.IsValid() && !a.IsPrivate() && !a.IsLoopback() &&
+		!a.IsLinkLocalUnicast() && !a.IsUnspecified()
+}
+
+// addrString renders an optional address as a string ("" when nil).
+func addrString(a *netip.Addr) string {
+	if a == nil {
+		return ""
+	}
+	return a.String()
+}
+
+// originatingAddr returns the sender's IP: the first PUBLIC address found
+// scanning the Received chain from the origin hop (the last/bottom Received
+// header) toward the most-recent, falling back to the first address seen.
+// NOTE: the topmost Received header is the receiving MX, NOT the origin, so
+// mail.Header.Get("Received") (which returns the first/topmost) is the wrong
+// hop for sender-IP reputation — we walk from the bottom instead.
+func originatingAddr(h mail.Header) *netip.Addr {
+	raw := h["Received"]
+	var firstAny *netip.Addr
+	for i := len(raw) - 1; i >= 0; i-- {
+		addr := parseIP(raw[i])
+		if addr == nil {
+			continue
+		}
+		if firstAny == nil {
+			firstAny = addr
+		}
+		if isPublicAddr(*addr) {
+			return addr
+		}
+	}
+	return firstAny
+}
+
+// receivedChain parses every Received header into a hop (header order, so
+// index 0 is the most-recent hop). The from/by hosts and the hand-off
+// timestamp are best-effort; unparsable parts stay zero. SVC-04 uses this for
+// hop-count + timestamp-drift signals (D9 / ARCH-SPEC §3b).
+func receivedChain(h mail.Header) []contracts.ReceivedHop {
+	raw := h["Received"]
+	if len(raw) == 0 {
+		return nil
+	}
+	hops := make([]contracts.ReceivedHop, 0, len(raw))
+	for _, r := range raw {
+		hop := contracts.ReceivedHop{
+			From: receivedToken(r, "from"),
+			By:   receivedToken(r, "by"),
+		}
+		if i := strings.LastIndex(r, ";"); i >= 0 {
+			hop.Timestamp = sentTimestamp(r[i+1:])
+		}
+		hops = append(hops, hop)
+	}
+	return hops
+}
+
+// receivedToken returns the first whitespace-delimited token after the given
+// keyword (case-insensitive) in a Received header, stripped of the usual
+// bracket/paren framing. "" when the keyword is absent.
+func receivedToken(s, keyword string) string {
+	fields := strings.Fields(s)
+	for i := 0; i+1 < len(fields); i++ {
+		if strings.EqualFold(fields[i], keyword) {
+			return strings.Trim(fields[i+1], "[]()<>;,")
+		}
+	}
+	return ""
 }
 
 func headerMapJSON(h mail.Header) []byte {
