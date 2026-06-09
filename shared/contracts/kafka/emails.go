@@ -5,16 +5,33 @@ import (
 	"time"
 )
 
+// validatePtrScore enforces the documented [0, 100] range on a nullable score
+// pointer, treating nil (component absent / not yet scored) as valid. The wire
+// field name is included so the error names the exact offender.
+func validatePtrScore(name string, v *int) error {
+	if v == nil {
+		return nil
+	}
+	return validateScore(name, *v)
+}
+
 // EmailsRaw is the wire payload published by svc-01-ingestion to emails.raw
-// (architecture-spec §1, Step 1). The raw_message field holds the base64
+// (architecture-spec §1, Step 1). The raw_rfc822 field holds the base64
 // RFC-822 source so this struct stays JSON-friendly.
 type EmailsRaw struct {
-	Meta          MessageMeta       `json:"meta"`
-	FetchedAt     time.Time         `json:"fetched_at"`
-	SourceAdapter string            `json:"source_adapter"`
-	MessageID     string            `json:"message_id,omitempty"`
-	RawMessageB64 string            `json:"raw_message_b64"`
-	Headers       map[string]string `json:"headers,omitempty"`
+	Meta      MessageMeta `json:"meta"`
+	FetchedAt time.Time   `json:"fetched_at"`
+	// SourceAdapter is "gmail" | "outlook" | "imap" | "api" | "custom".
+	SourceAdapter string `json:"source_adapter"`
+	MessageID     string `json:"message_id,omitempty"`
+	// RawMessageB64 carries the full base64 RFC-822 bytes (spec field:
+	// raw_rfc822).
+	RawMessageB64 string `json:"raw_rfc822"`
+	// APIKeyID is the api_keys.id that authenticated the ingest, carried so
+	// svc-02 can attribute the email to its ingesting key. Zero when the
+	// source adapter did not authenticate via an API key.
+	APIKeyID int64             `json:"api_key_id,omitempty"`
+	Headers  map[string]string `json:"headers,omitempty"`
 }
 
 // ComponentDetails carries the full upstream score messages forward to the
@@ -73,6 +90,26 @@ type EmailsScored struct {
 	ComponentDetails ComponentDetails `json:"component_details"`
 }
 
+// Validate enforces the documented [0, 100] range on every component score.
+// The *Score fields are nullable (nil = component absent / aggregation timed
+// out before it arrived); nil pointers pass. The latency/internal_id/fetched_at
+// fields are not score-bounded.
+func (e EmailsScored) Validate() error {
+	if err := validatePtrScore("url", e.URLScore); err != nil {
+		return err
+	}
+	if err := validatePtrScore("header", e.HeaderScore); err != nil {
+		return err
+	}
+	if err := validatePtrScore("attachment", e.AttachmentScore); err != nil {
+		return err
+	}
+	if err := validatePtrScore("nlp", e.NLPScore); err != nil {
+		return err
+	}
+	return nil
+}
+
 // EmailsVerdict is published by svc-08-decision to emails.verdict
 // (architecture-spec §1, Step 5).
 //
@@ -103,6 +140,29 @@ type EmailsVerdict struct {
 	ModelVersion          string             `json:"model_version,omitempty"`
 	PartialAnalysis       bool               `json:"partial_analysis"`
 	ProcessingTimeTotalMS int64              `json:"processing_time_total_ms"`
+}
+
+// Validate enforces the documented [0, 100] range on the always-present
+// RiskScore and on each nullable component risk score (nil = partial analysis,
+// passes). Confidence carries a [0.0, 1.0] range, not the [0, 100] score
+// contract, and is left to the producer; campaign ids/timings are unbounded.
+func (v EmailsVerdict) Validate() error {
+	if err := validateScore("risk", v.RiskScore); err != nil {
+		return err
+	}
+	if err := validatePtrScore("header_risk", v.HeaderRiskScore); err != nil {
+		return err
+	}
+	if err := validatePtrScore("content_risk", v.ContentRiskScore); err != nil {
+		return err
+	}
+	if err := validatePtrScore("url_risk", v.URLRiskScore); err != nil {
+		return err
+	}
+	if err := validatePtrScore("attachment_risk", v.AttachmentRiskScore); err != nil {
+		return err
+	}
+	return nil
 }
 
 // VerdictFiredRule is the trimmed rule-fire summary attached to

@@ -31,3 +31,21 @@ INSERT INTO verdicts (
     $8
 )
 RETURNING id;
+
+-- name: FindExistingVerdictForEmail :one
+-- Idempotency probe for SVC-08 replay: returns the verdict already recorded for
+-- this email partition key plus its stored kafka_verdict_wire (as text) so the
+-- engine can republish byte-for-byte without recomputing. Returns no rows on
+-- first processing.
+SELECT id, COALESCE(kafka_verdict_wire::text, '') AS kafka_wire
+FROM verdicts
+WHERE entity_type = $1::entity_type_enum
+  AND entity_id = $2
+  AND email_fetched_at IS NOT NULL
+  AND email_fetched_at = $3::timestamptz
+LIMIT 1;
+
+-- name: UpdateVerdictKafkaWire :exec
+-- Persists the emails.verdict JSON written for this verdict so redelivery can
+-- republish identical bytes. Written in the same tx as the verdict insert.
+UPDATE verdicts SET kafka_verdict_wire = $1::jsonb WHERE id = $2;

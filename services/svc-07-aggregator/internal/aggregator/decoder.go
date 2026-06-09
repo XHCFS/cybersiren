@@ -60,7 +60,7 @@ func decodeScoreInt(topic string, raw []byte) int {
 			return clampScore(hd.Score)
 		}
 	}
-	var env contracts.ScoreEnvelope
+	var env contracts.ScoreEnvelope //nolint:staticcheck // G13: sanctioned legacy ScoreEnvelope decoder.
 	if err := json.Unmarshal(raw, &env); err != nil {
 		return 0
 	}

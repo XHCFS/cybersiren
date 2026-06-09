@@ -157,7 +157,7 @@ func handle(ctx context.Context, msg kafkaconsumer.Message, deps svckit.Deps) er
 	worstLabel := "legitimate"
 
 	for _, raw := range input.URLs {
-		s := scanOne(ctx, raw, log)
+		s := scanOne(ctx, raw.URL, log)
 		scans = append(scans, s)
 		if s.Score > maxScore {
 			maxScore = s.Score
@@ -173,7 +173,7 @@ func handle(ctx context.Context, msg kafkaconsumer.Message, deps svckit.Deps) er
 	if ft.IsZero() {
 		ft = time.Now().UTC()
 	}
-	out := contracts.ScoreEnvelope{
+	out := contracts.ScoreEnvelope{ //nolint:staticcheck // G13: sanctioned legacy ScoreEnvelope producer.
 		Meta:      contracts.NewMetaWithFetched(input.Meta.EmailID, input.Meta.OrgID, ft),
 		Component: contracts.ComponentURL,
 		Score:     float64(maxScore),

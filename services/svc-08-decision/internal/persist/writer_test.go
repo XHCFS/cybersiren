@@ -36,10 +36,19 @@ func TestBackoffDurationCapsAtFiveSeconds(t *testing.T) {
 	require.Equal(t, 5*time.Second, backoffDuration(99))
 }
 
-func TestNullableJSONB(t *testing.T) {
+func TestNullableJSONBBytes(t *testing.T) {
 	t.Parallel()
-	require.Nil(t, nullableJSONB(nil))
-	require.Nil(t, nullableJSONB([]byte{}))
+	require.Nil(t, nullableJSONBBytes(nil))
+	require.Nil(t, nullableJSONBBytes([]byte{}))
 	b := []byte(`{"x":1}`)
-	require.Equal(t, b, nullableJSONB(b))
+	require.Equal(t, b, nullableJSONBBytes(b))
+}
+
+func TestEmailCountToInt32(t *testing.T) {
+	t.Parallel()
+	require.Equal(t, int32(5), emailCountToInt32(int32(5)))
+	require.Equal(t, int32(7), emailCountToInt32(int64(7)))
+	require.Equal(t, int32(9), emailCountToInt32(9))
+	require.Equal(t, int32(0), emailCountToInt32(nil))
+	require.Equal(t, int32(0), emailCountToInt32("unexpected"))
 }

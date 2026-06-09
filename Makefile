@@ -231,6 +231,10 @@ test-short:
 integration-schema:
 	go test -tags=integration -race -count=1 -v ./integrations/schema/...
 
+test-rls:
+	@APP_DATABASE_URL="$${APP_DATABASE_URL:-postgres://cybersiren_app:cybersiren_app@localhost:5432/cybersiren?sslmode=disable}" \
+		go test -tags=integration -count=1 -v ./shared/postgres/repository/ -run 'RLS|WithOrgTx'
+
 ## test-cover: Run all tests and open HTML coverage report
 test-cover:
 	go test -race -coverprofile=coverage.out ./...

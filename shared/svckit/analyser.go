@@ -33,7 +33,7 @@ func AnalyserHandler(component, outTopic string) Handler {
 		if ft.IsZero() {
 			ft = time.Now().UTC()
 		}
-		out := contracts.ScoreEnvelope{
+		out := contracts.ScoreEnvelope{ //nolint:staticcheck // G13: sanctioned legacy ScoreEnvelope producer.
 			Meta:      contracts.NewMetaWithFetched(env.Meta.EmailID, env.Meta.OrgID, ft),
 			Component: component,
 			Score:     float64(rand.IntN(101)), //nolint:gosec

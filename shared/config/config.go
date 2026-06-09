@@ -14,6 +14,8 @@ import (
 	"github.com/knadh/koanf/providers/file"
 	"github.com/knadh/koanf/providers/structs"
 	"github.com/knadh/koanf/v2"
+
+	"github.com/saif/cybersiren/shared/auth"
 )
 
 // Config is the root configuration object. All sub-configs are loaded
@@ -44,6 +46,10 @@ type Config struct {
 	Embedding  EmbeddingConfig  `koanf:"embedding"`
 	Header     HeaderConfig     `koanf:"header"`
 	Phishing   PhishingConfig   `koanf:"phishing"`
+
+	Attachment   AttachmentConfig   `koanf:"attachment"`
+	Notification NotificationConfig `koanf:"notification"`
+	Gmail        GmailConfig        `koanf:"gmail"`
 }
 
 // HeaderConfig holds configuration for SVC-04 Header Analysis Service.
@@ -150,7 +156,10 @@ type AuthConfig struct {
 	JWTExpiry    time.Duration `koanf:"jwt_expiry"`
 	BcryptCost   int           `koanf:"bcrypt_cost"`
 	APIKeyPrefix string        `koanf:"api_key_prefix"`
-	// Length of random suffix after prefix (e.g., "cs_" + 8 random chars).
+	// Length of the random suffix appended after the prefix (e.g. "cs_" + 32
+	// random chars). Must be large enough that the stored lookup prefix omits
+	// several trailing random characters; auth.NewKeyManager rejects values that
+	// are too small to keep that reserve secret.
 	APIKeyPrefixLen int `koanf:"api_key_prefix_len"`
 }
 
@@ -298,7 +307,7 @@ func Load() (*Config, error) {
 			JWTExpiry:       24 * time.Hour,
 			BcryptCost:      12,
 			APIKeyPrefix:    "cs_",
-			APIKeyPrefixLen: 8,
+			APIKeyPrefixLen: 32,
 		},
 		Log: LogConfig{
 			Level:  "info",
@@ -388,6 +397,37 @@ func Load() (*Config, error) {
 			PublishRetryAttempts:    5,
 			DBWriteRetryAttempts:    3,
 		},
+		Attachment: AttachmentConfig{
+			VTCacheTTL:             24 * time.Hour,
+			EntropyThreshold:       7.5,
+			HighEntropyScore:       20,
+			ExtensionMismatchScore: 30,
+			DangerousExtScore:      25,
+			MacroOfficeScore:       20,
+			DoubleExtScore:         35,
+			MaliciousHashScore:     90,
+			ConsumeTopic:           "analysis.attachments",
+			ProduceTopic:           "scores.attachment",
+			ConsumerGroup:          "cg-attachment-analysis",
+		},
+		Notification: NotificationConfig{
+			SMTP: SMTPConfig{
+				Enabled:  false,
+				Port:     587,
+				StartTLS: true,
+				Timeout:  10 * time.Second,
+			},
+			Webhook: WebhookConfig{
+				Enabled:    false,
+				Timeout:    10 * time.Second,
+				MaxRetries: 3,
+			},
+		},
+		Gmail: GmailConfig{
+			Enabled:      false,
+			Scopes:       []string{"https://www.googleapis.com/auth/gmail.readonly"},
+			PollInterval: 5 * time.Minute,
+		},
 	}
 
 	if err := k.Load(structs.Provider(defaults, "koanf"), nil); err != nil {
@@ -476,8 +516,22 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("embedding.dimension must be greater than 0, got %d", c.Embedding.Dimension)
 	}
 
-	if c.Auth.APIKeyPrefixLen <= 0 {
-		return fmt.Errorf("auth.api_key_prefix_len must be greater than 0, got %d", c.Auth.APIKeyPrefixLen)
+	// JWT secret is non-empty here (caught above); enforce the entropy floor so
+	// a weak secret fails at boot, not when auth.NewManager is later constructed.
+	if len(c.Auth.JWTSecret) < auth.MinJWTSecretLen {
+		return fmt.Errorf("auth.jwt_secret must be at least %d bytes, got %d", auth.MinJWTSecretLen, len(c.Auth.JWTSecret))
+	}
+
+	// Mirror auth.NewKeyManager's bounds so a misconfigured prefix length fails
+	// at boot rather than when a service first mints/looks up an API key. The
+	// suffix must exceed MinAPIKeySuffixLen (so the stored lookup prefix can
+	// never cover the whole key), and prefix+suffix must fit bcrypt's input limit.
+	if c.Auth.APIKeyPrefixLen <= auth.MinAPIKeySuffixLen {
+		return fmt.Errorf("auth.api_key_prefix_len must be greater than %d, got %d", auth.MinAPIKeySuffixLen, c.Auth.APIKeyPrefixLen)
+	}
+	if len(c.Auth.APIKeyPrefix)+c.Auth.APIKeyPrefixLen > auth.MaxAPIKeyInputLen {
+		return fmt.Errorf("auth.api_key_prefix(%d)+api_key_prefix_len(%d) must not exceed %d (bcrypt input limit)",
+			len(c.Auth.APIKeyPrefix), c.Auth.APIKeyPrefixLen, auth.MaxAPIKeyInputLen)
 	}
 
 	if c.Auth.BcryptCost < 4 || c.Auth.BcryptCost > 31 {
@@ -638,6 +692,244 @@ func (h HeaderConfig) Validate() error {
 	}
 	if strings.TrimSpace(h.ConsumerGroup) == "" {
 		return errors.New("header.consumer_group is required")
+	}
+	return nil
+}
+
+// AttachmentConfig holds configuration for SVC-05 Attachment Analysis Service.
+//
+// The VirusTotal credential and HTTP client settings are reused from
+// Enrichment.VirusTotal (the single source of truth for the VT key — see
+// VirusTotalConfig); this section only carries the attachment-scoring knobs:
+// the VT result cache TTL and the heuristic score impacts described in
+// ARCH-SPEC §1-step3c. None of the heuristic weights have been calibrated
+// against a labeled corpus; they are exposed so they can be tuned without a
+// code change.
+//
+// Validation is opt-in — services that do not run attachment analysis skip
+// Validate(); it is NOT run during the global Config.Validate() pass.
+type AttachmentConfig struct {
+	// VTCacheTTL is how long a VirusTotal hash result is cached in
+	// enrichment_results (provider="virustotal"). ARCH-SPEC §1-step3c
+	// specifies 24h.
+	VTCacheTTL time.Duration `koanf:"vt_cache_ttl"`
+
+	// EntropyThreshold is the Shannon-entropy value above which the
+	// high-entropy heuristic fires (default 7.5; bytes have a max of 8.0).
+	EntropyThreshold float64 `koanf:"entropy_threshold"`
+
+	// Score impacts for each heuristic. The per-attachment score is the sum
+	// of fired heuristics, clamped to 0–100; the per-email score is the max
+	// across attachments. Defaults match ARCH-SPEC §1-step3c.
+	HighEntropyScore       int `koanf:"high_entropy_score"`       // entropy > threshold (default 20)
+	ExtensionMismatchScore int `koanf:"extension_mismatch_score"` // extension vs MIME mismatch (default 30)
+	DangerousExtScore      int `koanf:"dangerous_ext_score"`      // .exe/.scr/.bat/… (default 25)
+	MacroOfficeScore       int `koanf:"macro_office_score"`       // .docm/.xlsm/.pptm (default 20)
+	DoubleExtScore         int `koanf:"double_ext_score"`         // .pdf.exe (default 35)
+	MaliciousHashScore     int `koanf:"malicious_hash_score"`     // attachment_library hit (default 90)
+
+	// ConsumeTopic / ProduceTopic / ConsumerGroup are exposed for tests and
+	// compose overrides. Defaults match ARCH-SPEC §3.
+	ConsumeTopic  string `koanf:"consume_topic"`
+	ProduceTopic  string `koanf:"produce_topic"`
+	ConsumerGroup string `koanf:"consumer_group"`
+}
+
+// Validate sanity-checks AttachmentConfig. Called explicitly by SVC-05 during
+// startup; not part of the global Config.Validate() pass so other services can
+// keep the default zero values without surprise failures.
+func (a AttachmentConfig) Validate() error {
+	if a.VTCacheTTL <= 0 {
+		return fmt.Errorf("attachment.vt_cache_ttl must be > 0, got %v", a.VTCacheTTL)
+	}
+	if a.EntropyThreshold <= 0 || a.EntropyThreshold > 8 {
+		return fmt.Errorf("attachment.entropy_threshold must be in (0, 8], got %v", a.EntropyThreshold)
+	}
+	for _, s := range []struct {
+		name string
+		val  int
+	}{
+		{"attachment.high_entropy_score", a.HighEntropyScore},
+		{"attachment.extension_mismatch_score", a.ExtensionMismatchScore},
+		{"attachment.dangerous_ext_score", a.DangerousExtScore},
+		{"attachment.macro_office_score", a.MacroOfficeScore},
+		{"attachment.double_ext_score", a.DoubleExtScore},
+		{"attachment.malicious_hash_score", a.MaliciousHashScore},
+	} {
+		if s.val < 0 || s.val > 100 {
+			return fmt.Errorf("%s must be in [0, 100], got %d", s.name, s.val)
+		}
+	}
+	if strings.TrimSpace(a.ConsumeTopic) == "" {
+		return errors.New("attachment.consume_topic is required")
+	}
+	if strings.TrimSpace(a.ProduceTopic) == "" {
+		return errors.New("attachment.produce_topic is required")
+	}
+	if strings.TrimSpace(a.ConsumerGroup) == "" {
+		return errors.New("attachment.consumer_group is required")
+	}
+	return nil
+}
+
+// NotificationConfig holds configuration for SVC-09 Notification Service: the
+// SMTP email channel and the generic webhook POST channel (ARCH-SPEC §1-step6a).
+// Slack/Teams are out of scope (P2). The per-org threshold and channel list
+// live in the organisations table (migration 030), not here — this section is
+// purely the transport credentials and client tuning.
+//
+// Validation is opt-in. SVC-09 calls Validate() at startup; only the channels
+// it actually enables need to be fully configured (an org may run webhook-only
+// or email-only), so Validate() checks a channel's fields only when that
+// channel is enabled.
+type NotificationConfig struct {
+	SMTP    SMTPConfig    `koanf:"smtp"`
+	Webhook WebhookConfig `koanf:"webhook"`
+}
+
+// Validate checks the enabled notification channels. Disabled channels are not
+// validated so a deployment can run with only one transport configured.
+func (n NotificationConfig) Validate() error {
+	if n.SMTP.Enabled {
+		if err := n.SMTP.Validate(); err != nil {
+			return err
+		}
+	}
+	if n.Webhook.Enabled {
+		if err := n.Webhook.Validate(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// SMTPConfig holds the SMTP relay settings for the email-alert channel.
+// Credentials must come from secrets, never committed YAML.
+type SMTPConfig struct {
+	// Enabled toggles the email channel. When false the rest is ignored.
+	Enabled bool `koanf:"enabled"`
+
+	Host string `koanf:"host"`
+	Port int    `koanf:"port"`
+
+	Username string `koanf:"username"`
+	Password string `koanf:"password"`
+
+	// From is the envelope/header From address used for outgoing alerts.
+	From string `koanf:"from"`
+
+	// StartTLS requests opportunistic TLS upgrade on a plaintext connection
+	// (typical for port 587). When false on port 465 an implicit-TLS dial is
+	// expected by the sender. Default true.
+	StartTLS bool `koanf:"start_tls"`
+
+	// Timeout bounds the connect+send round-trip per message (default 10s).
+	Timeout time.Duration `koanf:"timeout"`
+}
+
+// Validate checks the SMTP fields. Only called when the channel is enabled.
+func (s SMTPConfig) Validate() error {
+	if strings.TrimSpace(s.Host) == "" {
+		return errors.New("notification.smtp.host is required when the SMTP channel is enabled")
+	}
+	if s.Port < 1 || s.Port > 65535 {
+		return fmt.Errorf("notification.smtp.port must be between 1 and 65535, got %d", s.Port)
+	}
+	if strings.TrimSpace(s.From) == "" {
+		return errors.New("notification.smtp.from is required when the SMTP channel is enabled")
+	}
+	if s.Timeout <= 0 {
+		return fmt.Errorf("notification.smtp.timeout must be > 0, got %v", s.Timeout)
+	}
+	return nil
+}
+
+// WebhookConfig holds the generic outbound webhook (SIEM/SOAR) settings.
+type WebhookConfig struct {
+	// Enabled toggles the webhook channel. When false the rest is ignored.
+	Enabled bool `koanf:"enabled"`
+
+	// URL is the POST target for alert payloads.
+	URL string `koanf:"url"`
+
+	// Secret is an optional shared secret; when set the sender signs the body
+	// (e.g. via an X-Signature HMAC header). Empty disables signing.
+	Secret string `koanf:"secret"`
+
+	// Timeout bounds each POST (default 10s).
+	Timeout time.Duration `koanf:"timeout"`
+
+	// MaxRetries caps the retry count for a failed delivery (default 3).
+	MaxRetries int `koanf:"max_retries"`
+}
+
+// Validate checks the webhook fields. Only called when the channel is enabled.
+func (w WebhookConfig) Validate() error {
+	if strings.TrimSpace(w.URL) == "" {
+		return errors.New("notification.webhook.url is required when the webhook channel is enabled")
+	}
+	u, err := url.Parse(w.URL)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return fmt.Errorf("notification.webhook.url must be a valid http(s) URL, got %q", w.URL)
+	}
+	if w.Timeout <= 0 {
+		return fmt.Errorf("notification.webhook.timeout must be > 0, got %v", w.Timeout)
+	}
+	if w.MaxRetries < 0 {
+		return fmt.Errorf("notification.webhook.max_retries must be >= 0, got %d", w.MaxRetries)
+	}
+	return nil
+}
+
+// GmailConfig holds the OAuth2 settings for the SVC-01 Gmail ingestion adapter
+// (ARCH-SPEC §2.1: offline access, scope gmail.readonly). The adapter exchanges
+// the offline RefreshToken for short-lived access tokens; the client
+// id/secret/redirect identify the OAuth app.
+//
+// All four secret-bearing fields (ClientID, ClientSecret, RefreshToken) must
+// come from secrets, never committed YAML. Validation is opt-in: only SVC-01
+// (when the Gmail adapter is enabled) calls Validate().
+type GmailConfig struct {
+	// Enabled toggles the Gmail adapter. When false the rest is ignored so
+	// that deployments running API-upload only are not forced to configure
+	// OAuth.
+	Enabled bool `koanf:"enabled"`
+
+	ClientID     string `koanf:"client_id"`
+	ClientSecret string `koanf:"client_secret"`
+
+	// RedirectURL is the OAuth2 redirect/callback URI registered with the app.
+	RedirectURL string `koanf:"redirect_url"`
+
+	// RefreshToken is the long-lived offline token obtained during the consent
+	// flow; the adapter mints access tokens from it.
+	RefreshToken string `koanf:"refresh_token"`
+
+	// Scopes the adapter requests. Defaults to gmail.readonly per ARCH-SPEC §2.1.
+	Scopes []string `koanf:"scopes"`
+
+	// PollInterval is the fallback delta-poll cadence used when Pub/Sub push
+	// is unavailable (default 5m, matching the spec's 5-min fallback).
+	PollInterval time.Duration `koanf:"poll_interval"`
+}
+
+// Validate checks the Gmail OAuth fields. Only called when the adapter is
+// enabled (API-upload-only deployments skip it).
+func (g GmailConfig) Validate() error {
+	if strings.TrimSpace(g.ClientID) == "" {
+		return errors.New("gmail.client_id is required when the Gmail adapter is enabled")
+	}
+	if strings.TrimSpace(g.ClientSecret) == "" {
+		return errors.New("gmail.client_secret is required when the Gmail adapter is enabled")
+	}
+	if strings.TrimSpace(g.RefreshToken) == "" {
+		return errors.New("gmail.refresh_token is required when the Gmail adapter is enabled")
+	}
+	if len(g.Scopes) == 0 {
+		return errors.New("gmail.scopes must contain at least one scope when the Gmail adapter is enabled")
+	}
+	if g.PollInterval <= 0 {
+		return fmt.Errorf("gmail.poll_interval must be > 0, got %v", g.PollInterval)
 	}
 	return nil
 }

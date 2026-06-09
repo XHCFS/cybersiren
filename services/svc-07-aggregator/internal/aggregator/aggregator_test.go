@@ -44,7 +44,7 @@ func planMsg(t *testing.T, emailID, orgID int64, expected ...string) kafkaconsum
 
 func envelopeMsg(t *testing.T, topic string, emailID, orgID int64, score float64) kafkaconsumer.Message {
 	t.Helper()
-	body, err := json.Marshal(contracts.ScoreEnvelope{
+	body, err := json.Marshal(contracts.ScoreEnvelope{ //nolint:staticcheck // G13: sanctioned legacy ScoreEnvelope test producer.
 		Meta: contracts.NewMetaWithFetched(emailID, orgID,
 			testPartitionFetchedAt(t)),
 		Component: componentForTopic(topic),
@@ -228,7 +228,7 @@ func TestPackager_FlatHeaderShapeForwardedRaw(t *testing.T) {
 func TestExtractIDs_EnvelopeAndFlatShapes(t *testing.T) {
 	t.Parallel()
 
-	envBody, _ := json.Marshal(contracts.ScoreEnvelope{
+	envBody, _ := json.Marshal(contracts.ScoreEnvelope{ //nolint:staticcheck // G13: sanctioned legacy ScoreEnvelope test producer.
 		Meta: contracts.NewMeta(11, 22), Component: "url", Score: 50,
 	})
 	hdrBody, _ := json.Marshal(contracts.ScoresHeaderMessage{
