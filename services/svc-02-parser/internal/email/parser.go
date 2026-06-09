@@ -12,6 +12,7 @@ package email
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"mime"
 	"mime/multipart"
@@ -69,7 +70,7 @@ func (p *ParsedEmail) HasBody() bool {
 func Parse(raw []byte) (*ParsedEmail, error) {
 	msg, err := mail.ReadMessage(bytes.NewReader(raw))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("read rfc822 message: %w", err)
 	}
 
 	pe := &ParsedEmail{Header: msg.Header}

@@ -112,7 +112,11 @@ func (r *EnrichmentRepository) FailJob(ctx context.Context, orgID, jobID int64, 
 // not an error: it means SVC-02 has not yet persisted this email's URLs (P1.1
 // lands in parallel), in which case SVC-03 fail-softs and skips the row-keyed
 // writes for this message.
-func (r *EnrichmentRepository) ListEmailURLs(ctx context.Context, orgID, internalID int64, fetchedAt pgtype.Timestamptz) ([]db.ListEmailURLsRow, error) {
+func (r *EnrichmentRepository) ListEmailURLs(
+	ctx context.Context,
+	orgID, internalID int64,
+	fetchedAt pgtype.Timestamptz,
+) ([]db.ListEmailURLsRow, error) {
 	if r == nil || r.pool == nil {
 		return nil, errors.New("enrichment repository: nil pool")
 	}
@@ -138,7 +142,12 @@ func (r *EnrichmentRepository) ListEmailURLs(ctx context.Context, orgID, interna
 // prior-email URL lookup") instead of re-running live enrichment. Returns
 // ErrNoPriorEnrichment on a cache miss so callers can branch cleanly. Runs in an
 // org-scoped tx (RLS).
-func (r *EnrichmentRepository) GetPriorEnrichedThreat(ctx context.Context, orgID int64, domain string, excludeID int64) (db.EnrichedThreat, error) {
+func (r *EnrichmentRepository) GetPriorEnrichedThreat(
+	ctx context.Context,
+	orgID int64,
+	domain string,
+	excludeID int64,
+) (db.EnrichedThreat, error) {
 	// An empty domain can never have a prior enrichment row — short-circuit to
 	// the cache-miss sentinel before touching the pool, so a URL with no parsable
 	// host is a clean miss rather than a wasted transaction.

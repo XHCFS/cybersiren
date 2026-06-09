@@ -2,6 +2,7 @@ package persist
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -41,33 +42,66 @@ func NewRepoStore(pool *pgxpool.Pool) *RepoStore {
 var _ EnrichmentStore = (*RepoStore)(nil)
 
 func (s *RepoStore) ResolveThreatID(ctx context.Context, orgID int64, p db.UpsertBareEnrichedThreatParams) (int64, error) {
-	return s.urls.UpsertBareThreat(ctx, orgID, p)
+	id, err := s.urls.UpsertBareThreat(ctx, orgID, p)
+	if err != nil {
+		return 0, fmt.Errorf("resolve threat id: %w", err)
+	}
+	return id, nil
 }
 
 func (s *RepoStore) ApplyThreatEnrichment(ctx context.Context, orgID int64, p db.UpdateEnrichedThreatEnrichmentParams) error {
-	return s.enrich.ApplyThreatEnrichment(ctx, orgID, p)
+	if err := s.enrich.ApplyThreatEnrichment(ctx, orgID, p); err != nil {
+		return fmt.Errorf("apply threat enrichment: %w", err)
+	}
+	return nil
 }
 
 func (s *RepoStore) GetPriorEnrichedThreat(ctx context.Context, orgID int64, domain string, excludeID int64) (db.EnrichedThreat, error) {
-	return s.enrich.GetPriorEnrichedThreat(ctx, orgID, domain, excludeID)
+	row, err := s.enrich.GetPriorEnrichedThreat(ctx, orgID, domain, excludeID)
+	if err != nil {
+		return db.EnrichedThreat{}, fmt.Errorf("get prior enriched threat: %w", err)
+	}
+	return row, nil
 }
 
-func (s *RepoStore) ListEmailURLs(ctx context.Context, orgID, internalID int64, fetchedAt pgtype.Timestamptz) ([]db.ListEmailURLsRow, error) {
-	return s.enrich.ListEmailURLs(ctx, orgID, internalID, fetchedAt)
+func (s *RepoStore) ListEmailURLs(
+	ctx context.Context,
+	orgID, internalID int64,
+	fetchedAt pgtype.Timestamptz,
+) ([]db.ListEmailURLsRow, error) {
+	rows, err := s.enrich.ListEmailURLs(ctx, orgID, internalID, fetchedAt)
+	if err != nil {
+		return nil, fmt.Errorf("list email urls: %w", err)
+	}
+	return rows, nil
 }
 
 func (s *RepoStore) RecordTIMatch(ctx context.Context, orgID int64, p db.InsertEmailURLTIMatchParams) error {
-	return s.enrich.RecordTIMatch(ctx, orgID, p)
+	if err := s.enrich.RecordTIMatch(ctx, orgID, p); err != nil {
+		return fmt.Errorf("record ti match: %w", err)
+	}
+	return nil
 }
 
 func (s *RepoStore) UpsertResult(ctx context.Context, orgID int64, p db.UpsertEnrichmentResultParams) (int64, error) {
-	return s.enrich.UpsertResult(ctx, orgID, p)
+	id, err := s.enrich.UpsertResult(ctx, orgID, p)
+	if err != nil {
+		return 0, fmt.Errorf("upsert enrichment result: %w", err)
+	}
+	return id, nil
 }
 
 func (s *RepoStore) EnqueueJob(ctx context.Context, orgID int64, p db.EnqueueEnrichmentJobParams) (int64, error) {
-	return s.enrich.EnqueueJob(ctx, orgID, p)
+	id, err := s.enrich.EnqueueJob(ctx, orgID, p)
+	if err != nil {
+		return 0, fmt.Errorf("enqueue enrichment job: %w", err)
+	}
+	return id, nil
 }
 
 func (s *RepoStore) CompleteJob(ctx context.Context, orgID, jobID int64) error {
-	return s.enrich.CompleteJob(ctx, orgID, jobID)
+	if err := s.enrich.CompleteJob(ctx, orgID, jobID); err != nil {
+		return fmt.Errorf("complete enrichment job: %w", err)
+	}
+	return nil
 }

@@ -24,6 +24,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
@@ -223,7 +224,7 @@ func (p *Persister) persistURL(
 		OrgID:  pgconv.Int8(e.OrgID),
 	})
 	if err != nil {
-		return err
+		return fmt.Errorf("resolve threat id: %w", err)
 	}
 
 	// (2) Prior-email enrichment READ — reuse a host's earlier enrichment.
@@ -251,12 +252,12 @@ func (p *Persister) persistURL(
 
 	// (3) enriched_threats UPDATE — persist this URL's computed enrichment.
 	if err := p.store.ApplyThreatEnrichment(ctx, e.OrgID, p.buildEnrichmentUpdate(threatID, u, blob)); err != nil {
-		return err
+		return fmt.Errorf("apply threat enrichment: %w", err)
 	}
 
 	// (4) enrichment_results UPSERT — cache the fused verdict for this entity.
 	if _, err := p.store.UpsertResult(ctx, e.OrgID, p.buildEnrichmentResult(threatID, fetchedAt, e.OrgID, u, blob)); err != nil {
-		return err
+		return fmt.Errorf("cache enrichment result: %w", err)
 	}
 
 	// (5) email_url_ti_matches INSERT — audit the TI feed match (when one fired
@@ -268,7 +269,7 @@ func (p *Persister) persistURL(
 				TiIndicatorID: u.TIIndicatorID,
 				MatchType:     tiMatchType(u),
 			}); err != nil {
-				return err
+				return fmt.Errorf("record ti match: %w", err)
 			}
 			p.metrics.IncWrite("ti_match", "ok")
 		} else {
@@ -290,10 +291,10 @@ func (p *Persister) persistURL(
 		OrgID:          pgconv.Int8(e.OrgID),
 	})
 	if err != nil {
-		return err
+		return fmt.Errorf("enqueue enrichment job: %w", err)
 	}
 	if err := p.store.CompleteJob(ctx, e.OrgID, jobID); err != nil {
-		return err
+		return fmt.Errorf("complete enrichment job: %w", err)
 	}
 	p.metrics.IncWrite("job", "ok")
 

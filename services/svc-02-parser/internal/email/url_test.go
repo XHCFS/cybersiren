@@ -86,14 +86,16 @@ func TestExtractURLsFromHTMLTruncatesVisibleText(t *testing.T) {
 	htmlBody := `<html><body><a href="https://big.example.com/x">` + huge + `</a></body></html>`
 
 	got := ExtractURLsFromHTML(htmlBody)
-	var anchor *ExtractedURL
-	for i := range got {
-		if got[i].URL == "https://big.example.com/x" {
-			anchor = &got[i]
+	var anchor ExtractedURL
+	found := false
+	for _, u := range got {
+		if u.URL == "https://big.example.com/x" {
+			anchor = u
+			found = true
 			break
 		}
 	}
-	if anchor == nil {
+	if !found {
 		t.Fatalf("anchor URL not extracted: %+v", got)
 	}
 	if len(anchor.VisibleText) > maxVisibleText {

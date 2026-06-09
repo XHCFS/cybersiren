@@ -237,7 +237,16 @@ func attachmentObjectKey(sha256hex string) string {
 
 // publishAll marshals and publishes the 5 analysis.* messages, keyed by the
 // logical email_id partition key.
-func (a *parserApp) publishAll(ctx context.Context, deps svckit.Deps, raw contracts.EmailsRaw, parsed *email.ParsedEmail, hv headerView, key repository.EmailKey, fetchedAt time.Time, storageURIs []string) error {
+func (a *parserApp) publishAll(
+	ctx context.Context,
+	deps svckit.Deps,
+	raw contracts.EmailsRaw,
+	parsed *email.ParsedEmail,
+	hv headerView,
+	key repository.EmailKey,
+	fetchedAt time.Time,
+	storageURIs []string,
+) error {
 	emailID := raw.Meta.EmailID
 	orgID := raw.Meta.OrgID
 	meta := contracts.NewMetaWithFetched(emailID, orgID, fetchedAt)
@@ -251,7 +260,10 @@ func (a *parserApp) publishAll(ctx context.Context, deps svckit.Deps, raw contra
 	}{
 		{contracts.TopicAnalysisURLs, contracts.AnalysisURLs{Meta: meta, URLs: toContractURLs(parsed.URLs)}},
 		{contracts.TopicAnalysisHeaders, headersMsg},
-		{contracts.TopicAnalysisAttachments, contracts.AnalysisAttachments{Meta: meta, Attachments: toContractAttachments(parsed.Attachments)}},
+		{
+			contracts.TopicAnalysisAttachments,
+			contracts.AnalysisAttachments{Meta: meta, Attachments: toContractAttachments(parsed.Attachments)},
+		},
 		{contracts.TopicAnalysisText, buildAnalysisText(meta, parsed, hv)},
 		{contracts.TopicAnalysisPlans, buildAnalysisPlan(meta, parsed)},
 	}
@@ -273,7 +285,13 @@ func (a *parserApp) publishAll(ctx context.Context, deps svckit.Deps, raw contra
 }
 
 // buildPersist maps the parsed email onto the repository's 6-write-group input.
-func buildPersist(raw contracts.EmailsRaw, parsed *email.ParsedEmail, hv headerView, fetchedAt time.Time, storageURIs []string) repository.PersistParsedFull {
+func buildPersist(
+	raw contracts.EmailsRaw,
+	parsed *email.ParsedEmail,
+	hv headerView,
+	fetchedAt time.Time,
+	storageURIs []string,
+) repository.PersistParsedFull {
 	h := parsed.Header
 
 	emailParams := db.InsertEmailParams{
@@ -354,7 +372,12 @@ func buildPersist(raw contracts.EmailsRaw, parsed *email.ParsedEmail, hv headerV
 // buildAnalysisHeaders projects the parsed headers + body onto svc-04's
 // AnalysisHeadersMessage, carrying BOTH ids (G5/G17) and the body content (D9 —
 // the parser ships the body, svc-04 computes the structural flags).
-func buildAnalysisHeaders(emailID, internalID, orgID int64, fetchedAt time.Time, parsed *email.ParsedEmail, hv headerView) contracts.AnalysisHeadersMessage {
+func buildAnalysisHeaders(
+	emailID, internalID, orgID int64,
+	fetchedAt time.Time,
+	parsed *email.ParsedEmail,
+	hv headerView,
+) contracts.AnalysisHeadersMessage {
 	h := parsed.Header
 
 	return contracts.AnalysisHeadersMessage{

@@ -69,9 +69,9 @@ func TestHTMLToTextEmpty(t *testing.T) {
 
 func TestWordCount(t *testing.T) {
 	cases := map[string]int{
-		"":              0,
-		"one":           1,
-		"one two three": 3,
+		"":               0,
+		"one":            1,
+		"one two three":  3,
 		"  pad   words ": 2,
 	}
 	for in, want := range cases {
