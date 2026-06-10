@@ -286,7 +286,10 @@ func (e *EmailChannel) sendSMTP(addr string, auth smtp.Auth, from string, to []s
 	if err := wc.Close(); err != nil {
 		return fmt.Errorf("smtp data close: %w", err)
 	}
-	return c.Quit()
+	if err := c.Quit(); err != nil {
+		return fmt.Errorf("smtp quit: %w", err)
+	}
+	return nil
 }
 
 func (e *EmailChannel) buildMessage(a Alert) []byte {
