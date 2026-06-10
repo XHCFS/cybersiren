@@ -5,10 +5,13 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/smtp"
 	"strings"
@@ -73,6 +76,13 @@ func (w *WebhookChannel) Send(ctx context.Context, a Alert) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
+		if i > 0 {
+			// Bounded backoff so a flapping endpoint is not hammered with
+			// zero-delay retries. Caps at webhookMaxBackoff; respects ctx.
+			if err := sleepCtx(ctx, webhookBackoff(i)); err != nil {
+				return err
+			}
+		}
 		lastErr = w.post(ctx, body)
 		if lastErr == nil {
 			return nil
@@ -108,13 +118,54 @@ func (w *WebhookChannel) post(ctx context.Context, body []byte) error {
 	return nil
 }
 
+// webhookBaseBackoff is the first retry delay; subsequent retries grow it
+// exponentially, capped at webhookMaxBackoff.
+const (
+	webhookBaseBackoff = 100 * time.Millisecond
+	webhookMaxBackoff  = 2 * time.Second
+)
+
+// webhookBackoff returns the delay before retry attempt i (i>=1): base*2^(i-1)
+// clamped to webhookMaxBackoff.
+func webhookBackoff(i int) time.Duration {
+	d := webhookBaseBackoff
+	for n := 1; n < i; n++ {
+		d *= 2
+		if d >= webhookMaxBackoff {
+			return webhookMaxBackoff
+		}
+	}
+	if d > webhookMaxBackoff {
+		return webhookMaxBackoff
+	}
+	return d
+}
+
+// sleepCtx blocks for d or until ctx is cancelled, whichever comes first. It
+// returns ctx.Err() on cancellation so a flapping-endpoint retry loop can bail
+// promptly when the consumer is shutting down.
+func sleepCtx(ctx context.Context, d time.Duration) error {
+	if d <= 0 {
+		return ctx.Err()
+	}
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
+}
+
 // -----------------------------------------------------------------------------
 // Email (SMTP) channel
 // -----------------------------------------------------------------------------
 
 // smtpSender abstracts the SMTP round-trip so the email channel is unit
-// testable without a live relay. The production implementation calls
-// net/smtp.SendMail.
+// testable without a live relay. The production implementation dials with an
+// explicit deadline and honours cfg.Timeout / cfg.StartTLS (see sendSMTP);
+// channels_test.go injects a fake with this same signature.
 type smtpSender func(addr string, auth smtp.Auth, from string, to []string, msg []byte) error
 
 // EmailChannel sends alert emails to the org's admin contacts over SMTP. It is
@@ -124,9 +175,15 @@ type EmailChannel struct {
 	send smtpSender
 }
 
-// NewEmailChannel builds an SMTP email sender from the (enabled) config.
+// NewEmailChannel builds an SMTP email sender from the (enabled) config. The
+// default sender dials with cfg.Timeout and only performs STARTTLS when
+// cfg.StartTLS is set (an implicit-TLS dial is used otherwise, typical for
+// port 465), unlike net/smtp.SendMail which has no deadline and always
+// auto-negotiates STARTTLS.
 func NewEmailChannel(cfg config.SMTPConfig) *EmailChannel {
-	return &EmailChannel{cfg: cfg, send: smtp.SendMail}
+	e := &EmailChannel{cfg: cfg}
+	e.send = e.sendSMTP
+	return e
 }
 
 func (e *EmailChannel) Name() string { return ChannelEmail }
@@ -134,7 +191,9 @@ func (e *EmailChannel) Name() string { return ChannelEmail }
 func (e *EmailChannel) Send(ctx context.Context, a Alert) error {
 	if len(a.Recipients) == 0 {
 		// No admin contacts to address — not an error, just nothing to do.
-		return nil
+		// The caller (notifier.dispatch) treats this as a no-recipients skip,
+		// not a delivered alert.
+		return errNoRecipients
 	}
 	if err := ctx.Err(); err != nil {
 		return err
@@ -150,6 +209,84 @@ func (e *EmailChannel) Send(ctx context.Context, a Alert) error {
 		return fmt.Errorf("smtp send: %w", err)
 	}
 	return nil
+}
+
+// errNoRecipients signals a gated alert that had no admin recipient to address.
+// It is not a delivery failure; the caller maps it to a "no_recipients" skip so
+// the alert metric stays honest (no phantom "sent").
+var errNoRecipients = errors.New("notifier: no email recipients")
+
+// sendSMTP is the production smtpSender. It dials with an explicit deadline so
+// cfg.Timeout actually bounds the connect+send round-trip, and performs
+// STARTTLS only when cfg.StartTLS is set; when StartTLS is false it dials
+// implicit TLS (typical for port 465). cfg.Timeout is validated > 0 for an
+// enabled channel, but a non-positive value is defended here for direct
+// construction in tests.
+func (e *EmailChannel) sendSMTP(addr string, auth smtp.Auth, from string, to []string, msg []byte) error {
+	timeout := e.cfg.Timeout
+	if timeout <= 0 {
+		timeout = 10 * time.Second
+	}
+	deadline := time.Now().Add(timeout)
+
+	var conn net.Conn
+	var err error
+	if e.cfg.StartTLS {
+		// Plaintext dial; upgrade to TLS via STARTTLS below.
+		conn, err = net.DialTimeout("tcp", addr, timeout)
+	} else {
+		// Implicit TLS (e.g. port 465): the whole connection is TLS from the
+		// first byte, so no STARTTLS upgrade is attempted.
+		dialer := &net.Dialer{Timeout: timeout}
+		conn, err = tls.DialWithDialer(dialer, "tcp", addr, &tls.Config{ServerName: e.cfg.Host})
+	}
+	if err != nil {
+		return fmt.Errorf("dial smtp %s: %w", addr, err)
+	}
+	// Bound the rest of the round-trip with the same deadline.
+	_ = conn.SetDeadline(deadline)
+
+	c, err := smtp.NewClient(conn, e.cfg.Host)
+	if err != nil {
+		_ = conn.Close()
+		return fmt.Errorf("smtp handshake: %w", err)
+	}
+	defer func() { _ = c.Close() }()
+
+	if e.cfg.StartTLS {
+		if ok, _ := c.Extension("STARTTLS"); ok {
+			if err := c.StartTLS(&tls.Config{ServerName: e.cfg.Host}); err != nil {
+				return fmt.Errorf("starttls: %w", err)
+			}
+		}
+	}
+	if auth != nil {
+		if ok, _ := c.Extension("AUTH"); ok {
+			if err := c.Auth(auth); err != nil {
+				return fmt.Errorf("smtp auth: %w", err)
+			}
+		}
+	}
+	if err := c.Mail(from); err != nil {
+		return fmt.Errorf("smtp mail from: %w", err)
+	}
+	for _, rcpt := range to {
+		if err := c.Rcpt(rcpt); err != nil {
+			return fmt.Errorf("smtp rcpt %s: %w", rcpt, err)
+		}
+	}
+	wc, err := c.Data()
+	if err != nil {
+		return fmt.Errorf("smtp data: %w", err)
+	}
+	if _, err := wc.Write(msg); err != nil {
+		_ = wc.Close()
+		return fmt.Errorf("smtp write: %w", err)
+	}
+	if err := wc.Close(); err != nil {
+		return fmt.Errorf("smtp data close: %w", err)
+	}
+	return c.Quit()
 }
 
 func (e *EmailChannel) buildMessage(a Alert) []byte {

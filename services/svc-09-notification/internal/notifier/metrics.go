@@ -21,20 +21,43 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
+// Outcome label values for MessagesTotal. A gated verdict ends in exactly one
+// of OutcomeGated / OutcomeGatedUndelivered depending on whether any channel
+// actually delivered the alert, so a zero-transport misconfig is a metric, not
+// just a log line.
+const (
+	OutcomeGated            = "gated"             // crossed the gate AND ≥1 channel delivered
+	OutcomeGatedUndelivered = "gated_undelivered" // crossed the gate but no channel delivered
+	OutcomeBelow            = "below"             // did not cross the gate (no alert)
+	OutcomeRateLimit        = "ratelimit"         // crossed the gate but suppressed by the limiter
+	OutcomeSkip             = "skip"              // malformed / missing org config; offset committed
+	OutcomeError            = "error"             // a transient failure that NACKs for redelivery
+)
+
+// Alert result label values for AlertsTotal.
+const (
+	AlertSent         = "sent"          // channel delivered the alert
+	AlertError        = "error"         // channel send failed
+	AlertNoRecipients = "no_recipients" // channel had nothing to address (email, no admins)
+)
+
 // Metrics holds the SVC-09 Prometheus collectors. Names are prefixed
 // notification_ to match the per-service metric namespace convention used by
 // the other pipeline services.
 type Metrics struct {
-	// MessagesTotal counts consumed emails.verdict messages by outcome:
-	//   gated     — crossed the alert gate and was dispatched (or attempted)
-	//   below     — did not cross the gate (no alert)
-	//   ratelimit — crossed the gate but suppressed by the rate limiter
-	//   skip      — malformed / missing org config; offset committed
-	//   error     — a transient failure that NACKs for redelivery
+	// MessagesTotal counts consumed emails.verdict messages by outcome. See the
+	// Outcome* constants for the label set.
 	MessagesTotal *prometheus.CounterVec // labels: outcome
 
-	// AlertsTotal counts per-channel send attempts by result (sent|error).
+	// AlertsTotal counts per-channel send attempts by result. See the Alert*
+	// constants (sent|error|no_recipients).
 	AlertsTotal *prometheus.CounterVec // labels: channel, result
+
+	// RateLimitFailOpenTotal counts gated verdicts that were allowed through
+	// because the rate limiter ERRORED (e.g. a Redis outage), distinct from a
+	// normal within-limit allow. A non-zero rate here means rate limiting is
+	// silently disabled and duplicate alerts may be going out.
+	RateLimitFailOpenTotal prometheus.Counter
 }
 
 // NewMetrics registers the SVC-09 collectors on reg and returns the holder. A
@@ -53,9 +76,16 @@ func NewMetrics(reg *prometheus.Registry) *Metrics {
 	m.AlertsTotal = registerCounterVec(reg, prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "notification_alerts_total",
-			Help: "Per-channel alert dispatch attempts partitioned by channel and result.",
+			Help: "Per-channel alert dispatch attempts partitioned by channel and result (sent|error|no_recipients).",
 		},
 		[]string{"channel", "result"},
+	))
+
+	m.RateLimitFailOpenTotal = registerCounter(reg, prometheus.NewCounter(
+		prometheus.CounterOpts{
+			Name: "notification_ratelimit_failopen_total",
+			Help: "Gated verdicts allowed because the rate limiter errored (rate limiting silently disabled).",
+		},
 	))
 
 	return m
@@ -75,6 +105,13 @@ func (m *Metrics) bumpAlert(channel, result string) {
 	m.AlertsTotal.WithLabelValues(channel, result).Inc()
 }
 
+func (m *Metrics) bumpRateLimitFailOpen() {
+	if m == nil || m.RateLimitFailOpenTotal == nil {
+		return
+	}
+	m.RateLimitFailOpenTotal.Inc()
+}
+
 func registerCounterVec(reg *prometheus.Registry, c *prometheus.CounterVec) *prometheus.CounterVec {
 	if reg == nil {
 		return c
@@ -83,6 +120,21 @@ func registerCounterVec(reg *prometheus.Registry, c *prometheus.CounterVec) *pro
 		var already prometheus.AlreadyRegisteredError
 		if errors.As(err, &already) {
 			if existing, ok := already.ExistingCollector.(*prometheus.CounterVec); ok {
+				return existing
+			}
+		}
+	}
+	return c
+}
+
+func registerCounter(reg *prometheus.Registry, c prometheus.Counter) prometheus.Counter {
+	if reg == nil {
+		return c
+	}
+	if err := reg.Register(c); err != nil {
+		var already prometheus.AlreadyRegisteredError
+		if errors.As(err, &already) {
+			if existing, ok := already.ExistingCollector.(prometheus.Counter); ok {
 				return existing
 			}
 		}

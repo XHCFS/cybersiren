@@ -6,7 +6,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/smtp"
@@ -161,7 +163,7 @@ func TestEmailChannel_BuildsAndSends(t *testing.T) {
 	}
 }
 
-func TestEmailChannel_NoRecipientsIsNoOp(t *testing.T) {
+func TestEmailChannel_NoRecipientsSkips(t *testing.T) {
 	t.Parallel()
 	ch := NewEmailChannel(config.SMTPConfig{Host: "h", Port: 25, From: "a@b.c"})
 	called := false
@@ -171,10 +173,226 @@ func TestEmailChannel_NoRecipientsIsNoOp(t *testing.T) {
 	}
 	a := sampleAlert()
 	a.Recipients = nil
-	if err := ch.Send(context.Background(), a); err != nil {
-		t.Fatalf("Send: %v", err)
+	// A zero-recipient send must not hit the relay and must signal a
+	// no-recipients skip (not a delivery, not a transient failure) so the
+	// caller can keep the metric honest.
+	err := ch.Send(context.Background(), a)
+	if !errors.Is(err, errNoRecipients) {
+		t.Fatalf("Send err = %v, want errNoRecipients", err)
 	}
 	if called {
 		t.Error("SMTP send should not be called with zero recipients")
+	}
+}
+
+// fakeSMTPServer is a tiny plaintext SMTP responder that drives the real
+// net/smtp client through EHLO/MAIL/RCPT/DATA/QUIT and records whether the
+// client attempted STARTTLS. It advertises STARTTLS so the client is free to
+// upgrade; we then assert whether it actually did based on cfg.StartTLS.
+type fakeSMTPServer struct {
+	ln          net.Listener
+	addr        string
+	gotStartTLS atomic.Bool
+	done        chan struct{}
+}
+
+func newFakeSMTPServer(t *testing.T) *fakeSMTPServer {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	s := &fakeSMTPServer{ln: ln, addr: ln.Addr().String(), done: make(chan struct{})}
+	go s.serve()
+	return s
+}
+
+func (s *fakeSMTPServer) serve() {
+	defer close(s.done)
+	conn, err := s.ln.Accept()
+	if err != nil {
+		return
+	}
+	defer func() { _ = conn.Close() }()
+	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+	br := newLineReader(conn)
+	write := func(s string) { _, _ = conn.Write([]byte(s)) }
+
+	write("220 fake ESMTP\r\n")
+	for {
+		line, err := br()
+		if err != nil {
+			return
+		}
+		cmd := strings.ToUpper(strings.TrimSpace(line))
+		switch {
+		case strings.HasPrefix(cmd, "EHLO"), strings.HasPrefix(cmd, "HELO"):
+			write("250-fake greets you\r\n250 STARTTLS\r\n")
+		case strings.HasPrefix(cmd, "STARTTLS"):
+			s.gotStartTLS.Store(true)
+			// Refuse the upgrade so the client aborts deterministically without
+			// needing a real TLS cert; the test only checks the attempt flag.
+			write("454 TLS not available\r\n")
+			return
+		case strings.HasPrefix(cmd, "MAIL"):
+			write("250 OK\r\n")
+		case strings.HasPrefix(cmd, "RCPT"):
+			write("250 OK\r\n")
+		case strings.HasPrefix(cmd, "DATA"):
+			write("354 End data with <CR><LF>.<CR><LF>\r\n")
+			// Consume the message body until the lone "." terminator.
+			for {
+				l, err := br()
+				if err != nil {
+					return
+				}
+				if strings.TrimRight(l, "\r\n") == "." {
+					break
+				}
+			}
+			write("250 OK\r\n")
+		case strings.HasPrefix(cmd, "QUIT"):
+			write("221 Bye\r\n")
+			return
+		default:
+			write("250 OK\r\n")
+		}
+	}
+}
+
+func (s *fakeSMTPServer) close() { _ = s.ln.Close() }
+
+// newLineReader returns a function that reads one CRLF-terminated line from r.
+func newLineReader(r net.Conn) func() (string, error) {
+	buf := make([]byte, 0, 256)
+	one := make([]byte, 1)
+	return func() (string, error) {
+		buf = buf[:0]
+		for {
+			n, err := r.Read(one)
+			if n > 0 {
+				buf = append(buf, one[0])
+				if one[0] == '\n' {
+					return string(buf), nil
+				}
+			}
+			if err != nil {
+				if len(buf) > 0 {
+					return string(buf), nil
+				}
+				return "", err
+			}
+		}
+	}
+}
+
+func TestEmailChannel_StartTLSAttemptedWhenEnabled(t *testing.T) {
+	t.Parallel()
+	srv := newFakeSMTPServer(t)
+	defer srv.close()
+	host, portStr, _ := net.SplitHostPort(srv.addr)
+	port := atoiOrFail(t, portStr)
+
+	ch := NewEmailChannel(config.SMTPConfig{
+		Host: host, Port: port, From: "a@b.c",
+		StartTLS: true, Timeout: 3 * time.Second,
+	})
+	// The fake refuses the TLS upgrade, so Send returns an error — but the
+	// point under test is that the client ATTEMPTED STARTTLS.
+	_ = ch.Send(context.Background(), sampleAlert())
+	<-srv.done
+	if !srv.gotStartTLS.Load() {
+		t.Error("StartTLS=true should make the client attempt STARTTLS")
+	}
+}
+
+func TestEmailChannel_StartTLSSkippedWhenDisabled(t *testing.T) {
+	t.Parallel()
+	srv := newFakeSMTPServer(t)
+	defer srv.close()
+	host, portStr, _ := net.SplitHostPort(srv.addr)
+	port := atoiOrFail(t, portStr)
+
+	// StartTLS=false on a plaintext server: the production sender dials implicit
+	// TLS, which will fail the handshake against this plaintext listener — but
+	// crucially it must NOT issue a plaintext STARTTLS command.
+	ch := NewEmailChannel(config.SMTPConfig{
+		Host: host, Port: port, From: "a@b.c",
+		StartTLS: false, Timeout: 3 * time.Second,
+	})
+	_ = ch.Send(context.Background(), sampleAlert())
+	srv.close()
+	<-srv.done
+	if srv.gotStartTLS.Load() {
+		t.Error("StartTLS=false must not issue a STARTTLS command")
+	}
+}
+
+func TestEmailChannel_DialHonorsTimeout(t *testing.T) {
+	t.Parallel()
+	// 203.0.113.0/24 is TEST-NET-3 (RFC 5737), guaranteed non-routable, so the
+	// TCP connect blocks until our deadline fires rather than RST-ing fast.
+	ch := NewEmailChannel(config.SMTPConfig{
+		Host: "203.0.113.1", Port: 25, From: "a@b.c",
+		StartTLS: true, Timeout: 150 * time.Millisecond,
+	})
+	start := time.Now()
+	err := ch.Send(context.Background(), sampleAlert())
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("expected a dial timeout error")
+	}
+	// Must give up close to the configured timeout, not block indefinitely or
+	// wait for the OS default (~tens of seconds).
+	if elapsed > 3*time.Second {
+		t.Errorf("dial took %v, want bounded by ~150ms timeout", elapsed)
+	}
+}
+
+func atoiOrFail(t *testing.T, s string) int {
+	t.Helper()
+	var n int
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			t.Fatalf("non-numeric port %q", s)
+		}
+		n = n*10 + int(r-'0')
+	}
+	return n
+}
+
+func TestWebhookChannel_RetryBackoffRespectsContext(t *testing.T) {
+	t.Parallel()
+	// Endpoint always fails; with MaxRetries>0 the backoff loop runs, but a
+	// cancelled ctx must abort it promptly instead of sleeping out every delay.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	ch := NewWebhookChannel(config.WebhookConfig{URL: srv.URL, Timeout: time.Second, MaxRetries: 5})
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	if err := ch.Send(ctx, sampleAlert()); err == nil {
+		t.Fatal("expected an error when ctx is cancelled during backoff")
+	}
+	// 5 retries at >=100ms each would be >=500ms without ctx-aware backoff.
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Errorf("retry loop took %v; backoff should bail on ctx cancellation", elapsed)
+	}
+}
+
+func TestWebhookBackoff_GrowsAndCaps(t *testing.T) {
+	t.Parallel()
+	if got := webhookBackoff(1); got != webhookBaseBackoff {
+		t.Errorf("backoff(1) = %v, want %v", got, webhookBaseBackoff)
+	}
+	if got := webhookBackoff(2); got != 2*webhookBaseBackoff {
+		t.Errorf("backoff(2) = %v, want %v", got, 2*webhookBaseBackoff)
+	}
+	if got := webhookBackoff(100); got != webhookMaxBackoff {
+		t.Errorf("backoff(100) = %v, want cap %v", got, webhookMaxBackoff)
 	}
 }
