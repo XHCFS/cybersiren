@@ -209,6 +209,20 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 EML_A="${SAMPLE_EML:-$DEFAULT_EML}"
 EML_A_B64="$(printf '%s' "$EML_A" | base64 -w0)"
 
+# The compose demo-seed service applies the TI + attachment seeds asynchronously
+# during `make smoke` bring-up. Wait until they are committed before injecting,
+# so the first (cold) email cannot race the seed and silently drop ti_ip_match
+# (svc-04 Postgres TI fallback) or the svc-05 attachment write-back.
+echo "==> Waiting for demo seeds (TI ip + attachment hash) to commit"
+seed_deadline=$(( $(date +%s) + 60 ))
+while :; do
+  ti_ready="$(pg_query "SELECT 1 FROM ti_indicators WHERE indicator_type::text='ip' AND indicator_value='185.220.101.42' AND is_active=TRUE LIMIT 1;")"
+  att_ready="$(pg_query "SELECT 1 FROM attachment_library WHERE sha256='${SEEDED_ATTACHMENT_SHA256}' AND is_malicious LIMIT 1;")"
+  [[ "$ti_ready" == "1" && "$att_ready" == "1" ]] && { echo "  seeds ready"; break; }
+  [[ $(date +%s) -ge $seed_deadline ]] && fail "demo seeds not committed within 60s (ti_ip=${ti_ready:-0} attachment=${att_ready:-0})"
+  sleep 0.5
+done
+
 match="$(inject_and_wait "$EMAIL_ID" "$EML_A_B64" \
   "PayPal Billing <billing@paypa1-secure.tk>" \
   "URGENT: Your PayPal account will be suspended in 24 hours")"
