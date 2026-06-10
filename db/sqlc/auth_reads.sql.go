@@ -270,6 +270,50 @@ func (q *Queries) ListAuditLogForOrg(ctx context.Context, arg ListAuditLogForOrg
 	return items, nil
 }
 
+const listOrgAdmins = `-- name: ListOrgAdmins :many
+SELECT
+    id,
+    email,
+    display_name
+FROM users
+WHERE org_id = $1
+  AND role = 'admin'
+  AND deleted_at IS NULL
+ORDER BY email
+`
+
+type ListOrgAdminsRow struct {
+	ID          int64       `db:"id" json:"id"`
+	Email       string      `db:"email" json:"email"`
+	DisplayName pgtype.Text `db:"display_name" json:"display_name"`
+}
+
+// Admin contacts for an organisation, used by SVC-09 to address email alerts
+// (ARCH-SPEC §1-step6a: "SELECT email, display_name FROM users WHERE org_id=?
+// AND role='admin' AND deleted_at IS NULL"). users is a control-plane table and
+// is NOT RLS-forced, so this read is not subject to the app.current_org_id GUC;
+// the org_id filter is the tenant boundary. Ordered by email for a stable
+// recipient list.
+func (q *Queries) ListOrgAdmins(ctx context.Context, orgID int64) ([]ListOrgAdminsRow, error) {
+	rows, err := q.db.Query(ctx, listOrgAdmins, orgID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListOrgAdminsRow
+	for rows.Next() {
+		var i ListOrgAdminsRow
+		if err := rows.Scan(&i.ID, &i.Email, &i.DisplayName); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const touchAPIKeyLastUsed = `-- name: TouchAPIKeyLastUsed :exec
 UPDATE api_keys
 SET last_used_at = NOW()
