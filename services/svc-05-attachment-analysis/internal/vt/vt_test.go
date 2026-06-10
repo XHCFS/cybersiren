@@ -34,6 +34,10 @@ func TestLookup_NoKeySkips(t *testing.T) {
 	if !res.Skipped {
 		t.Fatal("no-key lookup must be Skipped")
 	}
+	// F7: no-key is a config skip, never a confirmed miss.
+	if res.NotFound {
+		t.Fatal("no-key lookup must NOT set NotFound")
+	}
 }
 
 func TestLookup_429FailsOpen(t *testing.T) {
@@ -53,6 +57,11 @@ func TestLookup_429FailsOpen(t *testing.T) {
 	if res.Malicious() {
 		t.Fatal("429 must not report malicious")
 	}
+	// F7: a 429 is transient, NOT a confirmed miss — it must not set NotFound, so
+	// the caller does not negatively cache it.
+	if res.NotFound {
+		t.Fatal("429 must NOT set NotFound (it is transient, not a confirmed miss)")
+	}
 }
 
 func TestLookup_404Miss(t *testing.T) {
@@ -69,6 +78,11 @@ func TestLookup_404Miss(t *testing.T) {
 	if !res.Skipped {
 		t.Fatal("404 must yield a Skipped result")
 	}
+	// F7: a 404 is a CONFIRMED miss (the hash is genuinely unknown to VT), so
+	// NotFound must be set to let the caller negatively cache it.
+	if !res.NotFound {
+		t.Fatal("404 must set NotFound so the caller can negatively cache the miss")
+	}
 }
 
 func TestLookup_AuthRejectedErrors(t *testing.T) {
@@ -84,6 +98,10 @@ func TestLookup_AuthRejectedErrors(t *testing.T) {
 	}
 	if !res.Skipped {
 		t.Fatal("401 should still yield a Skipped result so the caller fails open")
+	}
+	// F7: an auth rejection is a config fault, not a confirmed miss.
+	if res.NotFound {
+		t.Fatal("401 must NOT set NotFound")
 	}
 }
 

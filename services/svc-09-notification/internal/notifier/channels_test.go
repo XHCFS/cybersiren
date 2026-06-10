@@ -187,22 +187,33 @@ func TestEmailChannel_NoRecipientsSkips(t *testing.T) {
 
 // fakeSMTPServer is a tiny plaintext SMTP responder that drives the real
 // net/smtp client through EHLO/MAIL/RCPT/DATA/QUIT and records whether the
-// client attempted STARTTLS. It advertises STARTTLS so the client is free to
-// upgrade; we then assert whether it actually did based on cfg.StartTLS.
+// client attempted STARTTLS and whether it issued any mail-transfer command
+// (MAIL/RCPT/DATA) in cleartext. By default it advertises STARTTLS so the
+// client is free to upgrade; set noStartTLS to suppress the capability and
+// exercise the fail-closed path (F6).
 type fakeSMTPServer struct {
 	ln          net.Listener
 	addr        string
+	noStartTLS  bool // when true, EHLO does not advertise STARTTLS
 	gotStartTLS atomic.Bool
+	gotMail     atomic.Bool // any MAIL/RCPT/DATA seen -> cleartext transmission happened
 	done        chan struct{}
 }
 
 func newFakeSMTPServer(t *testing.T) *fakeSMTPServer {
 	t.Helper()
+	return startFakeSMTPServer(t, false)
+}
+
+// startFakeSMTPServer starts a fake SMTP server; noStartTLS controls whether the
+// EHLO response advertises the STARTTLS capability.
+func startFakeSMTPServer(t *testing.T, noStartTLS bool) *fakeSMTPServer {
+	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	s := &fakeSMTPServer{ln: ln, addr: ln.Addr().String(), done: make(chan struct{})}
+	s := &fakeSMTPServer{ln: ln, addr: ln.Addr().String(), noStartTLS: noStartTLS, done: make(chan struct{})}
 	go s.serve()
 	return s
 }
@@ -227,7 +238,13 @@ func (s *fakeSMTPServer) serve() {
 		cmd := strings.ToUpper(strings.TrimSpace(line))
 		switch {
 		case strings.HasPrefix(cmd, "EHLO"), strings.HasPrefix(cmd, "HELO"):
-			write("250-fake greets you\r\n250 STARTTLS\r\n")
+			if s.noStartTLS {
+				// Advertise no extensions: the client must fail closed rather
+				// than fall back to cleartext when StartTLS is required.
+				write("250 fake greets you\r\n")
+			} else {
+				write("250-fake greets you\r\n250 STARTTLS\r\n")
+			}
 		case strings.HasPrefix(cmd, "STARTTLS"):
 			s.gotStartTLS.Store(true)
 			// Refuse the upgrade so the client aborts deterministically without
@@ -235,10 +252,13 @@ func (s *fakeSMTPServer) serve() {
 			write("454 TLS not available\r\n")
 			return
 		case strings.HasPrefix(cmd, "MAIL"):
+			s.gotMail.Store(true)
 			write("250 OK\r\n")
 		case strings.HasPrefix(cmd, "RCPT"):
+			s.gotMail.Store(true)
 			write("250 OK\r\n")
 		case strings.HasPrefix(cmd, "DATA"):
+			s.gotMail.Store(true)
 			write("354 End data with <CR><LF>.<CR><LF>\r\n")
 			// Consume the message body until the lone "." terminator.
 			for {
@@ -303,6 +323,38 @@ func TestEmailChannel_StartTLSAttemptedWhenEnabled(t *testing.T) {
 	<-srv.done
 	if !srv.gotStartTLS.Load() {
 		t.Error("StartTLS=true should make the client attempt STARTTLS")
+	}
+}
+
+// TestEmailChannel_StartTLSRequiredButNotAdvertised covers the F6 fail-closed
+// fix: when cfg.StartTLS is true but the server does not advertise STARTTLS,
+// Send must return an error and must NOT transmit the message in cleartext
+// (no MAIL/RCPT/DATA issued).
+func TestEmailChannel_StartTLSRequiredButNotAdvertised(t *testing.T) {
+	t.Parallel()
+	srv := startFakeSMTPServer(t, true) // does NOT advertise STARTTLS
+	defer srv.close()
+	host, portStr, _ := net.SplitHostPort(srv.addr)
+	port := atoiOrFail(t, portStr)
+
+	ch := NewEmailChannel(config.SMTPConfig{
+		Host: host, Port: port, From: "a@b.c",
+		StartTLS: true, Timeout: 3 * time.Second,
+	})
+	err := ch.Send(context.Background(), sampleAlert())
+	if err == nil {
+		t.Fatal("StartTLS required but not advertised: Send must fail closed, got nil error")
+	}
+	if !strings.Contains(err.Error(), "starttls required but not advertised") {
+		t.Errorf("error = %v, want a 'starttls required but not advertised' failure", err)
+	}
+	srv.close()
+	<-srv.done
+	if srv.gotStartTLS.Load() {
+		t.Error("client must not issue STARTTLS when the server never advertised it")
+	}
+	if srv.gotMail.Load() {
+		t.Error("fail-closed path leaked a cleartext MAIL/RCPT/DATA command")
 	}
 }
 

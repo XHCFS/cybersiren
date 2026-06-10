@@ -26,16 +26,27 @@ type DomainAgeLooker interface {
 // EnricherDomainAgeLooker adapts the shared WHOIS enricher to DomainAgeLooker.
 // It reuses enricher.LookupWHOIS (likexian/whois) — the very client SVC-03 uses
 // — including its internal cache; SVC-04 builds no new WHOIS client (P2.3 / D-WHOIS).
-type EnricherDomainAgeLooker struct{}
+//
+// whois is an injection seam: a nil value (the production zero-value struct used
+// in main.go) resolves to enricher.LookupWHOIS, so production behaviour is
+// unchanged. Tests set it to a deterministic, ctx-respecting fake so the degrade
+// path is exercised without any network dial or leaked goroutine.
+type EnricherDomainAgeLooker struct {
+	whois func(ctx context.Context, domain string) enricher.WHOISResult
+}
 
 // DomainAgeDays looks up the sender domain via the shared enricher and converts
 // the registration date string into an age in whole days relative to now.
-func (EnricherDomainAgeLooker) DomainAgeDays(ctx context.Context, domain string) (int, bool) {
+func (l EnricherDomainAgeLooker) DomainAgeDays(ctx context.Context, domain string) (int, bool) {
 	domain = strings.TrimSpace(domain)
 	if domain == "" {
 		return 0, false
 	}
-	res := enricher.LookupWHOIS(ctx, domain)
+	lookup := l.whois
+	if lookup == nil {
+		lookup = enricher.LookupWHOIS
+	}
+	res := lookup(ctx, domain)
 	return domainAgeFromRegistration(res.RegistrationDate, time.Now())
 }
 

@@ -83,10 +83,13 @@ func (r *PGOrgReader) Load(ctx context.Context, orgID int64) (OrgPrefs, error) {
 		threshold = int(org.NotificationThreshold.Int32)
 	}
 
-	channels, err := parseChannels(org.NotificationChannels)
-	if err != nil {
-		return OrgPrefs{}, fmt.Errorf("parse notification_channels for org %d: %w", orgID, err)
-	}
+	// A malformed notification_channels column is NOT a transient failure:
+	// replaying the same row will never decode. Treating it as an error here
+	// would NACK the message and wedge the partition forever on one bad org row
+	// (blocking every other org on that partition too). parseChannels instead
+	// degrades an undecodable column to the empty set (org opts out of alerts),
+	// so the offset commits — same outcome as the NULL/empty case.
+	channels := parseChannels(org.NotificationChannels)
 
 	admins, err := q.ListOrgAdmins(ctx, orgID)
 	if err != nil {
@@ -109,15 +112,24 @@ func (r *PGOrgReader) Load(ctx context.Context, orgID int64) (OrgPrefs, error) {
 
 // parseChannels decodes the notification_channels JSONB (a JSON array of
 // strings) into a lower-cased set. A NULL/empty column means "no channels
-// enabled" — a valid, non-error state (the org has opted out of alerts).
-func parseChannels(raw []byte) (map[string]struct{}, error) {
+// enabled" — a valid, non-error state (the org has opted out of alerts). A
+// column that is valid JSONB but not a []string (e.g. an object like
+// {"email":true}, or a bare string) is treated the same way: the org gets an
+// empty channel set rather than an error. This is deliberate — a decode error
+// is not transient, so propagating it would NACK the verdict and wedge the
+// partition on one malformed org row. parseChannels therefore never returns an
+// error; it fails closed to "no channels" on bad data. (PGOrgReader has no
+// logger, so the bad-data case is silent here.)
+func parseChannels(raw []byte) map[string]struct{} {
 	out := map[string]struct{}{}
 	if len(raw) == 0 {
-		return out, nil
+		return out
 	}
 	var list []string
 	if err := json.Unmarshal(raw, &list); err != nil {
-		return nil, fmt.Errorf("unmarshal alert channels: %w", err)
+		// Undecodable as a []string: opt the org out (empty set) instead of
+		// erroring, so the offset commits rather than NACKing forever.
+		return out
 	}
 	for _, c := range list {
 		c = strings.ToLower(strings.TrimSpace(c))
@@ -125,5 +137,5 @@ func parseChannels(raw []byte) (map[string]struct{}, error) {
 			out[c] = struct{}{}
 		}
 	}
-	return out, nil
+	return out
 }

@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	"github.com/saif/cybersiren/internal/phishing/enricher"
 )
 
 func TestDomainAgeFromRegistration(t *testing.T) {
@@ -56,15 +58,40 @@ func TestEnricherDomainAgeLooker_EmptyDomain(t *testing.T) {
 // degrades gracefully (returns ok=false, no hang, no panic) when the caller's
 // context is already cancelled — the same path live smoke hits on a network
 // failure or a 5s timeout. The shared enricher swallows the error and yields a
-// zero-value result, which domainAgeFromRegistration maps to "unknown". A
-// cancelled context keeps the test off the network so it stays deterministic.
+// zero-value result, which domainAgeFromRegistration maps to "unknown".
+//
+// We inject a fake WHOIS func that RESPECTS ctx (returns a zero-value result the
+// instant the context is done) instead of calling the real enricher. The real
+// enricher.LookupWHOIS dials WHOIS in a goroutine that ignores ctx, so exercising
+// it here would do a real network dial and leak that goroutine while the test
+// "passes" on the select's ctx.Done() branch. The fake keeps the test fully
+// offline and deterministic while still asserting the degrade contract.
 func TestEnricherDomainAgeLooker_CancelledContextDegrades(t *testing.T) {
 	t.Parallel()
+
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // already done before the lookup runs
 
-	_, ok := EnricherDomainAgeLooker{}.DomainAgeDays(ctx, "domain-age-degrade.test")
+	var called bool
+	looker := EnricherDomainAgeLooker{
+		whois: func(ctx context.Context, _ string) enricher.WHOISResult {
+			called = true
+			// Respect the caller's context: a cancelled ctx yields no data,
+			// exactly as the real enricher does once its 5s deadline fires.
+			select {
+			case <-ctx.Done():
+				return enricher.WHOISResult{}
+			default:
+				return enricher.WHOISResult{RegistrationDate: "2020-01-01T00:00:00Z"}
+			}
+		},
+	}
+
+	days, ok := looker.DomainAgeDays(ctx, "domain-age-degrade.test")
+	if !called {
+		t.Fatal("expected the injected WHOIS func to be invoked")
+	}
 	if ok {
-		t.Errorf("a cancelled-context WHOIS lookup must degrade to ok=false, not a value")
+		t.Errorf("a cancelled-context WHOIS lookup must degrade to ok=false, got days=%d", days)
 	}
 }

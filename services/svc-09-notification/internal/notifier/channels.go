@@ -227,7 +227,6 @@ func (e *EmailChannel) sendSMTP(addr string, auth smtp.Auth, from string, to []s
 	if timeout <= 0 {
 		timeout = 10 * time.Second
 	}
-	deadline := time.Now().Add(timeout)
 
 	var conn net.Conn
 	var err error
@@ -243,7 +242,10 @@ func (e *EmailChannel) sendSMTP(addr string, auth smtp.Auth, from string, to []s
 	if err != nil {
 		return fmt.Errorf("dial smtp %s: %w", addr, err)
 	}
-	// Bound the rest of the round-trip with the same deadline.
+	// Compute the round-trip deadline only after the dial returns so a slow
+	// connect (which already has its own DialTimeout/dialer.Timeout) does not
+	// cannibalise the budget for the EHLO/STARTTLS/MAIL/RCPT/DATA round-trip.
+	deadline := time.Now().Add(timeout)
 	_ = conn.SetDeadline(deadline)
 
 	c, err := smtp.NewClient(conn, e.cfg.Host)
@@ -254,10 +256,14 @@ func (e *EmailChannel) sendSMTP(addr string, auth smtp.Auth, from string, to []s
 	defer func() { _ = c.Close() }()
 
 	if e.cfg.StartTLS {
-		if ok, _ := c.Extension("STARTTLS"); ok {
-			if err := c.StartTLS(&tls.Config{ServerName: e.cfg.Host}); err != nil {
-				return fmt.Errorf("starttls: %w", err)
-			}
+		// Fail closed: if STARTTLS is required but the server does not advertise
+		// it, abort rather than silently transmitting credentials and the
+		// message body in cleartext.
+		if ok, _ := c.Extension("STARTTLS"); !ok {
+			return fmt.Errorf("starttls required but not advertised by %s", addr)
+		}
+		if err := c.StartTLS(&tls.Config{ServerName: e.cfg.Host}); err != nil {
+			return fmt.Errorf("starttls: %w", err)
 		}
 	}
 	if auth != nil {

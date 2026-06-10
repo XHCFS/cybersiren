@@ -33,12 +33,20 @@ var (
 	hiddenTextPatterns = []*regexp.Regexp{
 		regexp.MustCompile(`(?is)display\s*:\s*none`),
 		regexp.MustCompile(`(?is)visibility\s*:\s*hidden`),
-		regexp.MustCompile(`(?is)font-size\s*:\s*0(px|pt|em|%)?\b`),
+		// font-size:0 incl. modern units. A value-terminating boundary (rather
+		// than \b after the unit) is required so genuinely non-zero sizes like
+		// font-size:0.5em do not match on the leading "0".
+		regexp.MustCompile(`(?is)font-size\s*:\s*0(px|pt|em|rem|vh|vw|vmin|vmax|%)?(?:[;"'\s}]|$)`),
 		// HTML5 boolean hidden attribute (not the bare word in text)
 		regexp.MustCompile(`(?is)<[^>]*\shidden(\s|>|=)`),
-		regexp.MustCompile(`(?is)(left|top|text-indent)\s*:\s*-\s*\d{3,}\s*px`),     // off-screen positioning
-		regexp.MustCompile(`(?is)(width|height|max-height)\s*:\s*0(px|pt|em|%)?\b`), // zero-box
-		regexp.MustCompile(`(?is)opacity\s*:\s*0(\.0+)?\b`),
+		regexp.MustCompile(`(?is)(left|top|text-indent)\s*:\s*-\s*\d{3,}\s*px`), // off-screen positioning
+		// zero-box. The property name is anchored on a left boundary so this only
+		// matches the standalone width/height/max-height properties, not benign
+		// substrings like line-height:0 or border-width:0.
+		regexp.MustCompile(`(?is)(^|[;{\s"'])(width|height|max-height)\s*:\s*0(px|pt|em|%)?\b`),
+		// genuinely-zero opacity only (0, 0.0, 0.00). A value-terminating boundary
+		// keeps opacity:0.5 / 0.9 from matching on the leading "0".
+		regexp.MustCompile(`(?is)opacity\s*:\s*0(\.0+)?(?:[;"'\s}]|$)`),
 	}
 
 	reWhiteText = regexp.MustCompile(`(?is)color\s*:\s*(#?f{3,6}\b|white\b|rgb\(\s*255\s*,\s*255\s*,\s*255\s*\))`)
@@ -83,17 +91,29 @@ func extractBodyStructural(msg *contractsk.AnalysisHeadersMessage, declaredChars
 	return out
 }
 
-// hasMeaningfulPlainText reports whether the plain part carries real reader-
-// facing content. An empty plain part, or one that is just the HTML stripped of
-// tags down to whitespace, does NOT count — that is effectively HTML-only.
+// hasMeaningfulPlainText reports whether the plain part carries a real reader-
+// facing alternative to the HTML. It is NOT enough for the plain part to be
+// non-empty: SVC-02 SYNTHESISES a plain body from the HTML when the message
+// carried no genuine text/plain part (parser.go sets BodyPlain = HTMLToText(html)
+// when the real plain part is empty), so an HTML-only message arrives here with a
+// non-empty BodyPlain whose letters/digits equal the tag-stripped HTML — and that
+// synthesised case must read as HTML-only. We therefore compare the collapsed
+// letter/digit content: a plain part that DIFFERS from the stripped HTML is a
+// real alternative; one that equals it (or is empty/whitespace/markup-only) is
+// effectively HTML-only.
+//
+// (Trade-off: a genuine sender whose plain part normalises identically to the
+// HTML is flagged html_only — a minor, low-weight false positive. Distinguishing
+// it from the synthesised case would need a "plain_synthesised" flag from SVC-02
+// on the contract; tracked as a follow-up. Treating any non-empty plain as real
+// instead makes html_only NEVER fire — the synthesised plain is always non-empty
+// — which kills the signal, so that approach was reverted after the smoke gate
+// caught it.)
 func hasMeaningfulPlainText(plain, html string) bool {
 	p := strings.TrimSpace(plain)
 	if p == "" {
 		return false
 	}
-	// Some parsers synthesise a "plain" part by stripping tags; if the plain
-	// body is just the tag-stripped HTML with nothing extra, treat the message
-	// as HTML-only. We compare the collapsed letter/digit content.
 	if normalizeBodyContent(p) == "" {
 		return false
 	}

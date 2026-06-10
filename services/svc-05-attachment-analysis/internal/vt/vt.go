@@ -34,6 +34,13 @@ type Result struct {
 	// to VT (404). The caller treats a skipped result as "no VT signal".
 	Skipped bool
 
+	// NotFound is true ONLY for a confirmed 404 (the hash is genuinely unknown to
+	// VirusTotal) — distinct from the other Skipped reasons (no key / 429 / auth /
+	// transport). It lets the caller negatively cache the miss (zero votes) so an
+	// identical hash doesn't re-hit the API, while transient/config skips are
+	// left uncached so they retry.
+	NotFound bool
+
 	MaliciousVotes  int
 	SuspiciousVotes int
 	HarmlessVotes   int
@@ -112,8 +119,10 @@ func (c *Client) Lookup(ctx context.Context, sha256 string) (Result, error) {
 		// 429 ⇒ FAIL-OPEN: no votes, no error.
 		return Result{Skipped: true}, nil
 	case http.StatusNotFound:
-		// Hash unknown to VT ⇒ a clean miss, no error.
-		return Result{Skipped: true}, nil
+		// Hash unknown to VT ⇒ a clean miss, no error. NotFound marks it as a
+		// CONFIRMED miss (vs. a transient/config skip) so the caller can negatively
+		// cache it.
+		return Result{Skipped: true, NotFound: true}, nil
 	case http.StatusUnauthorized, http.StatusForbidden:
 		// A bad/expired key is a config problem, not a per-message failure;
 		// skip so the pipeline keeps moving, but surface the error.

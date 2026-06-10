@@ -89,10 +89,31 @@ var archiveExtensions = map[string]struct{}{
 	".tar": {}, ".xz": {},
 }
 
+// oleContainer is the magic-byte-derived type SVC-02 reports for legacy
+// OLE-Compound-Document Office files (.doc/.xls/.ppt). The format is a generic
+// container, so a byte sniffer cannot distinguish Word from Excel; the declared
+// MIME carries the specific type and the detected type is this coarse one.
+const oleContainer = "application/x-ole-storage"
+
+// zipContainer is the magic-byte-derived type SVC-02 reports for OOXML Office
+// files (.docx/.xlsx/.pptx) — they are ZIP archives on disk — and for plain
+// .zip. Like oleContainer it is a coarse container type that legitimately
+// differs from the specific declared MIME.
+const zipContainer = "application/zip"
+
 // mimeExtensionMap maps a small set of common extensions to the MIME-type
 // prefix (or exact type) the declared content_type SHOULD carry. Only used to
 // flag clear mismatches (e.g. a ".pdf" declared as image/png); unknown
 // extensions are skipped rather than guessed.
+//
+// Each list also includes the COARSE magic-container type SVC-02's byte sniffer
+// actually reports for that family (zipContainer for OOXML/.zip, oleContainer
+// for legacy Office, text/plain for text-family formats). The sniffer cannot
+// see past the container/charset to the specific subtype, so without these the
+// detected-type branch would fire extension_mismatch on every legitimate
+// .docx/.xls/.json (the false positive this map closes). A genuine swap —
+// e.g. a .pdf whose bytes are image/png or that declares x-msdownload — still
+// has neither the specific nor the coarse type in its list, so it still fires.
 var mimeExtensionMap = map[string][]string{
 	".pdf":  {"application/pdf"},
 	".png":  {"image/png"},
@@ -102,17 +123,17 @@ var mimeExtensionMap = map[string][]string{
 	".bmp":  {"image/bmp"},
 	".webp": {"image/webp"},
 	".txt":  {"text/plain"},
-	".html": {"text/html"},
-	".htm":  {"text/html"},
-	".csv":  {"text/csv", "application/csv"},
-	".xml":  {"text/xml", "application/xml"},
-	".json": {"application/json"},
-	".doc":  {"application/msword"},
-	".docx": {"application/vnd.openxmlformats-officedocument.wordprocessingml.document"},
-	".xls":  {"application/vnd.ms-excel"},
-	".xlsx": {"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"},
-	".ppt":  {"application/vnd.ms-powerpoint"},
-	".pptx": {"application/vnd.openxmlformats-officedocument.presentationml.presentation"},
+	".html": {"text/html", "text/plain"},
+	".htm":  {"text/html", "text/plain"},
+	".csv":  {"text/csv", "application/csv", "text/plain"},
+	".xml":  {"text/xml", "application/xml", "text/plain"},
+	".json": {"application/json", "text/plain"},
+	".doc":  {"application/msword", oleContainer},
+	".docx": {"application/vnd.openxmlformats-officedocument.wordprocessingml.document", zipContainer},
+	".xls":  {"application/vnd.ms-excel", oleContainer},
+	".xlsx": {"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", zipContainer},
+	".ppt":  {"application/vnd.ms-powerpoint", oleContainer},
+	".pptx": {"application/vnd.openxmlformats-officedocument.presentationml.presentation", zipContainer},
 	".zip":  {"application/zip", "application/x-zip-compressed"},
 	".exe": {
 		"application/x-msdownload", "application/octet-stream",

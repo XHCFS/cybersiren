@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"testing"
 	"time"
@@ -34,7 +35,13 @@ func TestRuleHitWriter_InsertsRows(t *testing.T) {
 
 	dsn := firstNonEmptyEnv("DATABASE_URL", "APP_DATABASE_URL", "CYBERSIREN_DB__DSN")
 	if dsn == "" {
-		t.Skip("set DATABASE_URL (or APP_DATABASE_URL) to run the rule_hits write test")
+		// CI's integration job exports the connection as discrete
+		// CYBERSIREN_DB__* vars rather than a single DSN; build one from them so
+		// this test actually runs in CI instead of silently skipping.
+		dsn = dsnFromComponentEnv()
+	}
+	if dsn == "" {
+		t.Skip("set DATABASE_URL (or APP_DATABASE_URL / CYBERSIREN_DB__*) to run the rule_hits write test")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -107,6 +114,46 @@ func firstNonEmptyEnv(keys ...string) string {
 		}
 	}
 	return ""
+}
+
+// dsnFromComponentEnv assembles a postgres:// DSN from the discrete
+// CYBERSIREN_DB__* environment variables CI's integration job exports (it does
+// not set a single DSN var). It returns "" when the minimum components (HOST and
+// NAME) are absent, so a developer with no infra still hits the skip path. User
+// and password are URL-escaped so credentials with reserved characters round-trip.
+func dsnFromComponentEnv() string {
+	host := os.Getenv("CYBERSIREN_DB__HOST")
+	name := os.Getenv("CYBERSIREN_DB__NAME")
+	if host == "" || name == "" {
+		return ""
+	}
+
+	port := os.Getenv("CYBERSIREN_DB__PORT")
+	if port == "" {
+		port = "5432"
+	}
+	sslmode := os.Getenv("CYBERSIREN_DB__SSLMODE")
+	if sslmode == "" {
+		sslmode = "disable"
+	}
+
+	user := os.Getenv("CYBERSIREN_DB__USER")
+	pass := os.Getenv("CYBERSIREN_DB__PASSWORD")
+
+	u := url.URL{
+		Scheme:   "postgres",
+		Host:     fmt.Sprintf("%s:%s", host, port),
+		Path:     "/" + name,
+		RawQuery: "sslmode=" + url.QueryEscape(sslmode),
+	}
+	if user != "" {
+		if pass != "" {
+			u.User = url.UserPassword(user, pass)
+		} else {
+			u.User = url.User(user)
+		}
+	}
+	return u.String()
 }
 
 func seedTestOrg(ctx context.Context, t *testing.T, pool *pgxpool.Pool) int64 {

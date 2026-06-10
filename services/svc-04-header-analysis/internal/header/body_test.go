@@ -82,6 +82,103 @@ func TestExtractBodyStructural_HiddenText(t *testing.T) {
 	}
 }
 
+func TestExtractBodyStructural_HiddenTextFalsePositives(t *testing.T) {
+	t.Parallel()
+	// Benign CSS that must NOT be mistaken for hidden-text fingerprints (F4/F5/F8).
+	notHidden := map[string]string{
+		// F4: substrings of standalone zero-box properties.
+		"line-height zero":         `<p style="line-height:0">visible copy</p>`,
+		"border-width zero":        `<p style="border-width:0">visible copy</p>`,
+		"border-bottom-width zero": `<p style="border-bottom-width:0">visible copy</p>`,
+		// F5: a partially-transparent (still visible) element.
+		"opacity half": `<p style="opacity:0.5">visible copy</p>`,
+		"opacity 0.9":  `<p style="opacity:0.9">visible copy</p>`,
+	}
+	for name, html := range notHidden {
+		html := html
+		t.Run("not_hidden/"+name, func(t *testing.T) {
+			t.Parallel()
+			got := extractBodyStructural(&contractsk.AnalysisHeadersMessage{BodyHTML: "<html>" + html + "</html>"}, "")
+			if got.HasHiddenText {
+				t.Errorf("expected HasHiddenText=false for benign %q", html)
+			}
+		})
+	}
+
+	// Genuinely-hidden cases that must STILL be flagged after the boundary fixes.
+	hidden := map[string]string{
+		"width zero":      `<div style="width:0">x</div>`,
+		"height zero px":  `<div style="height:0px">x</div>`,
+		"opacity zero":    `<span style="opacity:0">x</span>`,
+		"opacity 0.0":     `<span style="opacity:0.0">x</span>`,
+		"font-size 0rem":  `<span style="font-size:0rem">x</span>`,
+		"font-size 0vh":   `<span style="font-size:0vh">x</span>`,
+		"font-size 0vw":   `<span style="font-size:0vw">x</span>`,
+		"font-size plain": `<span style="font-size:0">x</span>`,
+		"font-size 0px":   `<span style="font-size:0px">x</span>`,
+	}
+	for name, html := range hidden {
+		html := html
+		t.Run("hidden/"+name, func(t *testing.T) {
+			t.Parallel()
+			got := extractBodyStructural(&contractsk.AnalysisHeadersMessage{BodyHTML: "<html>" + html + "</html>"}, "")
+			if !got.HasHiddenText {
+				t.Errorf("expected HasHiddenText=true for %q", html)
+			}
+		})
+	}
+
+	// A normal email carrying none of these fingerprints must not be flagged.
+	t.Run("normal_email", func(t *testing.T) {
+		t.Parallel()
+		got := extractBodyStructural(&contractsk.AnalysisHeadersMessage{
+			BodyHTML:  `<html><body><p style="font-size:14px;line-height:1.4;color:#222">Hi, your statement is ready. Sign in to review it.</p></body></html>`,
+			BodyPlain: "Hi, your statement is ready. Sign in to review it.",
+		}, "")
+		if got.HasHiddenText {
+			t.Errorf("a normal email must not be flagged HasHiddenText")
+		}
+	})
+}
+
+func TestExtractBodyStructural_HTMLOnlySynthesisedPlain(t *testing.T) {
+	t.Parallel()
+
+	// SVC-02 synthesises BodyPlain from the HTML when the message had no genuine
+	// text/plain part (parser.go: BodyPlain = HTMLToText(html)), so a "plain" part
+	// whose words equal the stripped HTML means the message is effectively
+	// HTML-only and MUST be flagged. (A genuine, DISTINCT plain alternative is
+	// covered by TestExtractBodyStructural_HTMLOnly above and is NOT flagged.)
+	sentence := "Your invoice is ready, please sign in to review it."
+	got := extractBodyStructural(&contractsk.AnalysisHeadersMessage{
+		BodyHTML:  "<html><body><p>" + sentence + "</p></body></html>",
+		BodyPlain: sentence,
+	}, "")
+	if !got.HTMLOnly {
+		t.Errorf("a plain part that merely mirrors the stripped HTML is the synthesised HTML-only case and must be flagged")
+	}
+
+	// A whitespace-only "plain" part alongside HTML is the synthesised-empty case
+	// and MUST still be flagged HTML-only.
+	got = extractBodyStructural(&contractsk.AnalysisHeadersMessage{
+		BodyHTML:  "<html><body><p>" + sentence + "</p></body></html>",
+		BodyPlain: "   \n\t  ",
+	}, "")
+	if !got.HTMLOnly {
+		t.Errorf("a whitespace-only plain part with HTML must be flagged HTMLOnly")
+	}
+
+	// A "plain" part that is only markup with no letters/digits collapses to empty
+	// and is likewise the effectively-empty (HTML-only) case.
+	got = extractBodyStructural(&contractsk.AnalysisHeadersMessage{
+		BodyHTML:  "<html><body><p>" + sentence + "</p></body></html>",
+		BodyPlain: "<><>  <>",
+	}, "")
+	if !got.HTMLOnly {
+		t.Errorf("a no-letters plain part with HTML must be flagged HTMLOnly")
+	}
+}
+
 func TestExtractBodyStructural_WhiteOnWhiteHiddenText(t *testing.T) {
 	t.Parallel()
 	// White text AND white background together => hidden.

@@ -136,6 +136,71 @@ func TestScore_ExtensionMismatch(t *testing.T) {
 	}
 }
 
+// TestScore_ExtensionMismatch_ContainerAndCoarseTypes locks the F1 fix: the
+// magic-byte sniffer reports COARSE container/charset-blind types for whole
+// families of legitimate documents (OOXML as application/zip, legacy Office as
+// application/x-ole-storage, json/csv/xml as text/plain). None of those may trip
+// extension_mismatch, while a genuine type swap still does.
+func TestScore_ExtensionMismatch_ContainerAndCoarseTypes(t *testing.T) {
+	cfg := testConfig()
+
+	noMismatch := []struct {
+		name         string
+		filename     string
+		contentType  string
+		detectedType string
+	}{
+		// OOXML: declared the specific type, sniffed as the zip container.
+		{"docx", "report.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "application/zip"},
+		{"xlsx", "sheet.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "application/zip"},
+		{"pptx", "deck.pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation", "application/zip"},
+		// OOXML where the sender mislabels content_type as the generic zip type too.
+		{"docx-declared-zip", "report.docx", "application/zip", "application/zip"},
+		// Legacy Office: sniffed as the OLE compound-document container.
+		{"doc", "letter.doc", "application/msword", "application/x-ole-storage"},
+		{"xls", "book.xls", "application/vnd.ms-excel", "application/x-ole-storage"},
+		{"ppt", "slides.ppt", "application/vnd.ms-powerpoint", "application/x-ole-storage"},
+		// Text-family formats sniff to the coarse text/plain.
+		{"json", "data.json", "application/json", "text/plain"},
+		{"csv", "rows.csv", "text/csv", "text/plain"},
+		{"xml", "doc.xml", "application/xml", "text/plain"},
+	}
+	for _, tc := range noMismatch {
+		t.Run("no_mismatch/"+tc.name, func(t *testing.T) {
+			res := Score(Attachment{Filename: tc.filename, ContentType: tc.contentType, DetectedType: tc.detectedType}, cfg)
+			if res.Heuristics.ExtensionMismatch {
+				t.Fatalf("%s (declared=%q detected=%q) must NOT flag extension_mismatch",
+					tc.filename, tc.contentType, tc.detectedType)
+			}
+		})
+	}
+
+	// True positives must still fire.
+	fires := []struct {
+		name         string
+		filename     string
+		contentType  string
+		detectedType string
+	}{
+		// A .pdf whose magic bytes are a PNG image is a genuine swap.
+		{"pdf-detected-png", "doc.pdf", "application/pdf", "image/png"},
+		// A .pdf declared as a Windows executable is a genuine swap.
+		{"pdf-declared-exe", "doc.pdf", "application/x-msdownload", "application/x-msdownload"},
+		// A .docx whose bytes are an OLE container (not a zip) is still suspect:
+		// ole is the coarse type for legacy Office, not OOXML.
+		{"docx-detected-ole", "report.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "application/x-ole-storage"},
+	}
+	for _, tc := range fires {
+		t.Run("fires/"+tc.name, func(t *testing.T) {
+			res := Score(Attachment{Filename: tc.filename, ContentType: tc.contentType, DetectedType: tc.detectedType}, cfg)
+			if !res.Heuristics.ExtensionMismatch {
+				t.Fatalf("%s (declared=%q detected=%q) SHOULD flag extension_mismatch",
+					tc.filename, tc.contentType, tc.detectedType)
+			}
+		})
+	}
+}
+
 func TestScore_SumsAndClamps(t *testing.T) {
 	cfg := testConfig()
 	// dangerous (.exe) + double-ext (.pdf.exe) + high entropy ⇒ 25+35+20 = 80.

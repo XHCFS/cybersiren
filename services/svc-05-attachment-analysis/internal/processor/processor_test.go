@@ -357,23 +357,169 @@ func TestHandle_NoVTKeyNeverErrorsNorCalls(t *testing.T) {
 	}
 }
 
-func TestHandle_HashLookupErrorDegrades(t *testing.T) {
+// TestHandle_HashLookupErrorNACKs locks the R1 fix: attachment_library is the
+// source-of-record verdict, so a transient READ error there must NACK (return a
+// non-nil error, leave the offset uncommitted) rather than fail open — scoring a
+// known-malicious hash benign and committing the offset forever would be a
+// silent miss. The hash_lookup error metric is still counted, and nothing is
+// published.
+func TestHandle_HashLookupErrorNACKs(t *testing.T) {
 	st := newFakeStore()
 	st.failHashLookup = true
+
+	m := NewMetrics(nil)
 	pub := &fakePublisher{}
-	p := newTestProcessor(st, &fakeVT{}, pub)
+	p := newTestProcessorWithMetrics(st, &fakeVT{}, pub, m)
 
 	in := contractsk.AnalysisAttachments{
 		Meta:        contractsk.NewMetaWithFetched(2, 1, time.Now().UTC()),
 		Attachments: []contractsk.Attachment{{SHA256: "x", Filename: "invoice.pdf.exe", Entropy: 7.9}},
 	}
-	// A hash-lookup READ error must NOT NACK — heuristics still score and publish.
+	if err := p.Handle(context.Background(), msgFor(in)); err == nil {
+		t.Fatal("hash-lookup READ error should NACK (non-nil error)")
+	}
+	if len(pub.published) != 0 {
+		t.Fatal("a NACKed message must not publish")
+	}
+	// The offset must NOT be marked committed ("ok"); the handler marks "error".
+	if got := testutil.ToFloat64(m.MessagesTotal.WithLabelValues("ok")); got != 0 {
+		t.Fatalf("a NACKed message must not be marked ok, got %v", got)
+	}
+	if got := testutil.ToFloat64(m.MessagesTotal.WithLabelValues("error")); got != 1 {
+		t.Fatalf("a NACKed message should be marked error once, got %v", got)
+	}
+	// The hash_lookup error metric must still be counted.
+	if got := testutil.ToFloat64(m.ErrorsTotal.WithLabelValues("hash_lookup")); got != 1 {
+		t.Fatalf("attachment_analysis_errors_total{stage=hash_lookup} = %v, want 1", got)
+	}
+}
+
+// TestHandle_HeuristicDangerousFlagsLibrary locks the R2 fix: a STRONG heuristic
+// verdict (dangerous extension / macros / double-extension) with NO hash or VT
+// hit must still UPSERT the attachment_library malware row (spec §1-step3c),
+// using the heuristic score. The emitted detail.is_malicious / malicious_count
+// stay hash/VT-confirmed (false here) so SVC-08's verdict label is unperturbed.
+func TestHandle_HeuristicDangerousFlagsLibrary(t *testing.T) {
+	st := newFakeStore()
+	// Known library row, but NOT malicious — no hash hit. VT disabled — no VT hit.
+	st.verdicts["dh"] = store.HashVerdict{Found: true, ID: 55, IsMalicious: false}
+	pub := &fakePublisher{}
+	p := newTestProcessor(st, &fakeVT{enabled: false}, pub)
+
+	in := contractsk.AnalysisAttachments{
+		Meta: contractsk.NewMetaWithFetched(13, 1, time.Now().UTC()),
+		// double-extension + dangerous .exe ⇒ strong heuristics, score 25+35 = 60.
+		Attachments: []contractsk.Attachment{{SHA256: "dh", Filename: "invoice.pdf.exe"}},
+	}
 	if err := p.Handle(context.Background(), msgFor(in)); err != nil {
-		t.Fatalf("hash-lookup error should degrade, not error: %v", err)
+		t.Fatalf("handle: %v", err)
+	}
+	// The library row MUST have been flagged from the heuristic verdict alone.
+	if len(st.flagged) != 1 || st.flagged[0] != "dh" {
+		t.Fatalf("heuristic-dangerous attachment should flag the library, got %v", st.flagged)
 	}
 	out := decodePublished(t, pub.published[0])
-	if out.Score != 80 {
-		t.Fatalf("heuristic-only score = %d, want 80", out.Score)
+	d := out.AttachmentDetails[0]
+	// Emitted is_malicious / malicious_count must stay hash/VT-confirmed (false).
+	if d.IsMalicious {
+		t.Error("detail.is_malicious must remain false for a heuristic-only flag (no hash/VT hit)")
+	}
+	if out.MaliciousCount != 0 {
+		t.Errorf("malicious_count = %d, want 0 (heuristic-only must not perturb svc-08's label)", out.MaliciousCount)
+	}
+	// The score is the heuristic sum, and the detail still carries the trail.
+	if d.IndividualScore != 60 {
+		t.Errorf("individual_score = %d, want 60 (dangerous 25 + double-ext 35)", d.IndividualScore)
+	}
+	if !d.IsDangerousExtension {
+		t.Error("detail should report the dangerous-extension heuristic")
+	}
+}
+
+// TestHandle_WeakHeuristicDoesNotFlagLibrary locks the R2 judgment call: bare
+// ExtensionMismatch / HighEntropy must NOT promote a file to a hard
+// is_malicious library flag (avoids poisoning the shared library with weak /
+// F1-class signals).
+func TestHandle_WeakHeuristicDoesNotFlagLibrary(t *testing.T) {
+	st := newFakeStore()
+	st.verdicts["wh"] = store.HashVerdict{Found: true, ID: 66, IsMalicious: false}
+	pub := &fakePublisher{}
+	p := newTestProcessor(st, &fakeVT{enabled: false}, pub)
+
+	in := contractsk.AnalysisAttachments{
+		Meta: contractsk.NewMetaWithFetched(14, 1, time.Now().UTC()),
+		// extension_mismatch (.pdf declared image/png) + high entropy only.
+		Attachments: []contractsk.Attachment{{SHA256: "wh", Filename: "doc.pdf", ContentType: "image/png", Entropy: 7.9}},
+	}
+	if err := p.Handle(context.Background(), msgFor(in)); err != nil {
+		t.Fatalf("handle: %v", err)
+	}
+	if len(st.flagged) != 0 {
+		t.Fatalf("weak heuristics (mismatch/entropy) must NOT flag the library, got %v", st.flagged)
+	}
+}
+
+// TestHandle_VirusTotal404NegativelyCaches locks the F7 fix: a confirmed VT 404
+// (hash unknown) writes a zero-votes negative cache entry so a future identical
+// hash is served from the cache instead of re-hitting VT.
+func TestHandle_VirusTotal404NegativelyCaches(t *testing.T) {
+	st := newFakeStore()
+	st.verdicts["nf"] = store.HashVerdict{Found: true, ID: 77, IsMalicious: false}
+	v := &fakeVT{
+		enabled: true,
+		byHash:  map[string]vt.Result{"nf": {Skipped: true, NotFound: true}},
+	}
+	pub := &fakePublisher{}
+	p := newTestProcessor(st, v, pub)
+
+	in := contractsk.AnalysisAttachments{
+		Meta:        contractsk.NewMetaWithFetched(15, 1, time.Now().UTC()),
+		Attachments: []contractsk.Attachment{{SHA256: "nf", Filename: "doc.pdf", ContentType: "application/pdf"}},
+	}
+	if err := p.Handle(context.Background(), msgFor(in)); err != nil {
+		t.Fatalf("handle: %v", err)
+	}
+	// A confirmed 404 must have written a zero-votes negative cache entry.
+	c, ok := st.vtCache[77]
+	if !ok || !c.Found {
+		t.Fatal("a confirmed VT 404 should write a negative cache entry")
+	}
+	if c.MaliciousVotes != 0 {
+		t.Errorf("negative cache entry should carry zero malicious votes, got %d", c.MaliciousVotes)
+	}
+
+	// A subsequent identical hash must be served from the cache (no second API call).
+	callsAfterFirst := v.calls
+	if err := p.Handle(context.Background(), msgFor(in)); err != nil {
+		t.Fatalf("handle 2: %v", err)
+	}
+	if v.calls != callsAfterFirst {
+		t.Fatalf("a cached 404 miss must not re-hit VT: calls went %d -> %d", callsAfterFirst, v.calls)
+	}
+}
+
+// TestHandle_VirusTotal429DoesNotCache locks the F7 boundary: a 429 (or any
+// non-404 skip) must NOT be negatively cached — it is transient and must retry.
+func TestHandle_VirusTotal429DoesNotCache(t *testing.T) {
+	st := newFakeStore()
+	st.verdicts["rl"] = store.HashVerdict{Found: true, ID: 88, IsMalicious: false}
+	v := &fakeVT{
+		enabled: true,
+		// 429 fail-open: Skipped but NOT NotFound.
+		byHash: map[string]vt.Result{"rl": {Skipped: true}},
+	}
+	pub := &fakePublisher{}
+	p := newTestProcessor(st, v, pub)
+
+	in := contractsk.AnalysisAttachments{
+		Meta:        contractsk.NewMetaWithFetched(16, 1, time.Now().UTC()),
+		Attachments: []contractsk.Attachment{{SHA256: "rl", Filename: "doc.pdf", ContentType: "application/pdf"}},
+	}
+	if err := p.Handle(context.Background(), msgFor(in)); err != nil {
+		t.Fatalf("handle: %v", err)
+	}
+	if _, ok := st.vtCache[88]; ok {
+		t.Fatal("a 429 (transient) skip must NOT be negatively cached")
 	}
 }
 

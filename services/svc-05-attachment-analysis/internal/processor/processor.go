@@ -217,10 +217,14 @@ func (p *Processor) Handle(ctx context.Context, msg sharedconsumer.Message) erro
 }
 
 // scoreOne scores a single attachment and persists its verdict. It returns the
-// per-attachment detail for the scores.attachment payload. A returned error is a
-// DB-write failure (the caller NACKs); VT / hash-lookup READ failures degrade to
-// "no signal" and never error so a transient enrichment hiccup doesn't wedge the
-// partition.
+// per-attachment detail for the scores.attachment payload. A returned error
+// makes the caller NACK (redeliver): a DB-write failure, OR a hash-lookup READ
+// failure — attachment_library is the source-of-record verdict, so a transient
+// Postgres error there must NOT silently score a known-malicious hash benign and
+// commit the offset forever. Only VirusTotal failures degrade to "no signal"
+// without erroring (spec §1-step3c fail-open is VT-429 ⇒ fall back to the local
+// hash lookup; the hash lookup itself is the dependable fallback, never the
+// thing we fail open on).
 func (p *Processor) scoreOne(
 	ctx context.Context,
 	orgID, internalID int64,
@@ -235,8 +239,10 @@ func (p *Processor) scoreOne(
 		Entropy:     att.Entropy,
 	}
 
-	// (1) Hash lookup against attachment_library (READ). A miss / read error is
-	// non-fatal — heuristics still run.
+	// (1) Hash lookup against attachment_library (READ). A miss is non-fatal
+	// (Found stays false, heuristics still run), but a read ERROR NACKs: this is
+	// the source-of-record verdict, so failing open here would score a known
+	// malicious hash benign and commit the offset permanently.
 	var libraryID int64
 	hashMalicious := false
 	if att.SHA256 != "" && p.store != nil && orgID > 0 {
@@ -244,7 +250,7 @@ func (p *Processor) scoreOne(
 		switch {
 		case err != nil:
 			p.metrics.incError("hash_lookup")
-			p.log.Warn().Err(err).Str("sha256", att.SHA256).Msg("attachment hash lookup failed; continuing with heuristics")
+			return detail, fmt.Errorf("hash lookup (sha256=%s): %w", att.SHA256, err)
 		case verdict.Found:
 			libraryID = verdict.ID
 			hashMalicious = verdict.IsMalicious
@@ -296,10 +302,18 @@ func (p *Processor) scoreOne(
 	detail.IsDangerousExtension = res.Heuristics.IsDangerousExtension
 	detail.IndividualScore = res.Score
 
-	// (4) Persist. attachment_library malware flag (only when malicious — the
-	// UPSERT forces is_malicious=true) + email_attachments.risk_score write-back.
+	// (4) Persist. attachment_library malware flag + email_attachments.risk_score
+	// write-back. The UPSERT forces is_malicious=true, so we only fire it when a
+	// hash/VT hit OR a STRONG heuristic flags the file dangerous (spec §1-step3c:
+	// a heuristic-dangerous verdict must also update the library). We deliberately
+	// EXCLUDE bare ExtensionMismatch and HighEntropy: those are weak/noisy signals
+	// and promoting them to a hard is_malicious flag would poison the shared
+	// platform-global library (and let an F1-class false positive stick).
 	if p.store != nil && orgID > 0 {
-		if res.Malicious {
+		dangerous := res.Heuristics.IsDangerousExtension ||
+			res.Heuristics.HasMacros ||
+			res.Heuristics.DoubleExtension
+		if res.Malicious || dangerous {
 			if err := p.store.FlagMalicious(ctx, orgID, att.SHA256, res.Score, threatTagsFor(res, att)); err != nil {
 				return detail, fmt.Errorf("flag malicious (sha256=%s): %w", att.SHA256, err)
 			}
@@ -362,8 +376,24 @@ func (p *Processor) lookupVT(ctx context.Context, orgID, libraryID int64, fetche
 		return vt.Result{Skipped: true}
 	}
 	if res.Skipped {
-		// No key, 429, or unknown hash.
+		// No key, 429, auth, transport, or a confirmed 404 (unknown hash).
 		p.metrics.incVT("skipped")
+		// Negatively cache ONLY a confirmed 404: write a zero-votes row so the 24h
+		// cache absorbs the miss and a future identical hash is served from the
+		// cache (GetFreshVT) instead of re-hitting VT. We must NOT cache 429 /
+		// no-key / auth / transport skips — those are transient or config faults
+		// that should retry once VT is reachable again.
+		if res.NotFound {
+			if cacheErr := p.store.CacheVT(ctx, orgID, libraryID, fetchedAt, store.VTCacheInput{
+				MaliciousVotes:  0,
+				SuspiciousVotes: 0,
+				HarmlessVotes:   0,
+				Raw:             res.Raw,
+			}, p.cfg.VTCacheTTL); cacheErr != nil {
+				p.metrics.incError("vt")
+				p.log.Warn().Err(cacheErr).Str("sha256", sha256).Msg("vt negative-cache write failed")
+			}
+		}
 		return res
 	}
 
@@ -444,11 +474,15 @@ func encodeKey(emailID int64) []byte {
 
 func strPtr(s string) *string { return &s }
 
-// threatTagsFor builds the attachment_library.threat_tags set for a malicious
-// verdict: the source that flagged it plus any fired heuristic labels.
+// threatTagsFor builds the attachment_library.threat_tags set for a flagged
+// verdict: the confirming source (only when a hash/VT hit actually confirmed
+// malware — NOT for a heuristic-only flag, where labelling the row "malware"
+// would overstate the signal) plus every fired STRONG-heuristic label. For the
+// R2 heuristic-only path this yields tags like dangerous-extension / macro /
+// double-extension with no bare "malware" tag.
 func threatTagsFor(res scoring.Result, att contractsk.Attachment) []string {
 	tags := make([]string, 0, 4)
-	if att.SHA256 != "" {
+	if res.Malicious && att.SHA256 != "" {
 		tags = append(tags, "malware")
 	}
 	if res.Heuristics.HasMacros {
