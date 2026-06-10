@@ -3,6 +3,7 @@ package processor
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"testing"
 	"time"
@@ -110,7 +111,9 @@ func firstNonEmptyEnv(keys ...string) string {
 
 func seedTestOrg(ctx context.Context, t *testing.T, pool *pgxpool.Pool) int64 {
 	t.Helper()
-	slug := "svc04-rulehit-" + time.Now().Format("150405.000000")
+	// Slug must satisfy chk_organisations_slug_format (^[a-z0-9]([a-z0-9-]*[a-z0-9])?$),
+	// so use a digits-only nanosecond suffix — no dot from a fractional-seconds format.
+	slug := fmt.Sprintf("svc04-rulehit-%d", time.Now().UnixNano())
 	var id int64
 	if err := pool.QueryRow(ctx,
 		`INSERT INTO organisations (name, slug) VALUES ($1, $2) RETURNING id`,
