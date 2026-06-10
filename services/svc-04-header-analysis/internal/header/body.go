@@ -34,7 +34,8 @@ var (
 		regexp.MustCompile(`(?is)display\s*:\s*none`),
 		regexp.MustCompile(`(?is)visibility\s*:\s*hidden`),
 		regexp.MustCompile(`(?is)font-size\s*:\s*0(px|pt|em|%)?\b`),
-		regexp.MustCompile(`(?is)<[^>]*\shidden(\s|>|=)`),                           // HTML5 boolean hidden attribute (not the bare word in text)
+		// HTML5 boolean hidden attribute (not the bare word in text)
+		regexp.MustCompile(`(?is)<[^>]*\shidden(\s|>|=)`),
 		regexp.MustCompile(`(?is)(left|top|text-indent)\s*:\s*-\s*\d{3,}\s*px`),     // off-screen positioning
 		regexp.MustCompile(`(?is)(width|height|max-height)\s*:\s*0(px|pt|em|%)?\b`), // zero-box
 		regexp.MustCompile(`(?is)opacity\s*:\s*0(\.0+)?\b`),

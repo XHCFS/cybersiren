@@ -123,7 +123,7 @@ func (s *RepoStore) GetHashVerdict(ctx context.Context, orgID int64, sha256 stri
 			if errors.Is(qerr, pgx.ErrNoRows) {
 				return nil // miss ⇒ Found stays false
 			}
-			return qerr
+			return fmt.Errorf("get attachment by sha256: %w", qerr)
 		}
 		out = HashVerdict{
 			Found:       true,
@@ -152,7 +152,7 @@ func (s *RepoStore) GetFreshVT(ctx context.Context, orgID, attachmentLibraryID i
 			if errors.Is(qerr, pgx.ErrNoRows) {
 				return nil // cache miss / expired
 			}
-			return qerr
+			return fmt.Errorf("get fresh enrichment result: %w", qerr)
 		}
 		out = CachedVT{
 			Found:           true,
@@ -195,7 +195,10 @@ func (s *RepoStore) CacheVT(
 			ExpiresAt:       pgconv.TimestamptzOrNull(time.Now().Add(ttl)),
 			OrgID:           pgconv.Int8(orgID),
 		})
-		return qerr
+		if qerr != nil {
+			return fmt.Errorf("upsert enrichment result: %w", qerr)
+		}
+		return nil
 	})
 	if err != nil {
 		return fmt.Errorf("cache vt result: %w", err)
@@ -231,7 +234,7 @@ func (s *RepoStore) UpdateEmailAttachmentScore(ctx context.Context, in EmailAtta
 			AnalysisMetadata: nilIfEmpty(in.AnalysisMetadata),
 		})
 		if qerr != nil {
-			return qerr
+			return fmt.Errorf("update email attachment risk score: %w", qerr)
 		}
 		affected = n
 		return nil

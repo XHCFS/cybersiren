@@ -14,6 +14,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 
 	"github.com/rs/zerolog"
@@ -49,7 +50,7 @@ func main() {
 			// channels (the default for both) are not validated, so SVC-09 boots
 			// fine with no transport configured — it simply won't deliver.
 			if err := deps.Cfg.Notification.Validate(); err != nil {
-				return err
+				return fmt.Errorf("validate notification config: %w", err)
 			}
 
 			channels := notifier.BuildChannels(deps.Cfg.Notification)

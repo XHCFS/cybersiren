@@ -165,7 +165,7 @@ func parseStats(body []byte) (analysisStats, error) {
 		return analysisStats{}, errors.New("empty body")
 	}
 	if err := json.Unmarshal(body, &envelope); err != nil {
-		return analysisStats{}, err
+		return analysisStats{}, fmt.Errorf("unmarshal vt response: %w", err)
 	}
 	return envelope.Data.Attributes.LastAnalysisStats, nil
 }

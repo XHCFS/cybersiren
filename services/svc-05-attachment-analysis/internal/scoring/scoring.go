@@ -114,7 +114,10 @@ var mimeExtensionMap = map[string][]string{
 	".ppt":  {"application/vnd.ms-powerpoint"},
 	".pptx": {"application/vnd.openxmlformats-officedocument.presentationml.presentation"},
 	".zip":  {"application/zip", "application/x-zip-compressed"},
-	".exe":  {"application/x-msdownload", "application/octet-stream", "application/x-dosexec", "application/vnd.microsoft.portable-executable"},
+	".exe": {
+		"application/x-msdownload", "application/octet-stream",
+		"application/x-dosexec", "application/vnd.microsoft.portable-executable",
+	},
 }
 
 // Score computes the per-attachment risk score and heuristic trail. A hash hit

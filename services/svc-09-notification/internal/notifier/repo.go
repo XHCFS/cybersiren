@@ -117,7 +117,7 @@ func parseChannels(raw []byte) (map[string]struct{}, error) {
 	}
 	var list []string
 	if err := json.Unmarshal(raw, &list); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("unmarshal alert channels: %w", err)
 	}
 	for _, c := range list {
 		c = strings.ToLower(strings.TrimSpace(c))
