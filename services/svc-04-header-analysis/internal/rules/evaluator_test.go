@@ -34,6 +34,10 @@ func TestSignalsToSnapshot_FlattensExpectedKeys(t *testing.T) {
 			HopCount:               25,
 			HopCountAboveThreshold: true,
 			TimeDriftHours:         10.0,
+			HTMLOnly:               true,
+			HasHiddenText:          true,
+			HasForm:                true,
+			EncodingAnomaly:        true,
 		},
 	}
 
@@ -49,6 +53,17 @@ func TestSignalsToSnapshot_FlattensExpectedKeys(t *testing.T) {
 	}
 	if got := snap["structural.hop_count_above_threshold"]; got != true {
 		t.Errorf("structural.hop_count_above_threshold should be true")
+	}
+	// D9 body-derived structural keys must be present so rules can match them.
+	for _, key := range []string{
+		"structural.html_only",
+		"structural.has_hidden_text",
+		"structural.has_form",
+		"structural.encoding_anomaly",
+	} {
+		if got, ok := snap[key]; !ok || got != true {
+			t.Errorf("snapshot[%q] = %v (present=%v), want true", key, got, ok)
+		}
 	}
 }
 

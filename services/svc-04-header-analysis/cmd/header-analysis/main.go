@@ -163,7 +163,7 @@ func run() error {
 		cfg.Header.TyposquatMaxDistance,
 		log,
 		func() { procMetrics.ErrorsTotal.WithLabelValues("ti_lookup").Inc() },
-	)
+	).WithDomainAge(header.EnricherDomainAgeLooker{})
 
 	writer := processor.NewRuleHitWriter(dbPool, cfg.Header.DBWriteRetryAttempts, log)
 

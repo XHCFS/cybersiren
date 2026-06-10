@@ -69,6 +69,15 @@ type StructuralSignals struct {
 	MissingMailer           bool
 	SuspiciousMailerAgent   bool
 	NonASCIISenderDomain    bool
+
+	// Body-derived structural signals (D9 — computed HERE in SVC-04 from the
+	// body the parser ships on analysis.headers, NOT by the parser). See
+	// ARCH-SPEC §1 step 3b dimension (iii): "HTML-only messages, hidden text
+	// elements, embedded forms, encoding anomalies".
+	HTMLOnly        bool // message has an HTML part but no meaningful plain-text alternative
+	HasHiddenText   bool // HTML contains visually-hidden text (display:none / font-size:0 / white-on-white / off-screen)
+	HasForm         bool // HTML embeds a <form> (credential-harvest vector)
+	EncodingAnomaly bool // declared/observed charset mismatch or excessive non-printable content
 }
 
 // HeaderSignals is the union of all three dimensions plus a back-pointer

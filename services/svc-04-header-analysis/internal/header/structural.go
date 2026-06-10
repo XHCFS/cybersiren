@@ -17,10 +17,11 @@ type StructuralExtractorConfig struct {
 // ExtractStructural runs dimension (iii). All inputs come from the Kafka
 // message; no I/O is performed.
 //
-// Spec note: any structural signal that requires email *body* content
-// (HTML hidden elements, embedded forms, …) is intentionally NOT
-// implemented here — those fields aren't present on analysis.headers and
-// are the responsibility of SVC-06 (NLP). See ARCH-SPEC §1 step 3b.
+// Body-derived signals (html_only / has_hidden_text / has_form / encoding
+// anomalies) are computed HERE per D9: the parser ships the body content on
+// analysis.headers (BodyHTML + BodyPlain) and SVC-04 owns turning it into the
+// structural dimension — the parser does NOT compute the flags. See ARCH-SPEC
+// §1 step 3b dimension (iii).
 func ExtractStructural(msg *contractsk.AnalysisHeadersMessage, cfg StructuralExtractorConfig) StructuralSignals {
 	if msg == nil {
 		return StructuralSignals{}
@@ -59,6 +60,14 @@ func ExtractStructural(msg *contractsk.AnalysisHeadersMessage, cfg StructuralExt
 	if senderDomain != "" {
 		signals.NonASCIISenderDomain = containsNonASCII(senderDomain)
 	}
+
+	// D9 body-derived structural signals, computed from the body the parser
+	// ships on analysis.headers (HTML preferred, plain-text fallback).
+	body := extractBodyStructural(msg, msg.ContentCharset)
+	signals.HTMLOnly = body.HTMLOnly
+	signals.HasHiddenText = body.HasHiddenText
+	signals.HasForm = body.HasForm
+	signals.EncodingAnomaly = body.EncodingAnomaly
 
 	return signals
 }

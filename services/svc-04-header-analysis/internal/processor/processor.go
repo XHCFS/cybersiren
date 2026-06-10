@@ -157,7 +157,7 @@ func (p *Processor) Handle(ctx context.Context, msg sharedconsumer.Message) erro
 
 	// Persist before publishing — ARCH-SPEC §6 requires that offset is
 	// only committed after rule_hits commit success.
-	outcome, writeErr := p.writer.Write(ctx, ruleHitEntityID(parsed), parsed.FetchedAt, evalResult.Fired)
+	outcome, writeErr := p.writer.Write(ctx, parsed.OrgID, ruleHitEntityID(parsed), parsed.FetchedAt, evalResult.Fired)
 	p.metrics.WriteRetries.WithLabelValues(outcome).Inc()
 	if writeErr != nil {
 		p.observeError("db_write")

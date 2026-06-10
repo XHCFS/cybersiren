@@ -47,6 +47,13 @@ func SignalsToSnapshot(s header.HeaderSignals) SignalSnapshot {
 		"structural.suspicious_mailer_agent":    s.Structural.SuspiciousMailerAgent,
 		"structural.mailer_agent":               s.Structural.MailerAgent,
 		"structural.non_ascii_sender_domain":    s.Structural.NonASCIISenderDomain,
+
+		// D9 body-derived structural signals (computed in SVC-04 from the
+		// parser-shipped body). Rules reference these by key.
+		"structural.html_only":        s.Structural.HTMLOnly,
+		"structural.has_hidden_text":  s.Structural.HasHiddenText,
+		"structural.has_form":         s.Structural.HasForm,
+		"structural.encoding_anomaly": s.Structural.EncodingAnomaly,
 	}
 	if s.Reputation.DomainAgeDays != nil {
 		snap["reputation.domain_age_days"] = *s.Reputation.DomainAgeDays
