@@ -14,6 +14,16 @@ INSERT INTO organisations (id, name, slug)
 VALUES (1, 'Demo Tenant', 'demo')
 ON CONFLICT (id) DO NOTHING;
 
+-- Pin notification config for the smoke org so svc-09 deterministically gates +
+-- dispatches over webhook regardless of migration-default drift. The migration
+-- defaults already enable the webhook channel (threshold 70); the lower
+-- threshold here makes the demo robust to verdict-score drift. Email is
+-- intentionally NOT enabled (no admin users seeded ⇒ 0-recipient no-op).
+UPDATE organisations
+   SET notification_threshold = 50,
+       notification_channels  = '["webhook"]'::jsonb
+ WHERE id = 1;
+
 -- Bump the BIGSERIAL sequence past any explicit ids so future inserts don't
 -- collide with id=1.
 SELECT setval(

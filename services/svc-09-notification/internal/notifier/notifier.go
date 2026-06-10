@@ -61,7 +61,7 @@ func (n *Notifier) Handle(ctx context.Context, msg kafkaconsumer.Message) error 
 	if err := json.Unmarshal(msg.Value, &v); err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "decode failed")
-		n.metrics.bumpOutcome("skip")
+		n.metrics.bumpOutcome(OutcomeSkip)
 		n.log.Error().Err(err).
 			Int("partition", msg.Partition).Int64("offset", msg.Offset).
 			Msg("malformed emails.verdict; skipping (offset will commit)")
@@ -88,14 +88,14 @@ func (n *Notifier) Handle(ctx context.Context, msg kafkaconsumer.Message) error 
 		if errors.Is(err, ErrOrgNotFound) {
 			// Nobody to notify and a replay will never find the row.
 			span.SetStatus(codes.Ok, "org not found; skipping")
-			n.metrics.bumpOutcome("skip")
+			n.metrics.bumpOutcome(OutcomeSkip)
 			log.Warn().Msg("org not found for verdict; skipping notification")
 			return nil
 		}
 		// Transient DB failure — NACK so the verdict is retried.
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "org load failed")
-		n.metrics.bumpOutcome("error")
+		n.metrics.bumpOutcome(OutcomeError)
 		log.Error().Err(err).Msg("failed to load org notification config; will retry")
 		return fmt.Errorf("load org prefs: %w", err)
 	}
@@ -103,7 +103,7 @@ func (n *Notifier) Handle(ctx context.Context, msg kafkaconsumer.Message) error 
 	// Threshold / label gate.
 	if !Gate(v, prefs.Threshold) {
 		span.SetAttributes(attribute.Bool("notification.gated", false))
-		n.metrics.bumpOutcome("below")
+		n.metrics.bumpOutcome(OutcomeBelow)
 		log.Debug().Int("threshold", prefs.Threshold).Msg("verdict below alert gate; no notification")
 		return nil
 	}
@@ -119,19 +119,32 @@ func (n *Notifier) Handle(ctx context.Context, msg kafkaconsumer.Message) error 
 		allowed, rlErr := n.limiter.Allow(ctx, key)
 		switch {
 		case rlErr != nil:
-			// Degrade to allow; a missing/failed limiter must not suppress alerts.
+			// Degrade to allow; a missing/failed limiter must not suppress
+			// alerts. Count it distinctly so a Redis outage that silently
+			// disables rate limiting is visible as a metric, not just a log.
+			n.metrics.bumpRateLimitFailOpen()
+			span.SetAttributes(attribute.Bool("notification.ratelimit_failopen", true))
 			log.Warn().Err(rlErr).Str("key", key).Msg("rate limiter error; allowing alert (fail-open)")
 		case !allowed:
 			span.SetAttributes(attribute.Bool("notification.rate_limited", true))
-			n.metrics.bumpOutcome("ratelimit")
+			n.metrics.bumpOutcome(OutcomeRateLimit)
 			log.Info().Str("key", key).Msg("alert suppressed by per-campaign rate limit")
 			return nil
 		}
 	}
 
-	n.dispatch(ctx, v, prefs, log)
-	n.metrics.bumpOutcome("gated")
-	span.SetStatus(codes.Ok, "alert dispatched")
+	delivered := n.dispatch(ctx, v, prefs, log)
+	if delivered > 0 {
+		n.metrics.bumpOutcome(OutcomeGated)
+		span.SetStatus(codes.Ok, "alert dispatched")
+	} else {
+		// Gated + rate-limit-passed but no channel actually delivered: a
+		// zero-transport misconfig (or every send failed). Record it as a
+		// distinct outcome so it is a metric, not just a Warn log.
+		n.metrics.bumpOutcome(OutcomeGatedUndelivered)
+		span.SetAttributes(attribute.Bool("notification.delivered", false))
+		span.SetStatus(codes.Ok, "alert gated but undelivered")
+	}
 	return nil
 }
 
@@ -139,27 +152,39 @@ func (n *Notifier) Handle(ctx context.Context, msg kafkaconsumer.Message) error 
 // notification_channels) AND configured (present in the config-gated channel
 // set). A channel listed by the org but not configured in this deployment is
 // skipped; a channel configured but not enabled by the org is skipped. Sends
-// are best-effort — failures are logged and counted, never propagated.
-func (n *Notifier) dispatch(ctx context.Context, v contracts.EmailsVerdict, prefs OrgPrefs, log zerolog.Logger) {
+// are best-effort — failures are logged and counted, never propagated. It
+// returns the number of channels that actually delivered the alert so the
+// caller can record gated vs gated_undelivered.
+func (n *Notifier) dispatch(ctx context.Context, v contracts.EmailsVerdict, prefs OrgPrefs, log zerolog.Logger) int {
 	alert := AlertFrom(v, prefs)
 	sent := 0
 	for name, ch := range n.channels {
 		if !prefs.HasChannel(name) {
 			continue
 		}
-		if err := ch.Send(ctx, alert); err != nil {
-			n.metrics.bumpAlert(name, "error")
+		err := ch.Send(ctx, alert)
+		switch {
+		case err == nil:
+			n.metrics.bumpAlert(name, AlertSent)
+			sent++
+			log.Info().Str("channel", name).Msg("alert dispatched")
+		case errors.Is(err, errNoRecipients):
+			// Gated alert but nobody to address (e.g. email channel enabled for
+			// an org with no admin contacts). Not a delivery and not a failure —
+			// count it as a skip so the metric is honest (no phantom "sent").
+			n.metrics.bumpAlert(name, AlertNoRecipients)
+			log.Warn().Str("channel", name).Msg("alert not delivered: no recipients for channel")
+		default:
+			n.metrics.bumpAlert(name, AlertError)
 			log.Error().Err(err).Str("channel", name).Msg("alert dispatch failed")
-			continue
 		}
-		n.metrics.bumpAlert(name, "sent")
-		sent++
-		log.Info().Str("channel", name).Msg("alert dispatched")
 	}
 	if sent == 0 {
 		// Gated + rate-limit-passed but no channel actually fired: either the
-		// org enabled only channels this deployment hasn't configured, or every
-		// send failed. Surface it so a misconfiguration is visible.
+		// org enabled only channels this deployment hasn't configured, every
+		// send failed, or no recipients. Surface it so a misconfiguration is
+		// visible (the caller also records it as gated_undelivered).
 		log.Warn().Msg("verdict crossed alert gate but no channel delivered the alert")
 	}
+	return sent
 }

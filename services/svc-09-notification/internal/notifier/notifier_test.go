@@ -4,11 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/smtp"
 	"sync"
 	"testing"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/rs/zerolog"
 
+	"github.com/saif/cybersiren/shared/config"
 	contracts "github.com/saif/cybersiren/shared/contracts/kafka"
 	kafkaconsumer "github.com/saif/cybersiren/shared/kafka/consumer"
 )
@@ -252,5 +256,169 @@ func TestHandle_ChannelSendFailureDoesNotNACK(t *testing.T) {
 	// A send failure is best-effort: the offset must still commit (nil err).
 	if err := n.Handle(context.Background(), msgFor(newVerdict())); err != nil {
 		t.Fatalf("channel failure should not NACK, got %v", err)
+	}
+}
+
+// outcome reads the notification_messages_total counter for a given outcome.
+func outcome(m *Metrics, v string) float64 {
+	return testutil.ToFloat64(m.MessagesTotal.WithLabelValues(v))
+}
+
+// alertResult reads notification_alerts_total for a channel+result pair.
+func alertResult(m *Metrics, channel, result string) float64 {
+	return testutil.ToFloat64(m.AlertsTotal.WithLabelValues(channel, result))
+}
+
+func TestHandle_DeliveredBumpsGatedOutcome(t *testing.T) {
+	t.Parallel()
+	m := NewMetrics(prometheus.NewRegistry())
+	webhook := &fakeChannel{name: ChannelWebhook}
+	n := New(
+		&fakeOrgReader{prefs: prefsWith(70, ChannelWebhook)},
+		newFakeLimiter(),
+		map[string]Channel{ChannelWebhook: webhook},
+		m,
+		zerolog.Nop(),
+	)
+	if err := n.Handle(context.Background(), msgFor(newVerdict())); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if got := outcome(m, OutcomeGated); got != 1 {
+		t.Errorf("outcome gated = %v, want 1", got)
+	}
+	if got := outcome(m, OutcomeGatedUndelivered); got != 0 {
+		t.Errorf("outcome gated_undelivered = %v, want 0", got)
+	}
+	if got := alertResult(m, ChannelWebhook, AlertSent); got != 1 {
+		t.Errorf("alert webhook/sent = %v, want 1", got)
+	}
+}
+
+func TestHandle_NoChannelDeliveredBumpsGatedUndelivered(t *testing.T) {
+	t.Parallel()
+	m := NewMetrics(prometheus.NewRegistry())
+	// Org enables webhook, but this deployment configured NO channels: gate
+	// passes, rate limit passes, nothing fires. Must be a metric, not a log.
+	n := New(
+		&fakeOrgReader{prefs: prefsWith(70, ChannelWebhook)},
+		newFakeLimiter(),
+		map[string]Channel{},
+		m,
+		zerolog.Nop(),
+	)
+	if err := n.Handle(context.Background(), msgFor(newVerdict())); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if got := outcome(m, OutcomeGatedUndelivered); got != 1 {
+		t.Errorf("outcome gated_undelivered = %v, want 1", got)
+	}
+	if got := outcome(m, OutcomeGated); got != 0 {
+		t.Errorf("outcome gated = %v, want 0 (nothing delivered)", got)
+	}
+}
+
+func TestHandle_AllChannelsFailBumpsGatedUndelivered(t *testing.T) {
+	t.Parallel()
+	m := NewMetrics(prometheus.NewRegistry())
+	webhook := &fakeChannel{name: ChannelWebhook, err: errors.New("down")}
+	n := New(
+		&fakeOrgReader{prefs: prefsWith(70, ChannelWebhook)},
+		newFakeLimiter(),
+		map[string]Channel{ChannelWebhook: webhook},
+		m,
+		zerolog.Nop(),
+	)
+	if err := n.Handle(context.Background(), msgFor(newVerdict())); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if got := outcome(m, OutcomeGatedUndelivered); got != 1 {
+		t.Errorf("outcome gated_undelivered = %v, want 1 (send failed)", got)
+	}
+	if got := alertResult(m, ChannelWebhook, AlertError); got != 1 {
+		t.Errorf("alert webhook/error = %v, want 1", got)
+	}
+}
+
+func TestHandle_RateLimiterErrorBumpsFailOpenCounter(t *testing.T) {
+	t.Parallel()
+	m := NewMetrics(prometheus.NewRegistry())
+	limiter := newFakeLimiter()
+	limiter.err = errors.New("redis down")
+	webhook := &fakeChannel{name: ChannelWebhook}
+	n := New(
+		&fakeOrgReader{prefs: prefsWith(70, ChannelWebhook)},
+		limiter,
+		map[string]Channel{ChannelWebhook: webhook},
+		m,
+		zerolog.Nop(),
+	)
+	if err := n.Handle(context.Background(), msgFor(newVerdict())); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if got := testutil.ToFloat64(m.RateLimitFailOpenTotal); got != 1 {
+		t.Errorf("ratelimit_failopen = %v, want 1", got)
+	}
+	// Fail-open still delivers, so the outcome is the normal gated path.
+	if got := outcome(m, OutcomeGated); got != 1 {
+		t.Errorf("outcome gated = %v, want 1", got)
+	}
+}
+
+func TestHandle_WithinLimitDoesNotBumpFailOpen(t *testing.T) {
+	t.Parallel()
+	m := NewMetrics(prometheus.NewRegistry())
+	webhook := &fakeChannel{name: ChannelWebhook}
+	n := New(
+		&fakeOrgReader{prefs: prefsWith(70, ChannelWebhook)},
+		newFakeLimiter(), // healthy limiter, within-limit allow
+		map[string]Channel{ChannelWebhook: webhook},
+		m,
+		zerolog.Nop(),
+	)
+	if err := n.Handle(context.Background(), msgFor(newVerdict())); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if got := testutil.ToFloat64(m.RateLimitFailOpenTotal); got != 0 {
+		t.Errorf("ratelimit_failopen = %v, want 0 (normal within-limit allow)", got)
+	}
+}
+
+func TestHandle_EmailNoRecipientsCountsSkipNotSent(t *testing.T) {
+	t.Parallel()
+	m := NewMetrics(prometheus.NewRegistry())
+	// Real email channel with a stubbed sender; org enables email but has no
+	// admin recipients -> Send returns errNoRecipients.
+	email := NewEmailChannel(config.SMTPConfig{Host: "h", Port: 25, From: "a@b.c"})
+	sentCalled := false
+	email.send = func(string, smtp.Auth, string, []string, []byte) error {
+		sentCalled = true
+		return nil
+	}
+	prefs := OrgPrefs{
+		OrgID: 7, Threshold: 70,
+		Channels:    map[string]struct{}{ChannelEmail: {}},
+		AdminEmails: nil, // no recipients
+	}
+	n := New(
+		&fakeOrgReader{prefs: prefs},
+		newFakeLimiter(),
+		map[string]Channel{ChannelEmail: email},
+		m,
+		zerolog.Nop(),
+	)
+	if err := n.Handle(context.Background(), msgFor(newVerdict())); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if sentCalled {
+		t.Error("relay should not be hit when there are no recipients")
+	}
+	if got := alertResult(m, ChannelEmail, AlertNoRecipients); got != 1 {
+		t.Errorf("alert email/no_recipients = %v, want 1", got)
+	}
+	if got := alertResult(m, ChannelEmail, AlertSent); got != 0 {
+		t.Errorf("alert email/sent = %v, want 0 (no phantom sent)", got)
+	}
+	if got := outcome(m, OutcomeGatedUndelivered); got != 1 {
+		t.Errorf("outcome gated_undelivered = %v, want 1", got)
 	}
 }

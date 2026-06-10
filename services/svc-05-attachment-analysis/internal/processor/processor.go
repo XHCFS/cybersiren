@@ -256,6 +256,15 @@ func (p *Processor) scoreOne(
 
 	// (2) VirusTotal: cache-first, then API (24h cache). Skipped when no key
 	// (never errors), 429 fail-open, or the library id is unknown (no cache key).
+	//
+	// The libraryID>0 gate is an intentional, sound narrowing of spec
+	// §1-step3c(ii) ("query if a VT key is configured"): SVC-02 always UPSERTs
+	// the attachment_library row at parse time (email_attachments.attachment_id
+	// is an FK to it), so every real pipeline attachment HAS a libraryID and the
+	// gate is satisfied. We require it because the VT cache (GetFreshVT/CacheVT)
+	// is keyed on the library id — with no row there is no cache key, so a lookup
+	// could neither be cached nor deduped. A zero libraryID only occurs for a
+	// hash-miss synthetic path that never reaches a real attachment.
 	vtMalicious := false
 	if p.store != nil && p.vt != nil && p.vt.Enabled() && libraryID > 0 && att.SHA256 != "" && orgID > 0 {
 		vtRes := p.lookupVT(ctx, orgID, libraryID, fetchedAt, att.SHA256)
@@ -310,8 +319,11 @@ func (p *Processor) scoreOne(
 			}
 			if affected == 0 {
 				// SVC-02 has not (yet) persisted this link, or the id mismatched.
-				// Not fatal: the scores.attachment payload still flows; log so the
-				// gap is observable.
+				// Not fatal: the scores.attachment payload still flows; log AND
+				// count so a systematic write-back miss is visible on dashboards
+				// (attachment_analysis_errors_total{stage="writeback_miss"})
+				// rather than discoverable only by log-grep.
+				p.metrics.incError("writeback_miss")
 				p.log.Warn().
 					Int64("internal_id", internalID).
 					Int64("attachment_id", libraryID).

@@ -12,7 +12,7 @@ type Metrics struct {
 	MessagesTotal *prometheus.CounterVec // result=ok|error
 	ScoreTotal    *prometheus.CounterVec // bucket=low|medium|high|critical
 	Duration      prometheus.Histogram
-	ErrorsTotal   *prometheus.CounterVec // stage=consume|hash_lookup|vt|db_write|publish
+	ErrorsTotal   *prometheus.CounterVec // stage=consume|hash_lookup|vt|db_write|writeback_miss|publish
 	VTLookups     *prometheus.CounterVec // outcome=hit|miss|cached|skipped|error
 	HeuristicHits *prometheus.CounterVec // heuristic=entropy|ext_mismatch|dangerous_ext|macro|double_ext
 }

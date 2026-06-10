@@ -46,7 +46,6 @@ func (EnricherDomainAgeLooker) DomainAgeDays(ctx context.Context, domain string)
 var whoisDateLayouts = []string{
 	time.RFC3339,
 	time.RFC3339Nano,
-	"2006-01-02T15:04:05Z07:00",
 	"2006-01-02 15:04:05",
 	"2006-01-02 15:04:05 MST",
 	"2006-01-02T15:04:05",

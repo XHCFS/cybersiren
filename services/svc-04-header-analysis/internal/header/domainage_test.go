@@ -1,6 +1,7 @@
 package header
 
 import (
+	"context"
 	"testing"
 	"time"
 )
@@ -48,5 +49,22 @@ func TestEnricherDomainAgeLooker_EmptyDomain(t *testing.T) {
 	_, ok := EnricherDomainAgeLooker{}.DomainAgeDays(t.Context(), "  ")
 	if ok {
 		t.Errorf("empty domain must return ok=false")
+	}
+}
+
+// TestEnricherDomainAgeLooker_CancelledContextDegrades proves the WHOIS lookup
+// degrades gracefully (returns ok=false, no hang, no panic) when the caller's
+// context is already cancelled — the same path live smoke hits on a network
+// failure or a 5s timeout. The shared enricher swallows the error and yields a
+// zero-value result, which domainAgeFromRegistration maps to "unknown". A
+// cancelled context keeps the test off the network so it stays deterministic.
+func TestEnricherDomainAgeLooker_CancelledContextDegrades(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // already done before the lookup runs
+
+	_, ok := EnricherDomainAgeLooker{}.DomainAgeDays(ctx, "domain-age-degrade.test")
+	if ok {
+		t.Errorf("a cancelled-context WHOIS lookup must degrade to ok=false, not a value")
 	}
 }
