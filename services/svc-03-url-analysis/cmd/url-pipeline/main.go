@@ -26,6 +26,7 @@ import (
 
 	"github.com/saif/cybersiren/internal/phishing"
 	phclient "github.com/saif/cybersiren/internal/phishing/client"
+	"github.com/saif/cybersiren/services/svc-03-url-analysis/internal/persist"
 	"github.com/saif/cybersiren/services/svc-03-url-analysis/internal/url"
 	contracts "github.com/saif/cybersiren/shared/contracts/kafka"
 	kafkaconsumer "github.com/saif/cybersiren/shared/kafka/consumer"
@@ -45,6 +46,7 @@ var (
 	tiChecker        *url.TIChecker
 	phishingDetector *phishing.Detector
 	scanMetrics      *url.ScanMetrics
+	persister        *persist.Persister
 	pipelineTracer   = otel.Tracer("svc-03-url-pipeline/scan-one")
 )
 
@@ -90,6 +92,17 @@ func main() {
 			scanMetrics = url.NewScanMetrics(deps.Registry)
 			phishingMetrics := phclient.NewMetrics(deps.Registry)
 
+			// Enrichment persistence (ARCH-SPEC §14 step 3a). NeedsDB is true, so
+			// deps.Pool is set; NewRepoStore wires the org-scoped repository layer
+			// (every write tx sets app.current_org_id — G10 RLS). A nil pool would
+			// disable persistence rather than crash the consumer.
+			if store := persist.NewRepoStore(deps.Pool); store != nil {
+				persister = persist.New(store, persist.NewMetrics(deps.Registry), log)
+				log.Info().Msg("enrichment persistence ready")
+			} else {
+				log.Warn().Msg("no DB pool; enrichment persistence disabled")
+			}
+
 			// Layer-2 ML phishing detector (fail-open: missing GeoIP or unreachable
 			// sidecar should not prevent the service from starting). When GeoIPDir
 			// loads, the detector enriches in-process and uses /score-features;
@@ -132,6 +145,9 @@ type urlScan struct {
 	TIMatch      bool    `json:"ti_match"`
 	TIThreatType string  `json:"ti_threat_type,omitempty"`
 	TIRiskScore  int     `json:"ti_risk_score"`
+	// TIIndicatorID is the matched ti_indicators.id (0 when the TI cache entry
+	// predates the id being stored); persist uses it for the audit row.
+	TIIndicatorID int64 `json:"ti_indicator_id,omitempty"`
 	// GuardHit is set when the domain guard short-circuits scoring.
 	// "allowlisted" / "typosquat:<brand>" / "brand-in-subdomain:<brand>".
 	GuardHit string `json:"guard_hit,omitempty"`
@@ -204,6 +220,92 @@ func handle(ctx context.Context, msg kafkaconsumer.Message, deps svckit.Deps) er
 		Int("max_ti_risk", maxTIRisk).
 		Str("worst_label", worstLabel).
 		Msg("scored URLs")
+
+	// Persist enrichment (ARCH-SPEC §14 step 3a). Runs AFTER the scores.url
+	// publish so the score is already on the wire before any DB work. All writes
+	// are idempotent (bare upsert ON CONFLICT, enriched_threats UPDATE,
+	// enrichment_results UPSERT, ti-match ON CONFLICT DO NOTHING), so the
+	// at-least-once redelivery of a NACKed message re-converges the writes
+	// rather than duplicating, and svc-07 dedups the re-published scores.url. We
+	// therefore RETURN a persist failure so the consumer NACKs and redelivery
+	// retries the (idempotent) writes — a DB outage must not silently drop the
+	// required P1.2 writes. No scoring value is recomputed here.
+	if err := persistEnrichment(ctx, input, ft, scans, log); err != nil {
+		// Already wrapped by persistEnrichment; returning it NACKs the message.
+		return err
+	}
+	return nil
+}
+
+// persistEnrichment projects the in-memory scan results into the persistence
+// input and writes them through the org-scoped repository layer. It is a no-op
+// (nil error) when persistence is disabled (no DB pool). It returns the first
+// write error so handle() can NACK the message and let redelivery retry the
+// idempotent writes.
+func persistEnrichment(
+	ctx context.Context,
+	input contracts.AnalysisURLs,
+	fetchedAt time.Time,
+	scans []urlScan,
+	log zerolog.Logger,
+) error {
+	if persister == nil {
+		return nil
+	}
+
+	results := make([]persist.URLResult, 0, len(scans))
+	for _, s := range scans {
+		ref := s.Normalized
+		if ref == "" {
+			ref = s.URL
+		}
+		apex := url.ApexFromURL(ref)
+		results = append(results, persist.URLResult{
+			RawURL:       s.URL,
+			Normalized:   s.Normalized,
+			Domain:       url.HostnameFromURL(ref),
+			TLD:          normalization.TLDLabel(apex),
+			Apex:         apex,
+			Score:        s.Score,
+			Label:        s.Label,
+			GuardHit:     s.GuardHit,
+			TIMatch:      s.TIMatch,
+			TIThreatType: s.TIThreatType,
+			TIRiskScore:  s.TIRiskScore,
+			// TIIndicatorID carries the matched ti_indicators.id the cache lookup
+			// surfaced, so persist writes the email_url_ti_matches audit row. It is
+			// zero only for legacy cache entries that predate the id being stored;
+			// the audit then skips (persist gates on > 0).
+			TIIndicatorID: s.TIIndicatorID,
+			MLDeployP:     s.MLDeployP,
+			MLVerdict:     s.MLVerdict,
+			MLCacheHit:    s.MLCacheHit,
+		})
+	}
+
+	// Two-id model (G17): SVC-03 keys the email_urls lookup on the DB BIGSERIAL
+	// internal_id SVC-02 assigned and carried on analysis.urls. Prefer that real
+	// internal_id; fall back to Meta.EmailID only while SVC-02 has not yet
+	// populated it (the interim email_id == internal_id equivalence). We do NOT
+	// re-derive internal_id via a DB lookup.
+	internalID := input.InternalID
+	if internalID == 0 {
+		internalID = input.Meta.EmailID
+	}
+	email := persist.Email{
+		OrgID:      input.Meta.OrgID,
+		InternalID: internalID,
+		FetchedAt:  fetchedAt,
+		URLs:       results,
+	}
+
+	if err := persister.Persist(ctx, email); err != nil {
+		log.Warn().Err(err).
+			Int64("email_id", input.Meta.EmailID).
+			Int64("internal_id", internalID).
+			Msg("enrichment persistence reported errors (scores already published; NACKing for retry)")
+		return fmt.Errorf("persist email enrichment: %w", err)
+	}
 	return nil
 }
 
@@ -329,6 +431,7 @@ func scanOne(ctx context.Context, raw string, log zerolog.Logger) urlScan {
 	out.TIMatch = tiRes.Matched
 	out.TIThreatType = tiRes.ThreatType
 	out.TIRiskScore = tiRes.RiskScore
+	out.TIIndicatorID = tiRes.IndicatorID
 
 	// Layer 2: ML phishing check fires when TI didn't match OR when TI
 	// matched with low confidence (< 80 risk). classifyLabel ignores

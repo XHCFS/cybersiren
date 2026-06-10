@@ -28,6 +28,17 @@ const (
 
 var tiCacheTracer = tracing.Tracer("shared/valkey/ti_cache")
 
+// DomainLookup is the result of a TI domain cache lookup. It carries the
+// matched ti_indicators.id (IndicatorID) so callers that audit feed matches
+// (e.g. svc-03's email_url_ti_matches writer) can attribute the hit. Legacy
+// cache entries written before the id was stored leave IndicatorID at zero.
+type DomainLookup struct {
+	Blocked     bool
+	RiskScore   int
+	ThreatType  string
+	IndicatorID int64
+}
+
 // TICache provides read and write access to the threat-intelligence caches.
 type TICache interface {
 	RefreshDomainCache(ctx context.Context) error
@@ -35,6 +46,10 @@ type TICache interface {
 	RefreshHashCache(ctx context.Context) error
 	// IsBlocklisted checks whether the given domain appears in the TI domain cache.
 	IsBlocklisted(ctx context.Context, domain string) (bool, int, string, error)
+	// LookupDomain is the richer variant of IsBlocklisted: it returns the same
+	// blocked/risk/threat signal plus the matched ti_indicators.id so callers
+	// can audit the feed match.
+	LookupDomain(ctx context.Context, domain string) (DomainLookup, error)
 }
 
 type ValkeyTICache struct {
@@ -363,8 +378,22 @@ func (c *ValkeyTICache) RefreshHashCache(ctx context.Context) (err error) {
 }
 
 // IsBlocklisted checks whether the given domain appears in the TI domain cache.
-func (c *ValkeyTICache) IsBlocklisted(ctx context.Context, domain string) (blocked bool, riskScore int, threatType string, err error) {
-	ctx, span := tiCacheTracer.Start(ctx, "ti_cache.IsBlocklisted")
+// It is the back-compat shim over LookupDomain for callers that do not need the
+// matched ti_indicators.id.
+func (c *ValkeyTICache) IsBlocklisted(ctx context.Context, domain string) (bool, int, string, error) {
+	res, err := c.LookupDomain(ctx, domain)
+	if err != nil {
+		return false, 0, "", err
+	}
+	return res.Blocked, res.RiskScore, res.ThreatType, nil
+}
+
+// LookupDomain checks whether the given domain appears in the TI domain cache,
+// returning the blocked/risk/threat signal plus the matched ti_indicators.id.
+// A legacy cache entry written before the id field was stored leaves
+// IndicatorID at zero (the caller's audit then skips, as before).
+func (c *ValkeyTICache) LookupDomain(ctx context.Context, domain string) (lookup DomainLookup, err error) {
+	ctx, span := tiCacheTracer.Start(ctx, "ti_cache.LookupDomain")
 	defer func() {
 		if err != nil {
 			span.RecordError(err)
@@ -380,12 +409,13 @@ func (c *ValkeyTICache) IsBlocklisted(ctx context.Context, domain string) (block
 
 	cmd := c.client.Do(ctx, c.client.B().Hgetall().Key(key).Build())
 	if err = cmd.Error(); err != nil {
-		return false, 0, "", fmt.Errorf("ti cache IsBlocklisted: %w", err)
+		return DomainLookup{}, fmt.Errorf("ti cache LookupDomain: %w", err)
 	}
 
-	result, err := cmd.AsStrMap()
-	if err != nil {
-		return false, 0, "", fmt.Errorf("ti cache IsBlocklisted: %w", err)
+	result, mapErr := cmd.AsStrMap()
+	if mapErr != nil {
+		err = fmt.Errorf("ti cache LookupDomain: %w", mapErr)
+		return DomainLookup{}, err
 	}
 
 	hit := len(result) > 0
@@ -394,18 +424,25 @@ func (c *ValkeyTICache) IsBlocklisted(ctx context.Context, domain string) (block
 	}
 
 	if !hit {
-		return false, 0, "", nil
+		return DomainLookup{}, nil
 	}
+
+	out := DomainLookup{Blocked: true, ThreatType: result["threat_type"]}
 
 	if scoreStr, ok := result["risk_score"]; ok {
-		riskScore, err = strconv.Atoi(scoreStr)
+		out.RiskScore, err = strconv.Atoi(scoreStr)
 		if err != nil {
-			return false, 0, "", fmt.Errorf("ti cache IsBlocklisted: parse risk_score: %w", err)
+			return DomainLookup{}, fmt.Errorf("ti cache LookupDomain: parse risk_score: %w", err)
 		}
 	}
-	threatType = result["threat_type"]
+	if idStr, ok := result["ti_indicator_id"]; ok && idStr != "" {
+		out.IndicatorID, err = strconv.ParseInt(idStr, 10, 64)
+		if err != nil {
+			return DomainLookup{}, fmt.Errorf("ti cache LookupDomain: parse ti_indicator_id: %w", err)
+		}
+	}
 
-	return true, riskScore, threatType, nil
+	return out, nil
 }
 
 func (c *ValkeyTICache) ensureReady() error {

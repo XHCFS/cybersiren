@@ -41,7 +41,7 @@ func TestRoundTrip_AllPayloads(t *testing.T) {
 		},
 		{
 			name: "AnalysisURLs",
-			payload: contracts.AnalysisURLs{Meta: meta, URLs: []contracts.ExtractedURL{
+			payload: contracts.AnalysisURLs{Meta: meta, InternalID: 5005, URLs: []contracts.ExtractedURL{
 				{URL: "https://x", VisibleText: "click", Position: "body", HTMLContext: "href"},
 				{URL: "https://y"},
 			}},
@@ -242,13 +242,19 @@ func TestSpecWireTags(t *testing.T) {
 	assert.Contains(t, string(raw), `"api_key_id"`)
 	assert.NotContains(t, string(raw), `"raw_message_b64"`)
 
-	urls, err := json.Marshal(contracts.AnalysisURLs{Meta: meta, URLs: []contracts.ExtractedURL{
+	urls, err := json.Marshal(contracts.AnalysisURLs{Meta: meta, InternalID: 5005, URLs: []contracts.ExtractedURL{
 		{URL: "https://x", VisibleText: "t", Position: "body", HTMLContext: "href"},
 	}})
 	require.NoError(t, err)
 	for _, k := range []string{`"visible_text"`, `"position"`, `"html_context"`} {
 		assert.Contains(t, string(urls), k)
 	}
+	// svc-02 forwards internal_id so svc-03 can look up email_urls without a
+	// message_id round-trip; it is omitted (zero) until svc-02 populates it.
+	assert.Contains(t, string(urls), `"internal_id":5005`)
+	zeroURLs, err := json.Marshal(contracts.AnalysisURLs{Meta: meta})
+	require.NoError(t, err)
+	assert.NotContains(t, string(zeroURLs), `"internal_id"`)
 
 	att, err := json.Marshal(contracts.Attachment{
 		Filename: "a", SHA256: "ff", MD5: "aa", SHA1: "bb", ContentID: "c",

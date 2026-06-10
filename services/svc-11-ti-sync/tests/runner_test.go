@@ -12,6 +12,7 @@ import (
 
 	"github.com/saif/cybersiren/services/svc-11-ti-sync/internal/ti"
 	"github.com/saif/cybersiren/shared/postgres/repository"
+	"github.com/saif/cybersiren/shared/valkey"
 )
 
 func TestRunnerSyncAll_AllFeedsSucceed(t *testing.T) {
@@ -414,6 +415,10 @@ func (m *mockCache) RefreshHashCache(_ context.Context) error {
 
 func (m *mockCache) IsBlocklisted(_ context.Context, _ string) (bool, int, string, error) {
 	return false, 0, "", nil
+}
+
+func (m *mockCache) LookupDomain(_ context.Context, _ string) (valkey.DomainLookup, error) {
+	return valkey.DomainLookup{}, nil
 }
 
 func testIndicator(feedID int64, indicatorValue string) ti.TIIndicator {

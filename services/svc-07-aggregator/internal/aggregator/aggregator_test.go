@@ -225,6 +225,40 @@ func TestPackager_FlatHeaderShapeForwardedRaw(t *testing.T) {
 	assert.JSONEq(t, string(headerBody), string(out.ComponentDetails.Header))
 }
 
+// emails.scored must carry the DB-assigned internal_id forwarded from
+// scores.header (svc-02 -> analysis.headers -> svc-04), NOT email_id — so SVC-08
+// updates the parser-owned row. Falls back to email_id only when none forwarded.
+func TestResolvePartitionKeys_PrefersForwardedInternalID(t *testing.T) {
+	t.Parallel()
+
+	headerBody, err := json.Marshal(contracts.ScoresHeaderMessage{
+		EmailID: 999, OrgID: 1, Component: contracts.ComponentHeader, Score: 1,
+	})
+	require.NoError(t, err)
+	planBody, err := json.Marshal(contracts.AnalysisPlan{ExpectedScores: []string{contracts.TopicScoresHeader}})
+	require.NoError(t, err)
+	ft := testPartitionFetchedAt(t).UTC().Format(startedLayout)
+	base := func() map[string]string {
+		return map[string]string{
+			fieldPartitionFetchedAt:     ft,
+			fieldPlan:                   string(planBody),
+			fieldOrgID:                  "1",
+			fieldStartedAt:              time.Now().UTC().Format(startedLayout),
+			contracts.TopicScoresHeader: string(headerBody),
+		}
+	}
+
+	st := base()
+	st[fieldPartitionInternalID] = "42"
+	out, err := packageState(999, 1, st, time.Now().UTC(), false)
+	require.NoError(t, err)
+	assert.Equal(t, int64(42), out.InternalID, "must use the forwarded internal_id, not email_id")
+
+	out2, err := packageState(999, 1, base(), time.Now().UTC(), false)
+	require.NoError(t, err)
+	assert.Equal(t, int64(999), out2.InternalID, "falls back to email_id when none forwarded")
+}
+
 func TestExtractIDs_EnvelopeAndFlatShapes(t *testing.T) {
 	t.Parallel()
 

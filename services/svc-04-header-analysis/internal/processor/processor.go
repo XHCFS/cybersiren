@@ -157,7 +157,7 @@ func (p *Processor) Handle(ctx context.Context, msg sharedconsumer.Message) erro
 
 	// Persist before publishing — ARCH-SPEC §6 requires that offset is
 	// only committed after rule_hits commit success.
-	outcome, writeErr := p.writer.Write(ctx, parsed.EmailID, parsed.FetchedAt, evalResult.Fired)
+	outcome, writeErr := p.writer.Write(ctx, ruleHitEntityID(parsed), parsed.FetchedAt, evalResult.Fired)
 	p.metrics.WriteRetries.WithLabelValues(outcome).Inc()
 	if writeErr != nil {
 		p.observeError("db_write")
@@ -252,6 +252,17 @@ func encodeKey(emailID int64) []byte {
 	return []byte(strconv.FormatInt(emailID, 10))
 }
 
+// ruleHitEntityID is the emails.internal_id that rule_hits rows reference
+// (ARCH-SPEC §14 step 3b). It prefers the DB-assigned internal_id svc-02 carries
+// on analysis.headers; it falls back to email_id only when that id is absent
+// (interim — there is no internal_id == email_id invariant).
+func ruleHitEntityID(parsed contractsk.AnalysisHeadersMessage) int64 {
+	if parsed.InternalID != 0 {
+		return parsed.InternalID
+	}
+	return parsed.EmailID
+}
+
 func buildScoresHeader(
 	parsed contractsk.AnalysisHeadersMessage,
 	signals header.HeaderSignals,
@@ -272,6 +283,8 @@ func buildScoresHeader(
 
 	return contractsk.ScoresHeaderMessage{
 		EmailID:            parsed.EmailID,
+		InternalID:         parsed.InternalID,
+		FetchedAt:          parsed.FetchedAt,
 		OrgID:              parsed.OrgID,
 		Component:          "header",
 		Score:              finalScore,

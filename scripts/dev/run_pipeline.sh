@@ -43,6 +43,14 @@ COMMON_ENV=(
   CYBERSIREN_ML__URL_MODEL_PATH=services/svc-03-url-analysis/ml/inference_script.py
   CYBERSIREN_ML__URL_MODEL_POOL_SIZE=2
   CYBERSIREN_ML__NLP_SERVICE_URL=http://localhost:8001
+  # Object storage (G6): svc-02 REQUIRES it to retain attachment binaries and
+  # now fails to start without it. Points at the MinIO that `make up-infra` runs.
+  CYBERSIREN_STORAGE__ENDPOINT=localhost:9000
+  CYBERSIREN_STORAGE__BUCKET=cybersiren-attachments
+  CYBERSIREN_STORAGE__REGION=us-east-1
+  CYBERSIREN_STORAGE__ACCESS_KEY=minioadmin
+  CYBERSIREN_STORAGE__SECRET_KEY=minioadmin
+  CYBERSIREN_STORAGE__USE_SSL=false
 )
 
 # Per-service overrides (svc-04 header analyser needs its own block).

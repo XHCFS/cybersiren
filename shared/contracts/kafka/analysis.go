@@ -21,6 +21,11 @@ type ExtractedURL struct {
 type AnalysisURLs struct {
 	Meta MessageMeta    `json:"meta"`
 	URLs []ExtractedURL `json:"urls"`
+	// InternalID is the DB BIGSERIAL surrogate svc-02 assigns when it persists
+	// the email; svc-03 uses it to look up email_urls. Zero until svc-02
+	// populates it. Distinct from Meta.EmailID — the logical identifier — per
+	// the two-id model (see MessageMeta.EmailID).
+	InternalID int64 `json:"internal_id,omitempty"`
 }
 
 // NOTE: the analysis.headers payload is AnalysisHeadersMessage in header.go
