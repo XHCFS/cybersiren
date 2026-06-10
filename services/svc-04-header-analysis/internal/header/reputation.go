@@ -23,6 +23,7 @@ type TILookup interface {
 // ReputationExtractor turns a parsed header message into ReputationSignals.
 type ReputationExtractor struct {
 	tiLookup             TILookup
+	domainAge            DomainAgeLooker
 	typosquatMaxDistance int
 	log                  zerolog.Logger
 	observeTILookupError func()
@@ -52,6 +53,17 @@ func NewReputationExtractorWithObserver(
 		log:                  log,
 		observeTILookupError: observeTILookupError,
 	}
+}
+
+// WithDomainAge attaches a DomainAgeLooker so Extract populates DomainAgeDays
+// from WHOIS registration data (P2.3). A nil looker leaves domain-age unknown,
+// which is the behaviour unit tests rely on. It returns the receiver so it can
+// be chained off the constructor.
+func (r *ReputationExtractor) WithDomainAge(looker DomainAgeLooker) *ReputationExtractor {
+	if r != nil {
+		r.domainAge = looker
+	}
+	return r
 }
 
 // Extract is the entry point. It is allowed to call out to Redis but
@@ -127,11 +139,19 @@ func (r *ReputationExtractor) Extract(ctx context.Context, msg *contractsk.Analy
 		}
 	}
 
-	// DomainAgeDays remains nil. ARCH-SPEC §13 calls out that
-	// ti_indicators.first_seen is feed-observation time, not WHOIS
-	// registration. SVC-04 does not perform live WHOIS (per "What NOT
-	// to do"). Marking as a documented spec gap.
-	signals.DomainAgeDays = nil
+	// Domain age (ARCH-SPEC §1 step 3b dimension (ii) — "Domain age analysis
+	// via WHOIS"). We reuse the shared enricher's WHOIS client (the same one
+	// SVC-03 uses) behind the DomainAgeLooker interface; it owns the network
+	// call, the 24h cache, and the timeout, and never returns an error — a
+	// miss simply leaves DomainAgeDays nil ("unknown"), distinct from age 0.
+	// Free-provider domains (gmail.com, …) are decades old and their WHOIS
+	// adds noise, so we skip the lookup for them.
+	if r.domainAge != nil && signals.SenderDomain != "" && !signals.IsFreeProvider {
+		if days, ok := r.domainAge.DomainAgeDays(ctx, signals.SenderDomain); ok {
+			d := days
+			signals.DomainAgeDays = &d
+		}
+	}
 
 	return signals
 }

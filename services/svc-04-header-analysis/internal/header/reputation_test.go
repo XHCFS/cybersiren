@@ -138,13 +138,70 @@ func TestReputationExtractor_NilMessage(t *testing.T) {
 	}
 }
 
-func TestReputationExtractor_DomainAgeAlwaysNil(t *testing.T) {
+func TestReputationExtractor_DomainAgeNilWithoutLooker(t *testing.T) {
 	t.Parallel()
+	// With no DomainAgeLooker attached, domain age stays unknown (nil).
 	r := NewReputationExtractor(nil, 2, zerolog.Nop())
 	got := r.Extract(context.Background(), &contractsk.AnalysisHeadersMessage{
 		SenderDomain: "newly-registered.com",
 	})
 	if got.DomainAgeDays != nil {
-		t.Errorf("DomainAgeDays must be nil while WHOIS isn't piped to SVC-04, got %v", *got.DomainAgeDays)
+		t.Errorf("DomainAgeDays must be nil when no looker is attached, got %v", *got.DomainAgeDays)
+	}
+}
+
+// fakeDomainAge is a deterministic DomainAgeLooker for unit tests — it never
+// touches the network.
+type fakeDomainAge struct {
+	days    int
+	ok      bool
+	domains []string
+}
+
+func (f *fakeDomainAge) DomainAgeDays(_ context.Context, domain string) (int, bool) {
+	f.domains = append(f.domains, domain)
+	return f.days, f.ok
+}
+
+func TestReputationExtractor_DomainAgePopulatedFromLooker(t *testing.T) {
+	t.Parallel()
+	la := &fakeDomainAge{days: 12, ok: true}
+	r := NewReputationExtractor(nil, 2, zerolog.Nop()).WithDomainAge(la)
+	got := r.Extract(context.Background(), &contractsk.AnalysisHeadersMessage{
+		SenderDomain: "brand-new-phish.com",
+	})
+	if got.DomainAgeDays == nil || *got.DomainAgeDays != 12 {
+		t.Fatalf("DomainAgeDays = %v, want 12", got.DomainAgeDays)
+	}
+	if len(la.domains) != 1 || la.domains[0] != "brand-new-phish.com" {
+		t.Errorf("looker called with %v, want [brand-new-phish.com]", la.domains)
+	}
+}
+
+func TestReputationExtractor_DomainAgeMissStaysNil(t *testing.T) {
+	t.Parallel()
+	la := &fakeDomainAge{ok: false}
+	r := NewReputationExtractor(nil, 2, zerolog.Nop()).WithDomainAge(la)
+	got := r.Extract(context.Background(), &contractsk.AnalysisHeadersMessage{
+		SenderDomain: "no-whois-data.com",
+	})
+	if got.DomainAgeDays != nil {
+		t.Errorf("a WHOIS miss must leave DomainAgeDays nil, got %v", *got.DomainAgeDays)
+	}
+}
+
+func TestReputationExtractor_DomainAgeSkippedForFreeProvider(t *testing.T) {
+	t.Parallel()
+	// Free-provider domains skip the WHOIS lookup entirely (noise reduction).
+	la := &fakeDomainAge{days: 9000, ok: true}
+	r := NewReputationExtractor(nil, 2, zerolog.Nop()).WithDomainAge(la)
+	got := r.Extract(context.Background(), &contractsk.AnalysisHeadersMessage{
+		SenderDomain: "gmail.com",
+	})
+	if got.DomainAgeDays != nil {
+		t.Errorf("free-provider domain must not trigger WHOIS, got age %v", *got.DomainAgeDays)
+	}
+	if len(la.domains) != 0 {
+		t.Errorf("looker must not be called for free providers, calls=%v", la.domains)
 	}
 }
