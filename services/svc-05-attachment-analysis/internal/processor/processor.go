@@ -302,20 +302,34 @@ func (p *Processor) scoreOne(
 	detail.IsDangerousExtension = res.Heuristics.IsDangerousExtension
 	detail.IndividualScore = res.Score
 
-	// (4) Persist. attachment_library malware flag + email_attachments.risk_score
-	// write-back. The UPSERT forces is_malicious=true, so we only fire it when a
-	// hash/VT hit OR a STRONG heuristic flags the file dangerous (spec §1-step3c:
-	// a heuristic-dangerous verdict must also update the library). We deliberately
-	// EXCLUDE bare ExtensionMismatch and HighEntropy: those are weak/noisy signals
-	// and promoting them to a hard is_malicious flag would poison the shared
-	// platform-global library (and let an F1-class false positive stick).
+	// (4) Persist. attachment_library verdict + email_attachments.risk_score
+	// write-back. The library is platform-global (UNIQUE sha256, no org_id), so we
+	// take two distinct paths to avoid one org's signal poisoning every tenant:
+	//   - Confirmed malice (hash/VT hit, res.Malicious): FlagMalicious UPSERTs
+	//     is_malicious=true (spec §1-step3c). A future lookup short-circuits to 90.
+	//   - Heuristic-only dangerous (STRONG heuristic, no hash/VT): RecordAttachmentRisk
+	//     records risk_score + threat_tags but DOES NOT set is_malicious — so a
+	//     legit macro-enabled doc / double-extension false positive cannot brand
+	//     that sha256 malicious for all orgs and force every future lookup to 90.
+	// We deliberately EXCLUDE bare ExtensionMismatch and HighEntropy from the
+	// "dangerous" set: those are weak/noisy signals (F1-class) that should not
+	// even record library risk.
 	if p.store != nil && orgID > 0 {
 		dangerous := res.Heuristics.IsDangerousExtension ||
 			res.Heuristics.HasMacros ||
 			res.Heuristics.DoubleExtension
-		if res.Malicious || dangerous {
+		switch {
+		case res.Malicious:
+			// Confirmed malice (hash/VT): flag the platform-global library.
 			if err := p.store.FlagMalicious(ctx, orgID, att.SHA256, res.Score, threatTagsFor(res, att)); err != nil {
 				return detail, fmt.Errorf("flag malicious (sha256=%s): %w", att.SHA256, err)
+			}
+		case dangerous:
+			// Heuristic-only dangerous: record risk_score/threat_tags but do NOT set
+			// is_malicious (the library is platform-global with no org_id, so a TRUE
+			// flag here would poison every tenant and short-circuit future lookups to 90).
+			if err := p.store.RecordAttachmentRisk(ctx, orgID, att.SHA256, res.Score, threatTagsFor(res, att)); err != nil {
+				return detail, fmt.Errorf("record attachment risk (sha256=%s): %w", att.SHA256, err)
 			}
 		}
 		if libraryID > 0 && internalID > 0 {

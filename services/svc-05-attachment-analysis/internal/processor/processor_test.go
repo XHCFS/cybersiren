@@ -24,7 +24,8 @@ type fakeStore struct {
 	verdicts map[string]store.HashVerdict // keyed by sha256
 	vtCache  map[int64]store.CachedVT     // keyed by library id
 
-	flagged       []string // sha256s flagged malicious
+	flagged       []string // sha256s flagged malicious (is_malicious=TRUE)
+	riskRecorded  []string // sha256s recorded heuristic-only risk (no is_malicious)
 	scoreUpdates  []store.EmailAttachmentScore
 	updateAffects int64 // rows the score update reports affected (default 1)
 
@@ -68,6 +69,11 @@ func (f *fakeStore) CacheVT(_ context.Context, _, libraryID int64, _ time.Time, 
 
 func (f *fakeStore) FlagMalicious(_ context.Context, _ int64, sha256 string, _ int, _ []string) error {
 	f.flagged = append(f.flagged, sha256)
+	return nil
+}
+
+func (f *fakeStore) RecordAttachmentRisk(_ context.Context, _ int64, sha256 string, _ int, _ []string) error {
+	f.riskRecorded = append(f.riskRecorded, sha256)
 	return nil
 }
 
@@ -279,6 +285,11 @@ func TestHandle_MaliciousHashFlagsLibraryAndScores90(t *testing.T) {
 	if len(st.flagged) != 1 || st.flagged[0] != "malhash" {
 		t.Errorf("expected attachment_library flag for malhash, got %v", st.flagged)
 	}
+	// Confirmed malice takes the is_malicious path only — the heuristic-only
+	// risk-record path must NOT also fire for the same attachment.
+	if len(st.riskRecorded) != 0 {
+		t.Errorf("confirmed-malicious hash must not also record heuristic risk, got %v", st.riskRecorded)
+	}
 }
 
 func TestHandle_VirusTotalMaliciousElevates(t *testing.T) {
@@ -394,12 +405,16 @@ func TestHandle_HashLookupErrorNACKs(t *testing.T) {
 	}
 }
 
-// TestHandle_HeuristicDangerousFlagsLibrary locks the R2 fix: a STRONG heuristic
-// verdict (dangerous extension / macros / double-extension) with NO hash or VT
-// hit must still UPSERT the attachment_library malware row (spec §1-step3c),
-// using the heuristic score. The emitted detail.is_malicious / malicious_count
-// stay hash/VT-confirmed (false here) so SVC-08's verdict label is unperturbed.
-func TestHandle_HeuristicDangerousFlagsLibrary(t *testing.T) {
+// TestHandle_HeuristicDangerousRecordsRiskNotMalicious locks the R2 fix: a STRONG
+// heuristic verdict (dangerous extension / macros / double-extension) with NO hash
+// or VT hit must record risk_score + threat_tags on the platform-global
+// attachment_library (spec §1-step3c) WITHOUT setting is_malicious. The library has
+// a UNIQUE sha256 and no org_id, so flagging is_malicious from a single org's
+// heuristic would poison every tenant and force all future lookups to score 90.
+// So: RecordAttachmentRisk WAS called, FlagMalicious was NOT, and the emitted
+// detail.is_malicious / malicious_count stay hash/VT-confirmed (false) so SVC-08's
+// verdict label is unperturbed.
+func TestHandle_HeuristicDangerousRecordsRiskNotMalicious(t *testing.T) {
 	st := newFakeStore()
 	// Known library row, but NOT malicious — no hash hit. VT disabled — no VT hit.
 	st.verdicts["dh"] = store.HashVerdict{Found: true, ID: 55, IsMalicious: false}
@@ -414,9 +429,13 @@ func TestHandle_HeuristicDangerousFlagsLibrary(t *testing.T) {
 	if err := p.Handle(context.Background(), msgFor(in)); err != nil {
 		t.Fatalf("handle: %v", err)
 	}
-	// The library row MUST have been flagged from the heuristic verdict alone.
-	if len(st.flagged) != 1 || st.flagged[0] != "dh" {
-		t.Fatalf("heuristic-dangerous attachment should flag the library, got %v", st.flagged)
+	// The library risk MUST have been RECORDED (risk_score/tags) from the
+	// heuristic verdict alone — but NOT flagged is_malicious.
+	if len(st.riskRecorded) != 1 || st.riskRecorded[0] != "dh" {
+		t.Fatalf("heuristic-dangerous attachment should record library risk, got %v", st.riskRecorded)
+	}
+	if len(st.flagged) != 0 {
+		t.Fatalf("heuristic-only verdict must NOT set is_malicious on the global library, got %v", st.flagged)
 	}
 	out := decodePublished(t, pub.published[0])
 	d := out.AttachmentDetails[0]
@@ -437,9 +456,9 @@ func TestHandle_HeuristicDangerousFlagsLibrary(t *testing.T) {
 }
 
 // TestHandle_WeakHeuristicDoesNotFlagLibrary locks the R2 judgment call: bare
-// ExtensionMismatch / HighEntropy must NOT promote a file to a hard
-// is_malicious library flag (avoids poisoning the shared library with weak /
-// F1-class signals).
+// ExtensionMismatch / HighEntropy must NOT touch the shared library at all —
+// neither a hard is_malicious flag (FlagMalicious) nor a heuristic risk record
+// (RecordAttachmentRisk). These are weak / F1-class signals.
 func TestHandle_WeakHeuristicDoesNotFlagLibrary(t *testing.T) {
 	st := newFakeStore()
 	st.verdicts["wh"] = store.HashVerdict{Found: true, ID: 66, IsMalicious: false}
@@ -456,6 +475,9 @@ func TestHandle_WeakHeuristicDoesNotFlagLibrary(t *testing.T) {
 	}
 	if len(st.flagged) != 0 {
 		t.Fatalf("weak heuristics (mismatch/entropy) must NOT flag the library, got %v", st.flagged)
+	}
+	if len(st.riskRecorded) != 0 {
+		t.Fatalf("weak heuristics (mismatch/entropy) must NOT even record library risk, got %v", st.riskRecorded)
 	}
 }
 

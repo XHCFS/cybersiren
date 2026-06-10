@@ -61,7 +61,7 @@ func main() {
 			}
 
 			n = notifier.New(
-				notifier.NewPGOrgReader(deps.Pool),
+				notifier.NewPGOrgReader(deps.Pool, deps.Log),
 				limiter,
 				channels,
 				notifier.NewMetrics(deps.Registry),

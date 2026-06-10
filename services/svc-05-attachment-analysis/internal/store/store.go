@@ -73,6 +73,11 @@ type Store interface {
 	// (is_malicious=true, GREATEST risk_score, union threat_tags). Idempotent.
 	FlagMalicious(ctx context.Context, orgID int64, sha256 string, riskScore int, threatTags []string) error
 
+	// RecordAttachmentRisk records a heuristic-only risk verdict on attachment_library
+	// (risk_score + threat_tags) WITHOUT setting is_malicious — reserved for confirmed
+	// hash/VT malice (FlagMalicious) to avoid cross-tenant poisoning of the global library.
+	RecordAttachmentRisk(ctx context.Context, orgID int64, sha256 string, riskScore int, threatTags []string) error
+
 	// UpdateEmailAttachmentScore writes the per-attachment risk_score (and an
 	// optional analysis_metadata blob) back onto the email_attachments link.
 	// Returns the affected row count so the caller can detect a missing link
@@ -219,6 +224,23 @@ func (s *RepoStore) FlagMalicious(ctx context.Context, orgID int64, sha256 strin
 	})
 	if err != nil {
 		return fmt.Errorf("flag malicious hash: %w", err)
+	}
+	return nil
+}
+
+func (s *RepoStore) RecordAttachmentRisk(ctx context.Context, orgID int64, sha256 string, riskScore int, threatTags []string) error {
+	if threatTags == nil {
+		threatTags = []string{}
+	}
+	err := repository.WithOrgTx(ctx, s.pool, orgID, func(q *dbsqlc.Queries) error {
+		return q.RecordAttachmentRisk(ctx, dbsqlc.RecordAttachmentRiskParams{
+			Sha256:     sha256,
+			RiskScore:  pgconv.Int4OrNull(int32(riskScore)),
+			ThreatTags: threatTags,
+		})
+	})
+	if err != nil {
+		return fmt.Errorf("record attachment risk: %w", err)
 	}
 	return nil
 }

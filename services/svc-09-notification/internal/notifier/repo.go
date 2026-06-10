@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/rs/zerolog"
 
 	db "github.com/saif/cybersiren/db/sqlc"
 )
@@ -57,11 +58,18 @@ type OrgReader interface {
 // is the tenant boundary.
 type PGOrgReader struct {
 	pool *pgxpool.Pool
+	// log surfaces the F3 observability signal: an undecodable
+	// notification_channels column is degraded to opt-out (no NACK), but we WARN
+	// so a config typo is distinguishable from a real opt-out. The zerolog zero
+	// value is a no-op writer, so calling it unconditionally is safe.
+	log zerolog.Logger
 }
 
-// NewPGOrgReader wraps a pgx pool.
-func NewPGOrgReader(pool *pgxpool.Pool) *PGOrgReader {
-	return &PGOrgReader{pool: pool}
+// NewPGOrgReader wraps a pgx pool with the service logger (used to surface a
+// malformed notification_channels column — see Load / parseChannels). Pass
+// zerolog.Nop() when no logging is wanted.
+func NewPGOrgReader(pool *pgxpool.Pool, log zerolog.Logger) *PGOrgReader {
+	return &PGOrgReader{pool: pool, log: log}
 }
 
 func (r *PGOrgReader) Load(ctx context.Context, orgID int64) (OrgPrefs, error) {
@@ -88,8 +96,16 @@ func (r *PGOrgReader) Load(ctx context.Context, orgID int64) (OrgPrefs, error) {
 	// would NACK the message and wedge the partition forever on one bad org row
 	// (blocking every other org on that partition too). parseChannels instead
 	// degrades an undecodable column to the empty set (org opts out of alerts),
-	// so the offset commits — same outcome as the NULL/empty case.
-	channels := parseChannels(org.NotificationChannels)
+	// so the offset commits — same outcome as the NULL/empty case. We WARN on the
+	// malformed case so a config typo is observable and not silently
+	// indistinguishable from a deliberate opt-out (F3). The zerolog zero value is
+	// a no-op writer, so this is safe even if no logger was supplied.
+	channels, invalid := parseChannels(org.NotificationChannels)
+	if invalid {
+		r.log.Warn().
+			Int64("org_id", orgID).
+			Msg("notification_channels is not a JSON string array; treating org as opted-out of alerts")
+	}
 
 	admins, err := q.ListOrgAdmins(ctx, orgID)
 	if err != nil {
@@ -118,18 +134,24 @@ func (r *PGOrgReader) Load(ctx context.Context, orgID int64) (OrgPrefs, error) {
 // empty channel set rather than an error. This is deliberate — a decode error
 // is not transient, so propagating it would NACK the verdict and wedge the
 // partition on one malformed org row. parseChannels therefore never returns an
-// error; it fails closed to "no channels" on bad data. (PGOrgReader has no
-// logger, so the bad-data case is silent here.)
-func parseChannels(raw []byte) map[string]struct{} {
+// error; it fails closed to "no channels" on bad data.
+//
+// The second return value, invalid, is true ONLY when the column was non-empty
+// AND failed to decode into a []string. The caller (Load) WARNs in that case so
+// a config typo is observable rather than silently indistinguishable from a
+// deliberate NULL/empty opt-out (F3). invalid is false for a valid array, NULL,
+// or empty.
+func parseChannels(raw []byte) (map[string]struct{}, bool) {
 	out := map[string]struct{}{}
 	if len(raw) == 0 {
-		return out
+		return out, false
 	}
 	var list []string
 	if err := json.Unmarshal(raw, &list); err != nil {
 		// Undecodable as a []string: opt the org out (empty set) instead of
-		// erroring, so the offset commits rather than NACKing forever.
-		return out
+		// erroring, so the offset commits rather than NACKing forever. Flag it as
+		// invalid so the caller can surface it.
+		return out, true
 	}
 	for _, c := range list {
 		c = strings.ToLower(strings.TrimSpace(c))
@@ -137,5 +159,5 @@ func parseChannels(raw []byte) map[string]struct{} {
 			out[c] = struct{}{}
 		}
 	}
-	return out
+	return out, false
 }

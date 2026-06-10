@@ -50,6 +50,7 @@ func (q *Queries) GetAttachmentBySha256(ctx context.Context, sha256 string) (Get
 }
 
 const listMaliciousHashes = `-- name: ListMaliciousHashes :many
+
 SELECT
     id,
     sha256,
@@ -69,6 +70,8 @@ type ListMaliciousHashesRow struct {
 	UpdatedAt  pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
 }
 
+// is_malicious is intentionally NOT in the UPDATE SET: it keeps its current
+// value (DEFAULT FALSE for a parser-created row; unchanged if already TRUE).
 // Returns all malicious hashes for populating the TI hash cache.
 func (q *Queries) ListMaliciousHashes(ctx context.Context) ([]ListMaliciousHashesRow, error) {
 	rows, err := q.db.Query(ctx, listMaliciousHashes)
@@ -94,6 +97,52 @@ func (q *Queries) ListMaliciousHashes(ctx context.Context) ([]ListMaliciousHashe
 		return nil, err
 	}
 	return items, nil
+}
+
+const recordAttachmentRisk = `-- name: RecordAttachmentRisk :exec
+INSERT INTO attachment_library (sha256, risk_score, threat_tags)
+VALUES ($1, $2, $3)
+ON CONFLICT (sha256)
+DO UPDATE
+SET
+    risk_score   = CASE
+        WHEN attachment_library.risk_score IS NULL THEN EXCLUDED.risk_score
+        WHEN EXCLUDED.risk_score IS NULL THEN attachment_library.risk_score
+        ELSE GREATEST(attachment_library.risk_score, EXCLUDED.risk_score)
+    END,
+    threat_tags  = (
+        SELECT ARRAY(
+            SELECT DISTINCT tag
+            FROM unnest(
+                COALESCE(attachment_library.threat_tags, '{}'::TEXT[]) ||
+                COALESCE(EXCLUDED.threat_tags, '{}'::TEXT[])
+            ) AS tag
+            WHERE tag IS NOT NULL
+              AND btrim(tag) <> ''
+            ORDER BY tag
+        )
+    ),
+    updated_at   = NOW(),
+    deleted_at   = NULL
+`
+
+type RecordAttachmentRiskParams struct {
+	Sha256     string      `db:"sha256" json:"sha256"`
+	RiskScore  pgtype.Int4 `db:"risk_score" json:"risk_score"`
+	ThreatTags []string    `db:"threat_tags" json:"threat_tags"`
+}
+
+// SVC-05 heuristic-only risk record (ARCH-SPEC §1 step 3c, with a platform-
+// global-library safety carve-out): when heuristics flag a file dangerous but
+// there is NO hash/VT confirmation, record risk_score + threat_tags on the
+// shared attachment_library row WITHOUT setting is_malicious. is_malicious is
+// reserved for confirmed malice (UpsertMalwareHash) so one org's heuristic false
+// positive on a common file (e.g. a legitimate macro-enabled Office document)
+// cannot permanently brand that sha256 malicious for every tenant (the library
+// has no org_id; a TRUE flag short-circuits all future lookups to score 90).
+func (q *Queries) RecordAttachmentRisk(ctx context.Context, arg RecordAttachmentRiskParams) error {
+	_, err := q.db.Exec(ctx, recordAttachmentRisk, arg.Sha256, arg.RiskScore, arg.ThreatTags)
+	return err
 }
 
 const upsertMalwareHash = `-- name: UpsertMalwareHash :exec

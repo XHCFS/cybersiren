@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/rs/zerolog"
 )
 
 func TestParseChannels(t *testing.T) {
@@ -29,7 +30,12 @@ func TestParseChannels(t *testing.T) {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := parseChannels([]byte(tc.raw))
+			got, invalid := parseChannels([]byte(tc.raw))
+			// A valid array (incl. empty) and the NULL/empty column are all
+			// well-formed: invalid must be false.
+			if invalid {
+				t.Errorf("parseChannels(%q) invalid = true, want false (well-formed input)", tc.raw)
+			}
 			if len(got) != len(tc.want) {
 				t.Fatalf("parseChannels(%q) = %v, want %v", tc.raw, got, tc.want)
 			}
@@ -47,7 +53,8 @@ func TestParseChannels(t *testing.T) {
 // surface as an error (which Load would propagate and Handle would map to a
 // NACK, wedging the partition forever on one bad org row). Instead the org is
 // opted out — an empty channel set, no error — exactly like the NULL/empty
-// case, so the offset commits.
+// case, so the offset commits. It must, however, report invalid=true so Load
+// can WARN (the column is malformed, distinct from a real opt-out).
 func TestParseChannelsUndecodableOptsOut(t *testing.T) {
 	t.Parallel()
 	for _, raw := range []string{
@@ -57,9 +64,12 @@ func TestParseChannelsUndecodableOptsOut(t *testing.T) {
 		`42`,                 // number
 		`true`,               // bool
 	} {
-		got := parseChannels([]byte(raw))
+		got, invalid := parseChannels([]byte(raw))
 		if len(got) != 0 {
 			t.Errorf("parseChannels(%q) = %v, want empty set (opt-out)", raw, got)
+		}
+		if !invalid {
+			t.Errorf("parseChannels(%q) invalid = false, want true (malformed column)", raw)
 		}
 	}
 }
@@ -77,7 +87,7 @@ func TestOrgPrefsHasChannel(t *testing.T) {
 
 func TestPGOrgReaderNilPool(t *testing.T) {
 	t.Parallel()
-	r := NewPGOrgReader(nil)
+	r := NewPGOrgReader(nil, zerolog.Nop())
 	if _, err := r.Load(context.Background(), 1); err == nil {
 		t.Fatal("expected error from nil-pool reader, got nil")
 	}
@@ -103,7 +113,7 @@ func TestPGOrgReaderLoad_Live(t *testing.T) {
 	}
 	defer pool.Close()
 
-	r := NewPGOrgReader(pool)
+	r := NewPGOrgReader(pool, zerolog.Nop())
 	// Org id 1 is the seeded demo org in the dev migrations; tolerate its
 	// absence so the test is robust across seed states.
 	prefs, err := r.Load(ctx, 1)
@@ -159,7 +169,7 @@ func TestPGOrgReaderLoad_MalformedChannels(t *testing.T) {
 		_, _ = pool.Exec(context.Background(), `DELETE FROM organisations WHERE id = $1`, orgID)
 	})
 
-	prefs, err := NewPGOrgReader(pool).Load(ctx, orgID)
+	prefs, err := NewPGOrgReader(pool, zerolog.Nop()).Load(ctx, orgID)
 	if err != nil {
 		t.Fatalf("Load with malformed notification_channels returned error %v; Handle would NACK and wedge the partition", err)
 	}
