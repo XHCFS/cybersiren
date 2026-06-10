@@ -240,6 +240,8 @@ services:
         psql -f /seeds/ti_demo_seed.sql
         echo "Seeding header rules..."
         psql -f /seeds/header_rules_demo_seed.sql
+        echo "Seeding attachment demo data..."
+        psql -f /seeds/attachment_demo_seed.sql
         echo "Demo seed complete."
     networks:
       - cybersiren
