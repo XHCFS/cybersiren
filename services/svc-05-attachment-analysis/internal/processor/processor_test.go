@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/rs/zerolog"
 
 	"github.com/saif/cybersiren/services/svc-05-attachment-analysis/internal/scoring"
@@ -116,6 +117,10 @@ func (f *fakePublisher) Publish(_ context.Context, _, value []byte, _ int) error
 // ── helpers ──────────────────────────────────────────────────────────────
 
 func newTestProcessor(st store.Store, v vtLookup, pub publisher) *Processor {
+	return newTestProcessorWithMetrics(st, v, pub, nil)
+}
+
+func newTestProcessorWithMetrics(st store.Store, v vtLookup, pub publisher, m *Metrics) *Processor {
 	return New(Config{
 		Scoring: scoring.Config{
 			EntropyThreshold:       7.5,
@@ -128,7 +133,7 @@ func newTestProcessor(st store.Store, v vtLookup, pub publisher) *Processor {
 		},
 		VTCacheTTL:           24 * time.Hour,
 		PublishRetryAttempts: 0,
-	}, st, v, pub, nil, zerolog.Nop())
+	}, st, v, pub, m, zerolog.Nop())
 }
 
 func msgFor(m contractsk.AnalysisAttachments) sharedconsumer.Message {
@@ -389,6 +394,45 @@ func TestHandle_ScoreUpdateErrorNACKs(t *testing.T) {
 	}
 	if len(pub.published) != 0 {
 		t.Fatal("a NACKed message must not publish")
+	}
+}
+
+// TestHandle_WritebackMissCountsMetric locks the SVC-05 observability fix: when
+// the email_attachments risk_score UPDATE matches 0 rows (the SVC-02 link is not
+// yet persisted / two-id mismatch) the message still succeeds (the scores payload
+// flows), but the gap is now counted on
+// attachment_analysis_errors_total{stage="writeback_miss"} so a systematic miss
+// is visible on dashboards instead of only by log-grep.
+func TestHandle_WritebackMissCountsMetric(t *testing.T) {
+	st := newFakeStore()
+	st.verdicts["h"] = store.HashVerdict{Found: true, ID: 1, IsMalicious: false}
+	st.updateAffects = 0 // simulate the SVC-02 link not yet persisted
+
+	m := NewMetrics(nil)
+	pub := &fakePublisher{}
+	p := newTestProcessorWithMetrics(st, &fakeVT{enabled: false}, pub, m)
+
+	in := contractsk.AnalysisAttachments{
+		Meta:        contractsk.NewMetaWithFetched(12, 1, time.Now().UTC()),
+		Attachments: []contractsk.Attachment{{SHA256: "h", Filename: "doc.pdf", ContentType: "application/pdf"}},
+	}
+	// A 0-row write-back is NOT a NACK: the scores.attachment payload must still flow.
+	if err := p.Handle(context.Background(), msgFor(in)); err != nil {
+		t.Fatalf("0-row write-back must not error: %v", err)
+	}
+	if len(pub.published) != 1 {
+		t.Fatalf("expected the scores.attachment payload to still publish, got %d", len(pub.published))
+	}
+	if got := testutil.ToFloat64(m.ErrorsTotal.WithLabelValues("writeback_miss")); got != 1 {
+		t.Fatalf("attachment_analysis_errors_total{stage=writeback_miss} = %v, want 1", got)
+	}
+	// A successful (1-row) write-back must NOT increment writeback_miss.
+	st.updateAffects = 1
+	if err := p.Handle(context.Background(), msgFor(in)); err != nil {
+		t.Fatalf("handle: %v", err)
+	}
+	if got := testutil.ToFloat64(m.ErrorsTotal.WithLabelValues("writeback_miss")); got != 1 {
+		t.Fatalf("writeback_miss must not increment on a matched write-back, got %v", got)
 	}
 }
 
