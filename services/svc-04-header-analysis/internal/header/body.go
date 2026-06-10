@@ -40,10 +40,11 @@ var (
 		// HTML5 boolean hidden attribute (not the bare word in text)
 		regexp.MustCompile(`(?is)<[^>]*\shidden(\s|>|=)`),
 		regexp.MustCompile(`(?is)(left|top|text-indent)\s*:\s*-\s*\d{3,}\s*px`), // off-screen positioning
-		// zero-box. The property name is anchored on a left boundary so this only
-		// matches the standalone width/height/max-height properties, not benign
-		// substrings like line-height:0 or border-width:0.
-		regexp.MustCompile(`(?is)(^|[;{\s"'])(width|height|max-height)\s*:\s*0(px|pt|em|%)?\b`),
+		// zero-box. Anchored on a left boundary (so benign substrings like
+		// line-height:0 / border-width:0 don't match) AND closed with the same
+		// value-terminating boundary as font-size/opacity (so a fractional value
+		// like width:0.5em / height:0.4em doesn't match on the leading "0").
+		regexp.MustCompile(`(?is)(^|[;{\s"'])(width|height|max-height)\s*:\s*0(px|pt|em|%)?(?:[;"'\s}]|$)`),
 		// genuinely-zero opacity only (0, 0.0, 0.00). A value-terminating boundary
 		// keeps opacity:0.5 / 0.9 from matching on the leading "0".
 		regexp.MustCompile(`(?is)opacity\s*:\s*0(\.0+)?(?:[;"'\s}]|$)`),

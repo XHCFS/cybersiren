@@ -93,6 +93,10 @@ func TestExtractBodyStructural_HiddenTextFalsePositives(t *testing.T) {
 		// F5: a partially-transparent (still visible) element.
 		"opacity half": `<p style="opacity:0.5">visible copy</p>`,
 		"opacity 0.9":  `<p style="opacity:0.9">visible copy</p>`,
+		// F8 (zero-box): non-zero fractional values must not match on the leading "0".
+		"width fractional em":   `<p style="width:0.5em">visible copy</p>`,
+		"height fractional em":  `<p style="height:0.4em">visible copy</p>`,
+		"max-height fractional": `<p style="max-height:0.5em">visible copy</p>`,
 	}
 	for name, html := range notHidden {
 		html := html
