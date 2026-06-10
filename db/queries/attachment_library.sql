@@ -81,3 +81,19 @@ SELECT
 FROM attachment_library
 WHERE is_malicious = TRUE
   AND deleted_at IS NULL;
+
+-- name: GetAttachmentBySha256 :one
+-- SVC-05 per-attachment hash lookup (ARCH-SPEC §1 step 3c). Resolves the
+-- attachment_library row by its sha256 UNIQUE index so SVC-05 can read the
+-- is_malicious / risk_score / threat_tags verdict (and the library id used as
+-- the email_attachments.attachment_id FK and the VT cache entity_id). Returns
+-- no rows when the binary has never been observed.
+SELECT
+    id,
+    sha256,
+    is_malicious,
+    risk_score,
+    threat_tags
+FROM attachment_library
+WHERE sha256 = $1
+  AND deleted_at IS NULL;
