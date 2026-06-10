@@ -109,8 +109,8 @@ DEFAULT_EML_B=$(cat <<'EML_END'
 Received: from mail.iana.org (mail.iana.org [192.0.43.10])
 	by inbound-mx-01.example.com (Postfix) with ESMTP id 4Gz7Yt2X2y
 	for <victim@example.com>; Mon, 02 May 2026 12:31:00 +0000 (UTC)
-From: Notifications <noreply@iana.org>
-Reply-To: noreply@iana.org
+From: Notifications <noreply@example.com>
+Reply-To: noreply@example.com
 To: victim@example.com
 Subject: Account notice
 Date: Mon, 02 May 2026 12:31:00 +0000
@@ -243,9 +243,9 @@ row="$(pg_query "SELECT is_malicious || '|' || COALESCE(risk_score::text,'') || 
   (('malware' = ANY(threat_tags)))::text \
   FROM attachment_library WHERE sha256='${SEEDED_ATTACHMENT_SHA256}';")"
 IFS='|' read -r a2_mal a2_score a2_tag <<<"$row"
-[[ "$a2_mal" == "t" ]]   || fail "A2: attachment_library.is_malicious != true (got '$a2_mal')"
+[[ "$a2_mal" == "t" || "$a2_mal" == "true" ]] || fail "A2: attachment_library.is_malicious != true (got '$a2_mal')"
 [[ "$a2_score" == "90" ]] || fail "A2: attachment_library.risk_score != 90 (got '$a2_score')"
-[[ "$a2_tag" == "t" ]]   || fail "A2: 'malware' not in attachment_library.threat_tags"
+[[ "$a2_tag" == "t" || "$a2_tag" == "true" ]] || fail "A2: 'malware' not in attachment_library.threat_tags"
 echo "  A2 OK: is_malicious=t risk_score=90 threat_tags⊇{malware}"
 
 # --- Assertion 3: scores.attachment payload --------------------------------
@@ -329,23 +329,38 @@ EML_B="${SAMPLE_EML_B:-$DEFAULT_EML_B}"
 EML_B_B64="$(printf '%s' "$EML_B" | base64 -w0)"
 
 match_b="$(inject_and_wait "$EMAIL_ID_B" "$EML_B_B64" \
-  "Notifications <noreply@iana.org>" "Account notice")"
+  "Notifications <noreply@example.com>" "Account notice")"
 
 echo "==> verdict PASS (Injection B)"
 INTERNAL_ID_B="$(json_field internal_id <<<"$match_b")"
 
-# --- Assertion 7 (SOFT): svc-04 domain-age (gated on live WHOIS) ------------
-if [[ "$INTERNAL_ID_B" =~ ^[0-9]+$ && "$INTERNAL_ID_B" -gt 0 ]]; then
-  da_hit="$(pg_query "SELECT 1 FROM rule_hits rh JOIN rules r ON r.id=rh.rule_id \
-    WHERE rh.entity_id=${INTERNAL_ID_B} AND r.name='svc04.reputation.young_domain' LIMIT 1;")"
-  if [[ "$da_hit" == "1" ]]; then
-    echo "  A7 OK: svc04.reputation.young_domain fired (internal_id_b=${INTERNAL_ID_B})"
-  else
-    echo "  A7 WARN: svc04.reputation.young_domain did NOT fire — domain-age depends" >&2
-    echo "           on a live external WHOIS lookup (best-effort). Not failing smoke." >&2
-  fi
+# --- Assertion 7 (SOFT): svc-04 domain-age SIGNAL via live WHOIS ------------
+# Injection B uses a real, WHOIS-resolvable sender (example.com), so svc-04's
+# WHOIS domain-age lookup should populate reputation.domain_age_days on
+# scores.header. We prove the FEATURE at the signal level: an old domain won't
+# trip the young_domain rule (that rule is unit-tested separately), but a
+# non-null domain_age_days proves the WHOIS lookup + parse ran end-to-end.
+# WHOIS is an external dependency, so this stays soft (warn, not fail).
+dah=""
+deadline=$(( $(date +%s) + 20 ))
+while [[ $(date +%s) -lt $deadline ]]; do
+  out="$(timeout 0.5s docker exec "$RPK_CONTAINER" rpk topic consume scores.header \
+    -X brokers=localhost:9092 --offset start --num 400 --format '%v\n' 2>/dev/null || true)"
+  dah="$(grep "\"email_id\":${EMAIL_ID_B}\b" <<<"$out" | head -1 || true)"
+  [[ -n "$dah" ]] && break
+  sleep 0.2
+done
+da_age="$(python3 -c "import sys,json
+try:
+    d=json.loads(sys.stdin.read()); v=d.get('signals',{}).get('domain_age_days')
+    print('' if v is None else v)
+except Exception:
+    print('')" <<<"$dah")"
+if [[ "$da_age" =~ ^[0-9]+$ ]]; then
+  echo "  A7 OK: scores.header signals.domain_age_days=${da_age} for Injection B (live WHOIS resolved)"
 else
-  echo "  A7 WARN: could not resolve internal_id for Injection B; skipping domain-age." >&2
+  echo "  A7 WARN: domain_age_days not populated (got '${da_age:-unset}') — depends on a live" >&2
+  echo "           external WHOIS lookup (best-effort). Not failing smoke." >&2
 fi
 
 echo "==> PASS (all hard 2a assertions cleared)"
