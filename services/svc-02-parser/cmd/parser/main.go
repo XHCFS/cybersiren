@@ -102,15 +102,14 @@ func (a *parserApp) onReady(ctx context.Context, deps svckit.Deps) error {
 		CreateBucket: true,
 	}, deps.Log)
 	if err != nil {
-		// Fail CLOSED when storage is configured but unreachable: silently
-		// persisting blob-less attachment rows would violate G6 (the binary must
-		// be retained). Only fail OPEN when storage is not configured at all (dev;
-		// the compose env wiring is Batch 7 / NYC-4).
-		if deps.Cfg.Storage.Endpoint != "" {
-			return fmt.Errorf("object store configured (%s) but unavailable: %w", deps.Cfg.Storage.Endpoint, err)
+		// G6: attachment binaries MUST be retained, so object storage is REQUIRED.
+		// Fail to start rather than silently persist blob-less attachment_library
+		// rows (storage_uri NULL). Local dev: `make up-infra` runs MinIO and the
+		// pipeline runner sets CYBERSIREN_STORAGE__*; compose wiring is Batch 7.
+		if deps.Cfg.Storage.Endpoint == "" {
+			return fmt.Errorf("object storage not configured (set CYBERSIREN_STORAGE__*); cannot retain attachment binaries (G6): %w", err)
 		}
-		deps.Log.Warn().Err(err).Msg("object store not configured; attachments persist without storage_uri (dev)")
-		return nil
+		return fmt.Errorf("object store configured (%s) but unavailable: %w", deps.Cfg.Storage.Endpoint, err)
 	}
 	a.store = store
 	return nil
