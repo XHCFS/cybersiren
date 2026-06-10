@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"time"
 
 	contracts "github.com/saif/cybersiren/shared/contracts/kafka"
@@ -12,6 +13,11 @@ import (
 // Valkey field capturing emails.fetched_at (partition key) gathered from
 // upstream analysis.plans / scores.* payloads. First non-zero wins (HSETNX).
 const fieldPartitionFetchedAt = "__partition_fetched_at"
+
+// Valkey field capturing emails.internal_id — the DB BIGSERIAL surrogate svc-02
+// assigns and forwards on scores.header. First non-zero wins (HSETNX); without
+// it emails.scored falls back to email_id (interim two-id model, no invariant).
+const fieldPartitionInternalID = "__partition_internal_id"
 
 // mergePartitionFetchedAt records emails.fetched_at on the aggregation hash
 // using HSETNX — all producers for one email should agree; the first writer
@@ -58,11 +64,47 @@ func extractPartitionFetchedAt(topic string, raw []byte) time.Time {
 	return time.Time{}
 }
 
+// mergePartitionInternalID records emails.internal_id on the aggregation hash
+// via HSETNX. Only scores.header carries it (the always-present component that
+// forwards svc-02's DB-assigned id); the first writer pins the value used by
+// emails.scored / SVC-08.
+func mergePartitionInternalID(ctx context.Context, store StateStore, key string, topic string, raw []byte) error {
+	id := extractPartitionInternalID(topic, raw)
+	if id == 0 {
+		return nil
+	}
+	_, err := store.HSetIfAbsent(ctx, key, fieldPartitionInternalID, strconv.FormatInt(id, 10))
+	if err != nil {
+		return fmt.Errorf("aggregator HSetIfAbsent partition internal_id: %w", err)
+	}
+	return nil
+}
+
+func extractPartitionInternalID(topic string, raw []byte) int64 {
+	if topic != contracts.TopicScoresHeader {
+		return 0
+	}
+	var h contracts.ScoresHeaderMessage
+	if err := json.Unmarshal(raw, &h); err != nil {
+		return 0
+	}
+	return h.InternalID
+}
+
 // resolvePartitionKeys derives (internal_id, fetched_at) for emails.scored.
-// Per ARCH-SPEC, Kafka meta.email_id equals emails.internal_id; fetched_at
-// must be supplied by upstream producers and captured in __partition_fetched_at.
+// internal_id is the DB BIGSERIAL surrogate forwarded from scores.header; it is
+// distinct from email_id (no invariant). fetched_at must be supplied by upstream
+// producers and captured in __partition_fetched_at.
 func resolvePartitionKeys(emailID int64, state map[string]string) (internalID int64, fetchedAt time.Time, err error) {
+	// Prefer the DB-assigned internal_id forwarded from scores.header (svc-02 →
+	// analysis.headers → svc-04). Fall back to email_id only when no upstream
+	// carried it (interim, before internal_id propagation is fully wired).
 	internalID = emailID
+	if v := state[fieldPartitionInternalID]; v != "" {
+		if parsed, perr := strconv.ParseInt(v, 10, 64); perr == nil && parsed != 0 {
+			internalID = parsed
+		}
+	}
 	s := state[fieldPartitionFetchedAt]
 	if s == "" {
 		return 0, time.Time{}, fmt.Errorf("aggregator: missing %s (upstream must set meta.fetched_at or scores.header.fetched_at)",

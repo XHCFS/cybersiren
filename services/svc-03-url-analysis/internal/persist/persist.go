@@ -27,6 +27,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/rs/zerolog"
 
@@ -275,11 +276,21 @@ func (p *Persister) persistURL(
 				TiIndicatorID: u.TIIndicatorID,
 				MatchType:     tiMatchType(u),
 			}); err != nil {
-				p.metrics.IncWrite("ti_match", "error")
-				p.log.Warn().Err(err).
-					Int64("email_url_id", emailURLID).
-					Int64("ti_indicator_id", u.TIIndicatorID).
-					Msg("ti-match audit write failed (best-effort, skipped)")
+				// A stale cached ti_indicators.id (its row was pruned / re-synced
+				// after the domain was cached) FK-violates — permanent for this id,
+				// so skip the audit row rather than NACK and re-wedge the partition
+				// on every redelivery. Any OTHER (transient) error is returned so
+				// this required P1.2 audit write redelivers instead of being lost.
+				var pgErr *pgconn.PgError
+				if errors.As(err, &pgErr) && pgErr.Code == "23503" {
+					p.metrics.IncWrite("ti_match", "stale_skip")
+					p.log.Warn().Err(err).
+						Int64("email_url_id", emailURLID).
+						Int64("ti_indicator_id", u.TIIndicatorID).
+						Msg("ti-match audit skipped: stale indicator id (FK violation)")
+				} else {
+					return fmt.Errorf("record ti match: %w", err)
+				}
 			} else {
 				p.metrics.IncWrite("ti_match", "ok")
 			}

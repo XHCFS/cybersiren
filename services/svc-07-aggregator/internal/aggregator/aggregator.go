@@ -148,6 +148,11 @@ func (a *Aggregator) Handle(ctx context.Context, msg kafkaconsumer.Message) erro
 		a.bumpPublishError("partition_fetched_at")
 		return fmt.Errorf("partition fetched_at: %w", err)
 	}
+	if err := mergePartitionInternalID(ctx, a.store, key, msg.Topic, msg.Value); err != nil {
+		a.observeMessage(msg.Topic, "error")
+		a.bumpPublishError("partition_internal_id")
+		return fmt.Errorf("partition internal_id: %w", err)
+	}
 	if err := a.store.Expire(ctx, key, a.cfg.HashTTLSecs); err != nil {
 		// TTL refresh failure is not fatal — the existing TTL still
 		// protects the bucket. Log and continue.

@@ -272,6 +272,8 @@ func buildScoresHeader(
 
 	return contractsk.ScoresHeaderMessage{
 		EmailID:            parsed.EmailID,
+		InternalID:         parsed.InternalID,
+		FetchedAt:          parsed.FetchedAt,
 		OrgID:              parsed.OrgID,
 		Component:          "header",
 		Score:              finalScore,

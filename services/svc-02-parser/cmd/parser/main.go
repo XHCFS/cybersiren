@@ -102,7 +102,14 @@ func (a *parserApp) onReady(ctx context.Context, deps svckit.Deps) error {
 		CreateBucket: true,
 	}, deps.Log)
 	if err != nil {
-		deps.Log.Warn().Err(err).Msg("object store unavailable; attachments will persist without storage_uri")
+		// Fail CLOSED when storage is configured but unreachable: silently
+		// persisting blob-less attachment rows would violate G6 (the binary must
+		// be retained). Only fail OPEN when storage is not configured at all (dev;
+		// the compose env wiring is Batch 7 / NYC-4).
+		if deps.Cfg.Storage.Endpoint != "" {
+			return fmt.Errorf("object store configured (%s) but unavailable: %w", deps.Cfg.Storage.Endpoint, err)
+		}
+		deps.Log.Warn().Err(err).Msg("object store not configured; attachments persist without storage_uri (dev)")
 		return nil
 	}
 	a.store = store
