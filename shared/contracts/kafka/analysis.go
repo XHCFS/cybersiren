@@ -59,6 +59,12 @@ type Attachment struct {
 type AnalysisAttachments struct {
 	Meta        MessageMeta  `json:"meta"`
 	Attachments []Attachment `json:"attachments"`
+	// InternalID is the DB BIGSERIAL surrogate svc-02 assigns when it persists
+	// the email; svc-05 uses it to key the email_attachments risk_score
+	// write-back. Zero until svc-02 populates it. Distinct from Meta.EmailID —
+	// the logical identifier — per the two-id model (see MessageMeta.EmailID and
+	// AnalysisURLs.InternalID).
+	InternalID int64 `json:"internal_id,omitempty"`
 }
 
 // AnalysisText is published by svc-02-parser to analysis.text — the cleaned

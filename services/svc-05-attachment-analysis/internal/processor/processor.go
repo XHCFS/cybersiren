@@ -413,11 +413,16 @@ func decodeMessage(body []byte) (contractsk.AnalysisAttachments, error) {
 }
 
 // internalIDOf returns the DB surrogate id used to address email_attachments
-// rows. The two-id model carries a distinct internal_id; AnalysisAttachments
-// does not yet field it, so SVC-05 falls back to the email_id (interim — there
-// is no internal_id == email_id invariant, but the parser keys email_attachments
-// on emails.internal_id which equals the carried id until #142 lands).
+// rows. Two-id model (G17): the parser writes email_attachments.email_id =
+// emails.internal_id (the DB BIGSERIAL), which is distinct from the logical
+// Meta.EmailID. SVC-02 stamps that internal_id on analysis.attachments, so we
+// prefer it; we fall back to Meta.EmailID only while SVC-02 has not yet
+// populated it (mirrors SVC-03's url-pipeline/main.go pattern). We do NOT
+// re-derive internal_id via a DB lookup.
 func internalIDOf(parsed contractsk.AnalysisAttachments) int64 {
+	if parsed.InternalID != 0 {
+		return parsed.InternalID
+	}
 	return parsed.Meta.EmailID
 }
 

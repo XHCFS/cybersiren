@@ -421,3 +421,25 @@ func TestHandle_PublishErrorNACKs(t *testing.T) {
 		t.Fatal("publish failure should NACK")
 	}
 }
+
+// TestInternalIDOf_PrefersInternalID locks the two-id key selection (G17): the
+// email_attachments write-back must key on emails.internal_id (the DB BIGSERIAL
+// svc-02 stamps onto analysis.attachments), falling back to the logical
+// Meta.EmailID only while svc-02 has not yet populated it. Mirrors svc-03's
+// url-pipeline prefer/fallback.
+func TestInternalIDOf_PrefersInternalID(t *testing.T) {
+	withID := contractsk.AnalysisAttachments{
+		Meta:       contractsk.MessageMeta{EmailID: 1_700_000_000_000_000},
+		InternalID: 42,
+	}
+	if got := internalIDOf(withID); got != 42 {
+		t.Fatalf("internalIDOf with InternalID=42 = %d, want 42 (must prefer the surrogate)", got)
+	}
+
+	fallback := contractsk.AnalysisAttachments{
+		Meta: contractsk.MessageMeta{EmailID: 99},
+	}
+	if got := internalIDOf(fallback); got != 99 {
+		t.Fatalf("internalIDOf with InternalID=0 = %d, want 99 (must fall back to email_id)", got)
+	}
+}
