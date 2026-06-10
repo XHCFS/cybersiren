@@ -118,3 +118,42 @@ func (q *Queries) ListEmailAttachments(ctx context.Context, arg ListEmailAttachm
 	}
 	return items, nil
 }
+
+const updateEmailAttachmentRiskScore = `-- name: UpdateEmailAttachmentRiskScore :execrows
+UPDATE email_attachments
+SET
+    risk_score        = $4,
+    analysis_metadata = COALESCE($5, analysis_metadata)
+WHERE email_id = $1
+  AND email_fetched_at = $2
+  AND attachment_id = $3
+`
+
+type UpdateEmailAttachmentRiskScoreParams struct {
+	EmailID          int64              `db:"email_id" json:"email_id"`
+	EmailFetchedAt   pgtype.Timestamptz `db:"email_fetched_at" json:"email_fetched_at"`
+	AttachmentID     int64              `db:"attachment_id" json:"attachment_id"`
+	RiskScore        pgtype.Int4        `db:"risk_score" json:"risk_score"`
+	AnalysisMetadata []byte             `db:"analysis_metadata" json:"analysis_metadata"`
+}
+
+// SVC-05 writes the per-attachment verdict back onto the email_attachments link
+// after scoring (ARCH-SPEC §1 step 3c / §15 gap #2). Keyed on the full composite
+// PK (email_id = emails.internal_id, email_fetched_at, attachment_id) so exactly
+// the one scored link row is updated. analysis_metadata is replaced with the
+// supplied JSONB signal trail when non-NULL and left unchanged otherwise
+// (COALESCE) so a hash-only re-score never nulls an existing blob. org-scoped via
+// RLS. Returns the affected row count so the caller can detect a missing link.
+func (q *Queries) UpdateEmailAttachmentRiskScore(ctx context.Context, arg UpdateEmailAttachmentRiskScoreParams) (int64, error) {
+	result, err := q.db.Exec(ctx, updateEmailAttachmentRiskScore,
+		arg.EmailID,
+		arg.EmailFetchedAt,
+		arg.AttachmentID,
+		arg.RiskScore,
+		arg.AnalysisMetadata,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}

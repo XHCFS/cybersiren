@@ -313,7 +313,7 @@ func (a *parserApp) publishAll(
 		{contracts.TopicAnalysisHeaders, headersMsg},
 		{
 			contracts.TopicAnalysisAttachments,
-			contracts.AnalysisAttachments{Meta: meta, Attachments: toContractAttachments(parsed.Attachments)},
+			contracts.AnalysisAttachments{Meta: meta, InternalID: key.InternalID, Attachments: toContractAttachments(parsed.Attachments)},
 		},
 		{contracts.TopicAnalysisText, buildAnalysisText(meta, parsed, hv)},
 		{contracts.TopicAnalysisPlans, buildAnalysisPlan(meta, parsed)},

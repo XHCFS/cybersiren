@@ -11,6 +11,44 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const getAttachmentBySha256 = `-- name: GetAttachmentBySha256 :one
+SELECT
+    id,
+    sha256,
+    is_malicious,
+    risk_score,
+    threat_tags
+FROM attachment_library
+WHERE sha256 = $1
+  AND deleted_at IS NULL
+`
+
+type GetAttachmentBySha256Row struct {
+	ID          int64       `db:"id" json:"id"`
+	Sha256      string      `db:"sha256" json:"sha256"`
+	IsMalicious pgtype.Bool `db:"is_malicious" json:"is_malicious"`
+	RiskScore   pgtype.Int4 `db:"risk_score" json:"risk_score"`
+	ThreatTags  []string    `db:"threat_tags" json:"threat_tags"`
+}
+
+// SVC-05 per-attachment hash lookup (ARCH-SPEC §1 step 3c). Resolves the
+// attachment_library row by its sha256 UNIQUE index so SVC-05 can read the
+// is_malicious / risk_score / threat_tags verdict (and the library id used as
+// the email_attachments.attachment_id FK and the VT cache entity_id). Returns
+// no rows when the binary has never been observed.
+func (q *Queries) GetAttachmentBySha256(ctx context.Context, sha256 string) (GetAttachmentBySha256Row, error) {
+	row := q.db.QueryRow(ctx, getAttachmentBySha256, sha256)
+	var i GetAttachmentBySha256Row
+	err := row.Scan(
+		&i.ID,
+		&i.Sha256,
+		&i.IsMalicious,
+		&i.RiskScore,
+		&i.ThreatTags,
+	)
+	return i, err
+}
+
 const listMaliciousHashes = `-- name: ListMaliciousHashes :many
 SELECT
     id,

@@ -39,3 +39,19 @@ FROM email_attachments
 WHERE email_id = $1
   AND email_fetched_at = $2
 ORDER BY attachment_id;
+
+-- name: UpdateEmailAttachmentRiskScore :execrows
+-- SVC-05 writes the per-attachment verdict back onto the email_attachments link
+-- after scoring (ARCH-SPEC §1 step 3c / §15 gap #2). Keyed on the full composite
+-- PK (email_id = emails.internal_id, email_fetched_at, attachment_id) so exactly
+-- the one scored link row is updated. analysis_metadata is replaced with the
+-- supplied JSONB signal trail when non-NULL and left unchanged otherwise
+-- (COALESCE) so a hash-only re-score never nulls an existing blob. org-scoped via
+-- RLS. Returns the affected row count so the caller can detect a missing link.
+UPDATE email_attachments
+SET
+    risk_score        = $4,
+    analysis_metadata = COALESCE(sqlc.narg('analysis_metadata'), analysis_metadata)
+WHERE email_id = $1
+  AND email_fetched_at = $2
+  AND attachment_id = $3;
