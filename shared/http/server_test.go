@@ -45,6 +45,7 @@ func TestParseJSONUnknownField(t *testing.T) {
 	err := ParseJSON(req, &payload)
 	if err == nil {
 		t.Fatal("expected parse error for unknown field, got nil")
+		return
 	}
 
 	if err.Status != http.StatusBadRequest {
@@ -64,6 +65,7 @@ func TestParseJSONBodyTooLarge(t *testing.T) {
 	err := ParseJSONWithLimit(req, &payload, 8)
 	if err == nil {
 		t.Fatal("expected body-too-large error, got nil")
+		return
 	}
 
 	if err.Status != http.StatusRequestEntityTooLarge {

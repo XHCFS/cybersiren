@@ -45,6 +45,7 @@ func TestClientGetJSONSuccess(t *testing.T) {
 
 	if resp == nil {
 		t.Fatal("response is nil")
+		return
 	}
 
 	if resp.StatusCode != http.StatusOK {
@@ -86,6 +87,7 @@ func TestClientUnexpectedStatusReturnsClientError(t *testing.T) {
 
 	if resp == nil {
 		t.Fatal("expected non-nil response on status error")
+		return
 	}
 
 	if resp.StatusCode != http.StatusNotFound {
