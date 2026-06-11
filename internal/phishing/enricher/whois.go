@@ -3,13 +3,32 @@ package enricher
 import (
 	"context"
 	"strings"
-	"sync"
 	"time"
 
+	lru "github.com/hashicorp/golang-lru/v2"
 	"github.com/likexian/whois"
 	whoisparser "github.com/likexian/whois-parser"
 	"go.opentelemetry.io/otel/attribute"
 )
+
+const (
+	// whoisCacheMaxEntries bounds the in-process WHOIS cache so attacker-controlled
+	// apex domains (one per email) cannot grow it without limit.
+	whoisCacheMaxEntries = 10_000
+	// whoisSuccessTTL caches a real lookup for a day; whoisNegativeTTL keeps a
+	// single timeout/error from poisoning the entry for the full day when a valid
+	// WHOIS was retrievable moments later.
+	whoisSuccessTTL  = 24 * time.Hour
+	whoisNegativeTTL = 5 * time.Minute
+	// whoisLookupTimeout bounds the underlying whois.Whois call so the lookup
+	// goroutine cannot outlive the caller's budget by the library's ~30s default.
+	whoisLookupTimeout = 5 * time.Second
+)
+
+// whoisClient is a shared client with a bounded timeout (#40: the library's
+// default is ~30s, which lets the lookup goroutine linger long after the 5s
+// caller context is done).
+var whoisClient = whois.NewClient().SetTimeout(whoisLookupTimeout)
 
 // WHOISResult holds parsed WHOIS data for a domain.
 type WHOISResult struct {
@@ -26,27 +45,27 @@ type whoisEntry struct {
 }
 
 type whoisCacheStore struct {
-	mu    sync.RWMutex
-	cache map[string]whoisEntry
+	lru *lru.Cache[string, whoisEntry]
+}
+
+func newWHOISCache() *whoisCacheStore {
+	l, _ := lru.New[string, whoisEntry](whoisCacheMaxEntries)
+	return &whoisCacheStore{lru: l}
 }
 
 func (c *whoisCacheStore) get(domain string) (WHOISResult, bool) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	e, ok := c.cache[domain]
+	e, ok := c.lru.Get(domain)
 	if !ok || time.Now().After(e.expiresAt) {
 		return WHOISResult{}, false
 	}
 	return e.result, true
 }
 
-func (c *whoisCacheStore) set(domain string, result WHOISResult) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.cache[domain] = whoisEntry{result: result, expiresAt: time.Now().Add(24 * time.Hour)}
+func (c *whoisCacheStore) set(domain string, result WHOISResult, ttl time.Duration) {
+	c.lru.Add(domain, whoisEntry{result: result, expiresAt: time.Now().Add(ttl)})
 }
 
-var globalWHOISCache = &whoisCacheStore{cache: make(map[string]whoisEntry)}
+var globalWHOISCache = newWHOISCache()
 
 // LookupWHOIS performs a WHOIS lookup for domain.
 // Results are cached in-process with a 24h TTL.
@@ -71,7 +90,7 @@ func LookupWHOIS(ctx context.Context, domain string) WHOISResult {
 	}
 	ch := make(chan outcome, 1)
 	go func() {
-		raw, err := whois.Whois(domain)
+		raw, err := whoisClient.Whois(domain)
 		if err != nil {
 			ch <- outcome{err: err}
 			return
@@ -96,14 +115,16 @@ func LookupWHOIS(ctx context.Context, domain string) WHOISResult {
 
 	select {
 	case <-ctx.Done():
-		globalWHOISCache.set(domain, WHOISResult{})
+		// Timeout/cancel: cache the miss only briefly so one slow lookup doesn't
+		// poison the domain for a full day when WHOIS was retrievable.
+		globalWHOISCache.set(domain, WHOISResult{}, whoisNegativeTTL)
 		return WHOISResult{}
 	case res := <-ch:
 		if res.err != nil {
-			globalWHOISCache.set(domain, WHOISResult{})
+			globalWHOISCache.set(domain, WHOISResult{}, whoisNegativeTTL)
 			return WHOISResult{}
 		}
-		globalWHOISCache.set(domain, res.r)
+		globalWHOISCache.set(domain, res.r, whoisSuccessTTL)
 		return res.r
 	}
 }
