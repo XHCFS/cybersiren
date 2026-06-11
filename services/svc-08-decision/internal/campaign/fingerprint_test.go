@@ -49,11 +49,19 @@ func TestNormaliseSubject(t *testing.T) {
 	}
 }
 
+// TestExtractInputs_FromComponentDetails feeds the extractor the REAL wire
+// shapes its upstream producers emit — a marshalled ScoresHeaderMessage from
+// svc-04 and a ScoreEnvelope (the legacy scores.nlp shape) from svc-06 — so
+// the test fails if either producer stops carrying the fingerprint dimensions.
+// Building from synthetic maps with hand-invented keys would mask such drift.
 func TestExtractInputs_FromComponentDetails(t *testing.T) {
-	header := mustJSON(map[string]any{
-		"signals": map[string]any{
-			"sender_domain": "evil.example.com",
-			"subject":       "ALERT: invoice 12345",
+	// scores.header as svc-04 emits it: sender_domain lives on signals
+	// (HeaderSignals.SenderDomain), populated from ReputationSignals.
+	header := mustJSON(contracts.ScoresHeaderMessage{
+		EmailID:   1,
+		Component: contracts.ComponentHeader,
+		Signals: contracts.HeaderSignals{
+			SenderDomain: "evil.example.com",
 		},
 	})
 	urlMsg := mustJSON(map[string]any{
@@ -64,9 +72,13 @@ func TestExtractInputs_FromComponentDetails(t *testing.T) {
 			},
 		},
 	})
-	nlp := mustJSON(map[string]any{
-		"details": map[string]any{
+	// scores.nlp as svc-06 emits it: a ScoreEnvelope whose Details map carries
+	// subject + plain_text + intent_labels (nlp-pipeline/main.go).
+	nlp := mustJSON(contracts.ScoreEnvelope{
+		Component: contracts.ComponentNLP,
+		Details: map[string]interface{}{
 			"intent_labels": []string{"phishing", "urgency"},
+			"subject":       "ALERT: invoice 12345",
 			"plain_text":    "click here to verify",
 		},
 	})
@@ -92,9 +104,12 @@ func TestExtractInputs_FromComponentDetails(t *testing.T) {
 }
 
 func TestExtractBody(t *testing.T) {
+	// scores.nlp as svc-06 emits it (ScoreEnvelope.Details), carrying
+	// plain_text + subject.
 	d := contracts.ComponentDetails{
-		NLP: mustJSON(map[string]any{
-			"details": map[string]any{
+		NLP: mustJSON(contracts.ScoreEnvelope{
+			Component: contracts.ComponentNLP,
+			Details: map[string]interface{}{
 				"plain_text": "  Click HERE to confirm  ",
 				"subject":    "Reset password",
 			},

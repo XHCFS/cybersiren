@@ -184,6 +184,12 @@ type FiredRule struct {
 // HeaderSignals is the structured snapshot of every dimension SVC-04
 // inspects, attached to scores.header for downstream explainability.
 type HeaderSignals struct {
+	// SenderDomain is the From: domain SVC-04 derived (ReputationSignals.
+	// SenderDomain). It is the always-present carrier of the sender dimension
+	// for SVC-08's campaign fingerprint (ARCH-SPEC §8.1:
+	// SHA256(sender_domain|url_domain|subject_template|intent)); SVC-08 reads
+	// it via component_details.header.signals.sender_domain.
+	SenderDomain        string  `json:"sender_domain,omitempty"`
 	SPFResult           string  `json:"spf_result"`
 	DKIMResult          string  `json:"dkim_result"`
 	DMARCResult         string  `json:"dmarc_result"`

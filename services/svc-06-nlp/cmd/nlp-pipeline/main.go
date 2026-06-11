@@ -98,6 +98,14 @@ func handle(ctx context.Context, msg kafkaconsumer.Message, deps svckit.Deps) er
 			"intent_labels":        resp.IntentLabels,
 			"urgency_score":        resp.UrgencyScore,
 			"obfuscation_detected": resp.ObfuscationDetected,
+			// subject + plain_text carry the content dimension SVC-08's
+			// campaign fingerprint and SimHash near-dedup read from
+			// component_details.nlp.details (ARCH-SPEC §8.1). Without them the
+			// fingerprint's subject dimension collapses to SHA256("") and
+			// SimHash never runs. Body is the HTML-stripped clean plain text
+			// (spec field: plain_text).
+			"subject":    input.Subject,
+			"plain_text": input.Body,
 		},
 	}
 
