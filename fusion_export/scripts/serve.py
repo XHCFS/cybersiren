@@ -366,6 +366,18 @@ class Scorer:
 
 _scorer: Scorer | None = None
 
+# Hard cap on the request body we are willing to buffer. The per-route item
+# guards (max 500 URLs / requests) only fire after the body is parsed, so this
+# bound is what actually protects the process from a memory-exhaustion DoS.
+_MAX_BODY_BYTES = 8 * 1024 * 1024  # 8 MiB
+
+
+class _BodyTooLargeSentinel:
+    """Marker returned by _read_json when Content-Length exceeds the cap."""
+
+
+_BodyTooLarge = _BodyTooLargeSentinel()
+
 
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
@@ -380,8 +392,17 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _read_json(self) -> Any:
-        length = int(self.headers.get("Content-Length", 0))
-        return json.loads(self.rfile.read(length))
+        # Cap the declared body size before reading so a giant (or
+        # slow-trickled) payload can't exhaust process memory ahead of the
+        # downstream item-count guards. Signalled to the caller via the
+        # sentinel _BodyTooLarge so the dispatcher can reply 413.
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+        except (TypeError, ValueError):
+            length = 0
+        if length > _MAX_BODY_BYTES:
+            return _BodyTooLarge
+        return json.loads(self.rfile.read(min(length, _MAX_BODY_BYTES)))
 
     def _route_label(self) -> str:
         # Bound label cardinality: only known endpoints are reported by name,
@@ -440,6 +461,10 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(400, {"error": "invalid JSON"})
             return
 
+        if body is _BodyTooLarge:
+            self._send_json(413, {"error": "request body too large"})
+            return
+
         # Guard non-object bodies (null, lists, scalars) before calling .get().
         if not isinstance(body, dict):
             self._send_json(400, {"error": "request body must be a JSON object"})
@@ -456,10 +481,15 @@ class Handler(BaseHTTPRequestHandler):
             if len(urls) > 500:
                 self._send_json(400, {"error": "max 500 URLs per request"})
                 return
+            if not all(isinstance(u, str) for u in urls):
+                self._send_json(400, {"error": "each url must be a string"})
+                return
             with _tracer.start_as_current_span("fusion.score") as sp:
                 sp.set_attribute("fusion.batch_size", len(urls))
                 sp.set_attribute("fusion.path", "score")
-                results = _scorer.score(urls)
+                results = self._run_scorer(sp, lambda: _scorer.score(urls))
+                if results is None:
+                    return
                 self._annotate_span_with_first_result(sp, results)
             self._count_verdicts("/score", results)
             self._send_json(200, {
@@ -470,13 +500,15 @@ class Handler(BaseHTTPRequestHandler):
 
         elif self.path == "/score_one":
             url = body.get("url", "")
-            if not url:
-                self._send_json(400, {"error": "'url' is required"})
+            if not isinstance(url, str) or not url:
+                self._send_json(400, {"error": "'url' must be a non-empty string"})
                 return
             with _tracer.start_as_current_span("fusion.score_one") as sp:
                 sp.set_attribute("fusion.path", "score_one")
                 sp.set_attribute("fusion.url", url)
-                results = _scorer.score([url])
+                results = self._run_scorer(sp, lambda: _scorer.score([url]))
+                if results is None:
+                    return
                 self._annotate_span_with_first_result(sp, results)
             self._count_verdicts("/score_one", results)
             self._send_json(200, results[0] if results else {})
@@ -489,10 +521,15 @@ class Handler(BaseHTTPRequestHandler):
             if len(reqs) > 500:
                 self._send_json(400, {"error": "max 500 requests per call"})
                 return
+            if not all(isinstance(r, dict) for r in reqs):
+                self._send_json(400, {"error": "each request must be a JSON object"})
+                return
             with _tracer.start_as_current_span("fusion.score_features") as sp:
                 sp.set_attribute("fusion.batch_size", len(reqs))
                 sp.set_attribute("fusion.path", "score-features")
-                results = _scorer.score_features(reqs)
+                results = self._run_scorer(sp, lambda: _scorer.score_features(reqs))
+                if results is None:
+                    return
                 self._annotate_span_with_first_result(sp, results)
             self._count_verdicts("/score-features", results)
             self._send_json(200, {
@@ -503,6 +540,18 @@ class Handler(BaseHTTPRequestHandler):
 
         else:
             self._send_json(404, {"error": "not found"})
+
+    def _run_scorer(self, sp, call):
+        """Invoke a scorer callable, converting any failure into a 500 JSON
+        reply instead of letting the exception unwind out of do_POST and drop
+        the connection. Returns the results list, or None when it already
+        emitted an error response."""
+        try:
+            return call()
+        except Exception as exc:  # noqa: BLE001 - boundary: must always reply
+            sp.record_exception(exc)
+            self._send_json(500, {"error": "scoring failed"})
+            return None
 
     @staticmethod
     def _annotate_span_with_first_result(sp, results) -> None:
