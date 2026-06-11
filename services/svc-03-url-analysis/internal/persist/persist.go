@@ -113,9 +113,6 @@ type URLResult struct {
 	MLDeployP  float64
 	MLVerdict  string
 	MLCacheHit bool
-
-	// PriorEnrichmentReused is set by Persist when GetPriorEnrichedThreat hit.
-	PriorEnrichmentReused bool
 }
 
 // Email is the per-email persistence input the handler hands to Persist.
@@ -232,12 +229,16 @@ func (p *Persister) persistURL(
 	prior, priorErr := p.store.GetPriorEnrichedThreat(ctx, e.OrgID, u.Domain, threatID)
 	switch {
 	case priorErr == nil:
-		u.PriorEnrichmentReused = true
+		// A prior enriched row exists for this org+domain. The reuse it would
+		// enable (merging the prior WHOIS/geo/ASN/cert columns and skipping the
+		// fresh enrichment) is not yet implemented, so this is recorded as a
+		// hit metric/log only — no enrichment column from `prior` is consumed,
+		// and analysis_metadata must not claim a reuse that did not happen.
 		p.metrics.IncPrior("hit")
 		p.log.Debug().
 			Int64("prior_threat_id", prior.ID).
 			Str("domain", u.Domain).
-			Msg("reusing prior-email enrichment")
+			Msg("prior-email enrichment found (reuse not yet implemented)")
 	case errors.Is(priorErr, repository.ErrNoPriorEnrichment):
 		p.metrics.IncPrior("miss")
 	default:
@@ -376,12 +377,19 @@ func (p *Persister) buildEnrichmentResult(
 // jsonb blob. Returns nil on a marshal error so the COALESCE UPDATE leaves the
 // column unchanged rather than writing malformed JSON.
 func (u *URLResult) analysisMetadata() []byte {
+	// NOTE: prior_enrichment_reused is intentionally NOT persisted here. The
+	// prior-email lookup currently only records a hit metric/log — it does not
+	// actually merge the prior row's WHOIS/geo/ASN/cert columns or skip the
+	// fresh enrichment (that optimization is unimplemented). Writing the flag
+	// into the durable analysis_metadata audit blob would assert a reuse that
+	// never happened. The hit is still observable via the IncPrior("hit")
+	// metric and the debug log in persistURL; surface it in the lineage only
+	// once the reuse it claims is real.
 	meta := map[string]any{
-		"source":                  "svc-03-url-analysis",
-		"label":                   u.Label,
-		"score":                   u.Score,
-		"ti_match":                u.TIMatch,
-		"prior_enrichment_reused": u.PriorEnrichmentReused,
+		"source":   "svc-03-url-analysis",
+		"label":    u.Label,
+		"score":    u.Score,
+		"ti_match": u.TIMatch,
 	}
 	if u.Normalized != "" {
 		meta["normalized_url"] = u.Normalized
@@ -421,13 +429,16 @@ func threatTypeForLabel(label string) string {
 	}
 }
 
-// tiMatchType maps a URL scan to the email_url_ti_matches.match_type CHECK
-// vocabulary ('exact','domain','ip','cidr','hash'). SVC-03's TI feed match is a
-// domain/apex blocklist hit, so 'domain' is the accurate default; an exact-URL
-// indicator is reported as 'exact'.
-func tiMatchType(u *URLResult) string {
-	if u.TIThreatType == "url" {
-		return "exact"
-	}
+// tiMatchType reports the email_url_ti_matches.match_type CHECK value for an
+// SVC-03 TI feed match. SVC-03 only ever matches against the Valkey domain
+// cache, which is populated exclusively from ti_indicators WHERE
+// indicator_type = 'domain' (db/queries/ti_indicators.sql ListActiveDomainIndicators),
+// so every hit on this path is a 'domain' match. The indicator's *kind* is not
+// carried on URLResult — only its threat_type *classification* (phishing /
+// malware / ...), which is never the literal 'url' — so there is nothing to
+// distinguish an exact-URL indicator here and recording 'exact' would be
+// unreachable. Surface 'exact' only once an exact-URL indicator's
+// indicator_type is plumbed through the cache to this layer.
+func tiMatchType(_ *URLResult) string {
 	return "domain"
 }

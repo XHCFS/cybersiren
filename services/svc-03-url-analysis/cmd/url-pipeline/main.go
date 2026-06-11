@@ -460,6 +460,14 @@ func scanOne(ctx context.Context, raw string, log zerolog.Logger) urlScan {
 
 	out.Label = classifyLabel(mlScore, tiRes, routed, out.MLVerdict)
 
+	// A confirmed phishing verdict (TI RiskScore>=80 or the L2 fusion scorer)
+	// must carry a high numeric envelope score: svc-07 fuses env.Score
+	// numerically and never consults the label, so leaving Score at the raw L1
+	// XGBoost value (which can be low even for a TI/L2-confirmed phish) would
+	// under-weight the strongest URL signal downstream. Mirror the guard
+	// typosquat / brand-in-subdomain branches which already pin Score=100.
+	out.Score, out.Probability = phishingScore(out.Label, out.Score, out.Probability)
+
 	outcome := "fallback_legitimate"
 	switch {
 	case tiRes.Matched && tiRes.RiskScore >= 80:
@@ -500,6 +508,17 @@ func classifyLabel(mlScore int, ti url.TIResult, routed bool, mlVerdict string) 
 	default:
 		return "legitimate"
 	}
+}
+
+// phishingScore raises the numeric envelope score to a confirmed-phishing
+// envelope when the label is "phishing", so a TI/L2-confirmed verdict is not
+// under-weighted downstream (svc-07 fuses on the numeric score, not the label).
+// Non-phishing labels keep the L1-derived score/probability unchanged.
+func phishingScore(label string, score int, prob float64) (int, float64) {
+	if label == "phishing" {
+		return 100, 1.0
+	}
+	return score, prob
 }
 
 // worseLabel returns the more severe of two label values.

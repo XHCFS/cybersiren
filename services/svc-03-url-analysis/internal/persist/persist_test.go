@@ -235,7 +235,11 @@ func TestPersist_RejectsMissingOrg(t *testing.T) {
 	}
 }
 
-func TestPersist_PriorEnrichmentReuse_SetsFlagAndMetadata(t *testing.T) {
+func TestPersist_PriorEnrichmentHit_DoesNotClaimReuse(t *testing.T) {
+	// A prior-enrichment lookup hit must NOT persist a prior_enrichment_reused
+	// claim into the durable analysis_metadata audit blob: the reuse it would
+	// assert (merging the prior row's enrichment columns / skipping the fresh
+	// run) is unimplemented, so writing the flag would record a false fact.
 	store := &fakeStore{
 		priorSet: true,
 		priorRow: db.EnrichedThreat{ID: 7, RiskScore: pgtype.Int4{Int32: 80, Valid: true}},
@@ -244,13 +248,12 @@ func TestPersist_PriorEnrichmentReuse_SetsFlagAndMetadata(t *testing.T) {
 	if err := p.Persist(context.Background(), sampleEmail()); err != nil {
 		t.Fatalf("Persist: %v", err)
 	}
-	// analysis_metadata should record the reuse.
 	var meta map[string]any
 	if err := json.Unmarshal(store.enrichCalls[0].Column30, &meta); err != nil {
 		t.Fatalf("unmarshal analysis_metadata: %v", err)
 	}
-	if meta["prior_enrichment_reused"] != true {
-		t.Errorf("prior_enrichment_reused = %v, want true", meta["prior_enrichment_reused"])
+	if _, ok := meta["prior_enrichment_reused"]; ok {
+		t.Errorf("analysis_metadata claims prior_enrichment_reused=%v, want the key absent", meta["prior_enrichment_reused"])
 	}
 }
 
@@ -394,11 +397,14 @@ func TestThreatTypeForLabel(t *testing.T) {
 }
 
 func TestTIMatchType(t *testing.T) {
-	if got := tiMatchType(&URLResult{TIThreatType: "url"}); got != "exact" {
-		t.Errorf("url indicator → %q, want exact", got)
-	}
-	if got := tiMatchType(&URLResult{TIThreatType: "phishing"}); got != "domain" {
-		t.Errorf("domain indicator → %q, want domain", got)
+	// SVC-03 only matches against the domain cache (indicator_type='domain'),
+	// so every TI feed match on this path records match_type='domain'. The
+	// threat_type classification ('phishing'/'malware'/...) does not change
+	// that — it is never the indicator's kind.
+	for _, threatType := range []string{"phishing", "malware", "url", ""} {
+		if got := tiMatchType(&URLResult{TIThreatType: threatType}); got != "domain" {
+			t.Errorf("tiMatchType(threat_type=%q) = %q, want domain", threatType, got)
+		}
 	}
 }
 
