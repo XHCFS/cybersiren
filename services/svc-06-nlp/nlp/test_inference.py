@@ -487,6 +487,29 @@ class TestPredict:
         # Higher temperature → phishing probability is lower
         assert r1["phishing_probability"] > r2["phishing_probability"]
 
+    def test_threshold_applied_between_half_and_config(self):
+        """The tuned phish_threshold (spec §5.4) must gate the verdict, not an
+        implicit 0.5 argmax. logits [0.0, 0.5, 0.0] yield threat_prob≈0.726:
+        above 0.5 (so the old `threat_prob > leg_prob` rule said "phishing")
+        but below the configured 0.8 operating point, so the verdict is now
+        "legitimate"."""
+        engine = _engine_with_logits([0.0, 0.5, 0.0])  # default phish_threshold=0.8
+        result = engine.predict("s", "b")
+        assert 0.5 < result["phishing_probability"] < 0.8
+        assert result["classification"] == "legitimate"
+        # confidence reports the legitimate prob when below threshold
+        assert result["confidence"] < 0.5
+
+    def test_lower_threshold_flips_borderline_to_phishing(self):
+        """The same borderline logits classify as phishing once the threshold
+        is lowered below the phishing probability, proving the config knob is
+        live."""
+        engine = _engine_with_logits([0.0, 0.5, 0.0])
+        engine.phish_threshold = 0.6
+        result = engine.predict("s", "b")
+        assert result["classification"] == "phishing"
+        assert result["confidence"] == result["phishing_probability"]
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 8. Config loading

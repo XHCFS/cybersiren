@@ -471,8 +471,11 @@ class NLPInferenceEngine:
         # the model weights are unchanged.
         threat_prob = float(probs[1]) + float(probs[2])
 
-        # 5. Two-class decision: legitimate vs phishing.
-        if threat_prob > leg_prob:
+        # 5. Two-class decision: legitimate vs phishing. Apply the tuned
+        #    operating point from config (spec §5.4: phish_threshold fitted for
+        #    recall >= 0.96 at minimum FPR) rather than an implicit 0.5 argmax,
+        #    so the published verdict tracks the documented threshold.
+        if threat_prob > self.phish_threshold:
             classification = "phishing"
             confidence = threat_prob
         else:
