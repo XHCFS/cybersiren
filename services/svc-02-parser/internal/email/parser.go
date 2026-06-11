@@ -63,6 +63,15 @@ func (p *ParsedEmail) HasBody() bool {
 	return strings.TrimSpace(p.BodyPlain) != "" || strings.TrimSpace(p.BodyHTML) != ""
 }
 
+// HasText reports whether the parsed email carries any text SVC-06 will score —
+// the Subject as well as the body. SVC-06 always runs its classifier over
+// Subject+Body and emits scores.nlp, so the analysis plan must declare the NLP
+// topic whenever there is usable text, even for a subject-only (body-less)
+// message; otherwise the produced NLP score is dropped from the fusion verdict.
+func (p *ParsedEmail) HasText() bool {
+	return p.HasBody() || strings.TrimSpace(p.Subject) != ""
+}
+
 // Parse decodes a full RFC 822 message (raw bytes, already base64-decoded off
 // the wire) into a ParsedEmail. A nil error with empty bodies/URLs is a valid
 // result for a header-only message; Parse only errors when the top-level
@@ -140,6 +149,34 @@ func walkPart(mediaType string, params map[string]string, cte, disposition, cont
 
 	decoded := decodeBody(body, cte)
 
+	// A forwarded email (message/rfc822, e.g. "fwd this suspicious mail" sent as
+	// a .eml attachment) is a full RFC 822 message, not an opaque blob. Recurse
+	// so its inner body and URLs are extracted and scored instead of landing as
+	// an attachment row no URL/NLP scorer ever reads. The maxParts counter (above)
+	// bounds nesting depth. Inner attachments and recipients stay with the
+	// attachment; only the body text + URLs (the phishing signal) are merged up.
+	if mediaType == "message/rfc822" {
+		if inner, err := Parse(decoded); err == nil {
+			if inner.BodyHTML != "" {
+				if pe.htmlBuf.Len() > 0 {
+					pe.htmlBuf.WriteByte('\n')
+				}
+				pe.htmlBuf.WriteString(inner.BodyHTML)
+			}
+			if inner.BodyPlain != "" {
+				if pe.plainBuf.Len() > 0 {
+					pe.plainBuf.WriteByte('\n')
+				}
+				pe.plainBuf.WriteString(inner.BodyPlain)
+			}
+			pe.URLs = append(pe.URLs, inner.URLs...)
+			pe.Attachments = append(pe.Attachments, inner.Attachments...)
+			return
+		}
+		// Fall through to the attachment branches when the inner message cannot be
+		// parsed at all, so a malformed forward is preserved rather than dropped.
+	}
+
 	disp, dispParams := parseDisposition(disposition)
 	filename := dispParams["filename"]
 	if filename == "" {
@@ -157,8 +194,18 @@ func walkPart(mediaType string, params map[string]string, cte, disposition, cont
 
 	switch {
 	case mediaType == "text/html":
+		// Separate consecutive same-type leaves (e.g. multipart/mixed body +
+		// appended footer): Go's multipart reader strips the CRLF before each
+		// boundary, so without a delimiter the trailing token of one part and the
+		// leading token of the next are glued, corrupting URLs and word counts.
+		if pe.htmlBuf.Len() > 0 {
+			pe.htmlBuf.WriteByte('\n')
+		}
 		pe.htmlBuf.Write(decoded)
 	case mediaType == "text/plain", isText:
+		if pe.plainBuf.Len() > 0 {
+			pe.plainBuf.WriteByte('\n')
+		}
 		pe.plainBuf.Write(decoded)
 	default:
 		// Unknown non-text leaf with no disposition: keep as an attachment so

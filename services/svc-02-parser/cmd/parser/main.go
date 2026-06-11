@@ -495,7 +495,10 @@ func buildAnalysisPlan(meta contracts.MessageMeta, parsed *email.ParsedEmail) co
 	if len(parsed.Attachments) > 0 {
 		expected = append(expected, contracts.TopicScoresAttachment)
 	}
-	if parsed.HasBody() {
+	if parsed.HasText() {
+		// SVC-06 scores Subject+Body and emits scores.nlp whenever either is
+		// present, so a subject-only (body-less) phish must still declare the NLP
+		// topic — otherwise svc-07 drops the produced NLP score from the verdict.
 		expected = append(expected, contracts.TopicScoresNLP)
 	}
 	return contracts.AnalysisPlan{
@@ -562,8 +565,14 @@ func newHeaderView(parsed *email.ParsedEmail) headerView {
 		fromAddr:     fromAddr,
 		fromName:     fromName,
 		senderDomain: domainOf(fromAddr),
-		auth:         email.ParseAuthResults(h.Get("Authentication-Results")),
-		headersJSON:  headerMapJSON(h),
+		// Real mail carries one Authentication-Results header per authenticating
+		// hop (receiving MX, downstream filter, ARC sealer); h.Get returns only
+		// the first/topmost. Merge every AR header before parsing so an SPF/DKIM/
+		// DMARC result living in a non-first header is not reported as missing —
+		// ParseAuthResults splits on ";" and is first-wins per mechanism, so
+		// joining the slice is safe.
+		auth:        email.ParseAuthResults(strings.Join(h["Authentication-Results"], "; ")),
+		headersJSON: headerMapJSON(h),
 	}
 }
 

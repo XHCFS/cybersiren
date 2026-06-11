@@ -4,7 +4,55 @@ import (
 	"encoding/json"
 	"net/mail"
 	"testing"
+
+	"github.com/saif/cybersiren/services/svc-02-parser/internal/email"
+	contracts "github.com/saif/cybersiren/shared/contracts/kafka"
 )
+
+// newHeaderView must merge EVERY Authentication-Results header before parsing,
+// not just the first/topmost. Real mail carries one AR header per authenticating
+// hop; a DMARC result living in a non-first header was being reported as missing
+// to svc-04 (the old code used Header.Get = first occurrence only).
+func TestNewHeaderViewMergesAllAuthResults(t *testing.T) {
+	parsed := &email.ParsedEmail{
+		Header: mail.Header{
+			"From": []string{"a@b.example"},
+			"Authentication-Results": []string{
+				"mx1.corp.example; spf=pass smtp.mailfrom=acme.example",
+				"mx2.corp.example; dmarc=fail",
+			},
+		},
+	}
+
+	hv := newHeaderView(parsed)
+	if hv.auth["spf"] != "pass" {
+		t.Errorf("auth[spf] = %q, want pass (from first AR header)", hv.auth["spf"])
+	}
+	if hv.auth["dmarc"] != "fail" {
+		t.Errorf("auth[dmarc] = %q, want fail (from second AR header — must be merged, not dropped)", hv.auth["dmarc"])
+	}
+}
+
+// A subject-only (body-less) email must still declare the NLP topic in the plan
+// so svc-07 keeps the NLP score svc-06 produces for the subject; HasBody alone
+// would omit it and silently drop the signal from the fusion verdict.
+func TestBuildAnalysisPlanSubjectOnlyDeclaresNLP(t *testing.T) {
+	parsed := &email.ParsedEmail{Subject: "Your account is locked, call this number"}
+	plan := buildAnalysisPlan(contracts.MessageMeta{}, parsed)
+
+	hasNLP := false
+	for _, s := range plan.ExpectedScores {
+		if s == contracts.TopicScoresNLP {
+			hasNLP = true
+		}
+	}
+	if !hasNLP {
+		t.Errorf("ExpectedScores = %v, want it to include the NLP topic for a subject-only email", plan.ExpectedScores)
+	}
+	if plan.HasBody {
+		t.Error("plan.HasBody = true for a body-less email, want false")
+	}
+}
 
 // A two-hop Received chain: index 0 is the receiving MX (most recent), the last
 // entry is the originating sender. Proves received_chain is populated and that

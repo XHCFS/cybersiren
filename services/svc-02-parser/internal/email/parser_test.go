@@ -160,6 +160,100 @@ func TestDecodeBodyMalformedBase64ReturnsOriginal(t *testing.T) {
 	}
 }
 
+// TestParseTwoTextPlainPartsSeparated guards the body-concatenation bug: two
+// text/plain leaves in one multipart/mixed container must be joined with a
+// delimiter so a URL ending one part and a token starting the next are not
+// glued into a fabricated URL (and the word count stays correct).
+func TestParseTwoTextPlainPartsSeparated(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("From: a@b.example\r\n")
+	b.WriteString("Subject: hi\r\n")
+	b.WriteString("Content-Type: multipart/mixed; boundary=\"MIX\"\r\n\r\n")
+	b.WriteString("--MIX\r\n")
+	b.WriteString("Content-Type: text/plain; charset=\"utf-8\"\r\n\r\n")
+	b.WriteString("Hello visit https://good.example\r\n")
+	b.WriteString("--MIX\r\n")
+	b.WriteString("Content-Type: text/plain; charset=\"utf-8\"\r\n\r\n")
+	b.WriteString("Unsubscribe here\r\n")
+	b.WriteString("--MIX--\r\n")
+
+	pe, err := Parse([]byte(b.String()))
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+
+	urls := map[string]struct{}{}
+	for _, u := range pe.URLs {
+		urls[u.URL] = struct{}{}
+	}
+	if _, ok := urls["https://good.example"]; !ok {
+		t.Errorf("legit URL not extracted intact, got URLs %+v", pe.URLs)
+	}
+	if _, ok := urls["https://good.exampleUnsubscribe"]; ok {
+		t.Errorf("parts glued into fabricated URL: %+v", pe.URLs)
+	}
+	if got, want := WordCount(pe.BodyPlain), 5; got != want {
+		t.Errorf("WordCount(body) = %d, want %d (body=%q)", got, want, pe.BodyPlain)
+	}
+}
+
+// TestParseForwardedRFC822ExtractsInnerURLs guards that a phishing email
+// forwarded as a message/rfc822 attachment has its inner body and URLs
+// extracted and scored, rather than landing as an opaque attachment blob.
+func TestParseForwardedRFC822ExtractsInnerURLs(t *testing.T) {
+	inner := "From: phish@evil.example\r\n" +
+		"Subject: account locked\r\n\r\n" +
+		"Click http://evil.example/login to unlock.\r\n"
+
+	var b strings.Builder
+	b.WriteString("From: friend@corp.example\r\n")
+	b.WriteString("Subject: Fwd: suspicious\r\n")
+	b.WriteString("Content-Type: multipart/mixed; boundary=\"MIX\"\r\n\r\n")
+	b.WriteString("--MIX\r\n")
+	b.WriteString("Content-Type: text/plain\r\n\r\n")
+	b.WriteString("Is this real?\r\n")
+	b.WriteString("--MIX\r\n")
+	b.WriteString("Content-Type: message/rfc822\r\n\r\n")
+	b.WriteString(inner)
+	b.WriteString("--MIX--\r\n")
+
+	pe, err := Parse([]byte(b.String()))
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+
+	found := false
+	for _, u := range pe.URLs {
+		if u.URL == "http://evil.example/login" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("inner forwarded URL not extracted, got URLs %+v / attachments %d", pe.URLs, len(pe.Attachments))
+	}
+	if !strings.Contains(pe.BodyPlain, "Click") {
+		t.Errorf("inner forwarded body not merged: %q", pe.BodyPlain)
+	}
+}
+
+// TestHasTextSubjectOnly guards that a subject-only (body-less) message still
+// reports HasText() true so the analysis plan declares the NLP topic and the
+// subject-only NLP score is not dropped from the fusion verdict.
+func TestHasTextSubjectOnly(t *testing.T) {
+	subjOnly := &ParsedEmail{Subject: "Your account is locked, call this number"}
+	if subjOnly.HasBody() {
+		t.Error("HasBody() = true for body-less message, want false")
+	}
+	if !subjOnly.HasText() {
+		t.Error("HasText() = false for subject-only message, want true")
+	}
+
+	empty := &ParsedEmail{}
+	if empty.HasText() {
+		t.Error("HasText() = true for empty message, want false")
+	}
+}
+
 func TestParseAuthResults(t *testing.T) {
 	got := ParseAuthResults("mx.example; spf=pass smtp.mailfrom=x; dkim=fail; dmarc=softfail; arc=none")
 	want := map[string]string{"spf": "pass", "dkim": "fail", "dmarc": "softfail", "arc": "none"}
