@@ -77,6 +77,51 @@ func TestPipelineClassifyLabel(t *testing.T) {
 	}
 }
 
+func TestPhishingScore(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name      string
+		label     string
+		inScore   int
+		inProb    float64
+		wantScore int
+		wantProb  float64
+	}{
+		{
+			// The regression: a TI/L2-confirmed phish whose L1 XGBoost score is
+			// low must still publish a confirmed-phishing envelope score so it is
+			// not under-weighted in svc-07's numeric fusion.
+			name:  "phishing with low L1 score is raised to 100",
+			label: "phishing", inScore: 5, inProb: 0.05,
+			wantScore: 100, wantProb: 1.0,
+		},
+		{
+			name:  "phishing already high is pinned to 100",
+			label: "phishing", inScore: 80, inProb: 0.8,
+			wantScore: 100, wantProb: 1.0,
+		},
+		{
+			name:  "suspicious keeps the L1 score",
+			label: "suspicious", inScore: 55, inProb: 0.55,
+			wantScore: 55, wantProb: 0.55,
+		},
+		{
+			name:  "legitimate keeps the L1 score",
+			label: "legitimate", inScore: 10, inProb: 0.1,
+			wantScore: 10, wantProb: 0.1,
+		},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			gotScore, gotProb := phishingScore(tc.label, tc.inScore, tc.inProb)
+			assert.Equal(t, tc.wantScore, gotScore)
+			assert.InDelta(t, tc.wantProb, gotProb, 1e-9)
+		})
+	}
+}
+
 func TestWorseLabel(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
