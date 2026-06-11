@@ -85,6 +85,7 @@ type HeaderSignals struct {
 // can evolve the wire format independently of the in-memory shape.
 func (s HeaderSignals) AsContract() contractsk.HeaderSignals {
 	out := contractsk.HeaderSignals{
+		SenderDomain:        s.Reputation.SenderDomain,
 		SPFResult:           string(s.Auth.SPF),
 		DKIMResult:          string(s.Auth.DKIM),
 		DMARCResult:         string(s.Auth.DMARC),
