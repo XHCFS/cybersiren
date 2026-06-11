@@ -242,12 +242,6 @@ func (r *Runner) SyncAll(ctx context.Context) (err error) {
 		r.log.Error().Err(cacheErr).Msg("failed to refresh TI domain cache")
 	}
 
-	if r.cache != nil {
-		if cacheErr := r.cache.RefreshHashCache(ctx); cacheErr != nil {
-			r.log.Error().Err(cacheErr).Msg("failed to refresh TI hash cache")
-		}
-	}
-
 	if refreshErr := r.repo.RefreshAllMaterializedViews(ctx); refreshErr != nil {
 		r.log.Error().Err(refreshErr).Msg("failed to refresh materialized views")
 		return fmt.Errorf("refresh materialized views: %w", refreshErr)
