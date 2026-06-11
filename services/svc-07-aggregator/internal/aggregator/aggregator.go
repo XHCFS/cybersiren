@@ -133,7 +133,6 @@ func (a *Aggregator) Handle(ctx context.Context, msg kafkaconsumer.Message) erro
 		a.bumpPublishError("hsetnx")
 		return fmt.Errorf("hsetnx __started_at: %w", err)
 	}
-	_ = created // information only — no behavioural change today
 
 	if err := a.store.HSet(ctx, key,
 		field, string(msg.Value),
@@ -154,8 +153,19 @@ func (a *Aggregator) Handle(ctx context.Context, msg kafkaconsumer.Message) erro
 		return fmt.Errorf("partition internal_id: %w", err)
 	}
 	if err := a.store.Expire(ctx, key, a.cfg.HashTTLSecs); err != nil {
-		// TTL refresh failure is not fatal — the existing TTL still
-		// protects the bucket. Log and continue.
+		if created {
+			// First write for this bucket: Expire is the ONLY thing that
+			// ever applies a TTL, and it just failed — the hash was created
+			// TTL-less. Committing now would leak the key in Valkey forever
+			// (the sweeper's no-plan path only Dels the lock and relies on
+			// the hash TTLing out). NACK so the offset is not committed and
+			// the message redelivers, guaranteeing the bucket gets a TTL.
+			a.observeMessage(msg.Topic, "error")
+			a.bumpPublishError("expire")
+			return fmt.Errorf("expire %s on first write: %w", key, err)
+		}
+		// Subsequent write: a prior write already set the TTL, so a refresh
+		// failure is not fatal — the existing TTL still protects the bucket.
 		a.log.Debug().Err(err).Str("key", key).Msg("expire failed; continuing")
 	}
 
@@ -189,6 +199,25 @@ func (a *Aggregator) Handle(ctx context.Context, msg kafkaconsumer.Message) erro
 		return fmt.Errorf("publish lock setnx: %w", err)
 	}
 	if !got {
+		// Lost the publish lock — the sweeper (or another instance) holds it.
+		// If it captured a PARTIAL snapshot before this completing score was
+		// visible, committing now would silently DROP this arrived component:
+		// the sweeper publishes the partial, Dels the hash, and this score is
+		// gone with no re-emit path. Re-read the bucket: while it is still
+		// present AND complete, the holder has not yet published+deleted, so
+		// NACK to redeliver and re-contend for the lock. Once the bucket is
+		// gone (holder published+deleted) the complete result is unrecoverable
+		// (the plan field was deleted with the hash); at that point committing
+		// is correct — at-least-once is satisfied and there is nothing left to
+		// publish for this email_id.
+		if again, gerr := a.store.HGetAll(ctx, key); gerr == nil {
+			if stillComplete, hasPlan := completionStatus(again); hasPlan && stillComplete {
+				a.observeMessage(msg.Topic, "error")
+				a.bumpPublishError("wait_lock_complete")
+				span.SetAttributes(attribute.String("aggregator.status", "wait_lock_retry"))
+				return fmt.Errorf("publish lock held while bucket %s still complete; retrying", key)
+			}
+		}
 		a.observeMessage(msg.Topic, "wait")
 		span.SetAttributes(attribute.String("aggregator.status", "wait_lock"))
 		return nil

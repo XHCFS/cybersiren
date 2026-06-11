@@ -193,6 +193,95 @@ func TestSweeper_TimeoutEmitsPartial(t *testing.T) {
 	assert.Equal(t, []string{contracts.TopicScoresHeader}, out.MissingComponents)
 }
 
+// On the FIRST write for a bucket, Expire is the only thing that ever sets a
+// TTL. If it fails the handler must NACK (return error) so the offset is not
+// committed and the message redelivers — otherwise the hash leaks TTL-less in
+// Valkey forever (the sweeper's no-plan path only Dels the lock).
+func TestHandle_FirstWriteExpireFailure_NACKs(t *testing.T) {
+	t.Parallel()
+
+	store := newFakeStore()
+	store.errOnExpire = func(string) error { return &fakeError{msg: "valkey hiccup"} }
+	pub := &recorderPublisher{}
+	a := newAgg(t, store, pub)
+	ctx := context.Background()
+
+	emailID, orgID := int64(555), int64(1)
+
+	// First message for this email → bucket created → Expire fails.
+	err := a.Handle(ctx, envelopeMsg(t, contracts.TopicScoresURL, emailID, orgID, 50))
+	require.Error(t, err, "first-write Expire failure must surface so the offset is not committed")
+	assert.Equal(t, 0, pub.count())
+
+	// Once Valkey recovers, the redelivered message succeeds and the bucket
+	// carries a TTL (Expire is invoked without error).
+	store.errOnExpire = nil
+	require.NoError(t, a.Handle(ctx, envelopeMsg(t, contracts.TopicScoresURL, emailID, orgID, 50)))
+}
+
+// A subsequent write (bucket already exists with a TTL) must TOLERATE a
+// transient Expire failure — a refresh failure is not fatal because a prior
+// write already set the TTL.
+func TestHandle_SubsequentWriteExpireFailure_Tolerated(t *testing.T) {
+	t.Parallel()
+
+	store := newFakeStore()
+	pub := &recorderPublisher{}
+	a := newAgg(t, store, pub)
+	ctx := context.Background()
+
+	emailID, orgID := int64(556), int64(1)
+
+	// First write succeeds and sets the TTL.
+	require.NoError(t, a.Handle(ctx, envelopeMsg(t, contracts.TopicScoresURL, emailID, orgID, 50)))
+
+	// Now Expire starts failing — a second write must still commit (nil).
+	store.errOnExpire = func(string) error { return &fakeError{msg: "valkey hiccup"} }
+	require.NoError(t, a.Handle(ctx, headerMsg(t, emailID, orgID, 60)),
+		"refresh Expire failure on an existing bucket must not block the offset")
+}
+
+// When the completing (Nth) score arrives but the publish lock is already held
+// (the sweeper grabbed it mid-emit of a partial), committing would silently
+// DROP this arrived component. While the bucket is still present AND complete
+// the handler must NACK so the message redelivers and re-contends for the lock.
+func TestHandle_CompleteLosesLockRace_NACKsWhileBucketComplete(t *testing.T) {
+	t.Parallel()
+
+	store := newFakeStore()
+	pub := &recorderPublisher{}
+	a := newAgg(t, store, pub)
+	ctx := context.Background()
+
+	emailID, orgID := int64(557), int64(1)
+
+	// Plan + first score arrive normally (incomplete: header still missing).
+	require.NoError(t, a.Handle(ctx, planMsg(t, emailID, orgID,
+		contracts.TopicScoresURL, contracts.TopicScoresHeader,
+	)))
+	require.NoError(t, a.Handle(ctx, envelopeMsg(t, contracts.TopicScoresURL, emailID, orgID, 50)))
+	require.Equal(t, 0, pub.count())
+
+	// Simulate the sweeper (or another instance) already holding the publish
+	// lock for this email_id when the completing header score arrives.
+	got, err := store.SetNXEX(ctx, publishLockKey(orgID, emailID), 180, "1")
+	require.NoError(t, err)
+	require.True(t, got)
+
+	// Completing score arrives — bucket becomes complete but the lock is held.
+	err = a.Handle(ctx, headerMsg(t, emailID, orgID, 60))
+	require.Error(t, err, "complete score that loses the lock race must NACK, not commit-and-drop")
+	assert.Equal(t, 0, pub.count(), "this handler must not publish; the lock holder owns the emit")
+
+	// Once the lock holder finishes (releases the lock and clears the bucket),
+	// the redelivered message hits an empty/no-plan bucket and commits cleanly
+	// without republishing — the at-least-once emit already happened upstream.
+	require.NoError(t, store.Del(ctx, keyForOrgEmail(orgID, emailID)))
+	require.NoError(t, store.Del(ctx, publishLockKey(orgID, emailID)))
+	require.NoError(t, a.Handle(ctx, headerMsg(t, emailID, orgID, 60)))
+	assert.Equal(t, 0, pub.count(), "redelivery after holder cleanup must not double-publish")
+}
+
 func TestPackager_FlatHeaderShapeForwardedRaw(t *testing.T) {
 	t.Parallel()
 

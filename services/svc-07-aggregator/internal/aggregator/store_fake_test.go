@@ -20,6 +20,7 @@ type fakeStore struct {
 	// Optional injected errors so tests can simulate transient failure.
 	errOnHSetNX func(key, field string) error
 	errOnSetNX  func(key string) error
+	errOnExpire func(key string) error
 }
 
 func newFakeStore() *fakeStore {
@@ -118,7 +119,15 @@ func (f *fakeStore) HGetAll(_ context.Context, key string) (map[string]string, e
 	return out, nil
 }
 
-func (f *fakeStore) Expire(_ context.Context, _ string, _ int) error { return nil }
+func (f *fakeStore) Expire(_ context.Context, key string, _ int) error {
+	f.mu.Lock()
+	hook := f.errOnExpire
+	f.mu.Unlock()
+	if hook != nil {
+		return hook(key)
+	}
+	return nil
+}
 
 func (f *fakeStore) Del(_ context.Context, key string) error {
 	f.mu.Lock()
