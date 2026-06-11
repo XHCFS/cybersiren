@@ -42,9 +42,10 @@ type Config struct {
 
 // Producer publishes JSON-serialised messages to a fixed Kafka topic.
 type Producer struct {
-	client *kgo.Client
-	topic  string
-	log    zerolog.Logger
+	client  *kgo.Client
+	topic   string
+	service string
+	log     zerolog.Logger
 
 	publishedTotal *prometheus.CounterVec
 	errorsTotal    *prometheus.CounterVec
@@ -89,6 +90,7 @@ func New(cfg Config, log zerolog.Logger, reg *prometheus.Registry) (*Producer, e
 	p := &Producer{
 		client:       cli,
 		topic:        cfg.Topic,
+		service:      cfg.ClientID,
 		log:          log.With().Str("component", "kafka-producer").Str("topic", cfg.Topic).Logger(),
 		writeTimeout: cfg.WriteTimeout,
 	}
@@ -140,7 +142,7 @@ func (p *Producer) Publish(ctx context.Context, key, value []byte, retries int) 
 		if err == nil {
 			p.observePublishCount(p.topic, "ok")
 			p.observePublishLatency(p.topic, time.Since(start))
-			sharedkafka.IncProduced(p.topic, p.topic)
+			sharedkafka.IncProduced(p.service, p.topic)
 			return nil
 		}
 
