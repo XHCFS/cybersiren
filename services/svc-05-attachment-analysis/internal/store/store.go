@@ -196,14 +196,18 @@ func (s *RepoStore) CacheVT(
 	}
 	err := repository.WithOrgTx(ctx, s.pool, orgID, func(q *dbsqlc.Queries) error {
 		_, qerr := q.UpsertEnrichmentResult(ctx, dbsqlc.UpsertEnrichmentResultParams{
-			EntityType:      dbsqlc.EntityTypeEnumAttachment,
-			EntityID:        attachmentLibraryID,
-			EmailFetchedAt:  pgconv.TimestamptzOrNull(fetchedAt),
-			Provider:        providerVirusTotal,
-			RawResponse:     raw,
-			MaliciousVotes:  pgconv.Int4OrNull(int32(in.MaliciousVotes)),
-			HarmlessVotes:   pgconv.Int4OrNull(int32(in.HarmlessVotes)),
-			SuspiciousVotes: pgconv.Int4OrNull(int32(in.SuspiciousVotes)),
+			EntityType:     dbsqlc.EntityTypeEnumAttachment,
+			EntityID:       attachmentLibraryID,
+			EmailFetchedAt: pgconv.TimestamptzOrNull(fetchedAt),
+			Provider:       providerVirusTotal,
+			RawResponse:    raw,
+			// Always-valid: a real 0-vote VT report (harmless/malicious/suspicious all
+			// 0, the common clean-file case) must persist as SQL 0, not NULL. These are
+			// INSERT/UPSERT values, not COALESCE-preserved columns, so Int4OrNull(0)
+			// would wrongly write NULL.
+			MaliciousVotes:  pgconv.Int4(int32(in.MaliciousVotes)),
+			HarmlessVotes:   pgconv.Int4(int32(in.HarmlessVotes)),
+			SuspiciousVotes: pgconv.Int4(int32(in.SuspiciousVotes)),
 			ReputationScore: pgtype.Float8{},
 			TtlSeconds:      pgconv.Int4OrNull(ttlSeconds),
 			ExpiresAt:       pgconv.TimestamptzOrNull(time.Now().Add(ttl)),
