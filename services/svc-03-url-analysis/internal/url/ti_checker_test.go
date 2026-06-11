@@ -19,7 +19,6 @@ type fakeTICache struct {
 }
 
 func (f *fakeTICache) RefreshDomainCache(_ context.Context) error { return nil }
-func (f *fakeTICache) RefreshHashCache(_ context.Context) error   { return nil }
 
 func (f *fakeTICache) IsBlocklisted(_ context.Context, _ string) (bool, int, string, error) {
 	return f.lookup.Blocked, f.lookup.RiskScore, f.lookup.ThreatType, f.err

@@ -46,10 +46,10 @@ func validConfig() *Config {
 			Level:  "info",
 			Pretty: false,
 		},
-		MetricsPort:           9090,
-		FeedPhishTankAPIKey:   "test-phishtank-key",
-		SyncIntervalSeconds:   3600,
-		TIHashCacheTTLSeconds: 7200,
+		MetricsPort:             9090,
+		FeedPhishTankAPIKey:     "test-phishtank-key",
+		SyncIntervalSeconds:     3600,
+		TIDomainCacheTTLSeconds: 7200,
 		Enrichment: EnrichmentConfig{
 			WorkerCount: 10,
 			JobTimeout:  30 * time.Second,
@@ -295,6 +295,9 @@ func TestValidate_InvalidValues(t *testing.T) {
 		{"enrichment whois timeout 0", func(c *Config) { c.Enrichment.WHOIS.Timeout = 0 }, "enrichment.whois.timeout must be greater than 0"},
 		{"enrichment urlscan timeout 0", func(c *Config) { c.Enrichment.URLScan.Timeout = 0 }, "enrichment.urlscan.timeout must be greater than 0"},
 		{"enrichment screenshot timeout 0", func(c *Config) { c.Enrichment.Screenshot.Timeout = 0 }, "enrichment.screenshot.timeout must be greater than 0"},
+		// ti domain cache TTL — must be positive and have headroom over the sync interval.
+		{"ti domain cache ttl 0", func(c *Config) { c.TIDomainCacheTTLSeconds = 0 }, "ti_domain_cache_ttl_seconds must be greater than 0"},
+		{"ti domain cache ttl below interval", func(c *Config) { c.TIDomainCacheTTLSeconds = 1800 }, "ti_domain_cache_ttl_seconds (1800) should be >= sync_interval_seconds"},
 	}
 
 	for _, tt := range tests {
@@ -358,6 +361,14 @@ func TestLoad_Defaults(t *testing.T) {
 	}
 	if cfg.Embedding.Dimension != 1536 {
 		t.Errorf("default Embedding.Dimension = %d, want %d", cfg.Embedding.Dimension, 1536)
+	}
+	// Domain cache TTL defaults to twice the sync interval so blocklisted domains
+	// never expire from the cache in the window between two refreshes.
+	if cfg.TIDomainCacheTTLSeconds != 7200 {
+		t.Errorf("default TIDomainCacheTTLSeconds = %d, want %d", cfg.TIDomainCacheTTLSeconds, 7200)
+	}
+	if cfg.SyncIntervalSeconds != 3600 {
+		t.Errorf("default SyncIntervalSeconds = %d, want %d", cfg.SyncIntervalSeconds, 3600)
 	}
 }
 

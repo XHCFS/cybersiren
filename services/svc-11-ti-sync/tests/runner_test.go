@@ -28,7 +28,6 @@ func TestRunnerSyncAll_AllFeedsSucceed(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.True(t, cache.refreshCalled)
-	assert.True(t, cache.hashRefreshCalled)
 	assert.True(t, repo.refreshMVCalled)
 	assert.Len(t, repo.upsertCalls, 2)
 	assert.ElementsMatch(t, []int64{1, 2}, repo.upsertCalls)
@@ -51,7 +50,6 @@ func TestRunnerSyncAll_OneFeedFetchFailsPartialSuccess(t *testing.T) {
 	assert.Equal(t, int64(2), repo.upsertCalls[0])
 	assert.ElementsMatch(t, []int64{1, 2}, repo.updateFetchedCalls)
 	assert.True(t, cache.refreshCalled)
-	assert.True(t, cache.hashRefreshCalled)
 	assert.True(t, repo.refreshMVCalled)
 }
 
@@ -93,7 +91,6 @@ func TestRunnerSyncAll_UpsertErrorOnOneFeedContinues(t *testing.T) {
 	assert.ElementsMatch(t, []int64{1, 2}, repo.upsertCalls)
 	assert.ElementsMatch(t, []int64{1, 2}, repo.updateFetchedCalls)
 	assert.True(t, cache.refreshCalled)
-	assert.True(t, cache.hashRefreshCalled)
 	assert.True(t, repo.refreshMVCalled)
 }
 
@@ -109,7 +106,6 @@ func TestRunnerSyncAll_CacheRefreshErrorIsBestEffort(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.True(t, cache.refreshCalled)
-	assert.True(t, cache.hashRefreshCalled)
 	assert.True(t, repo.refreshMVCalled)
 }
 
@@ -127,7 +123,6 @@ func TestRunnerSyncAll_MaterializedViewRefreshErrorReturnsError(t *testing.T) {
 	require.Error(t, err)
 	assert.ErrorIs(t, err, mvErr)
 	assert.True(t, cache.refreshCalled)
-	assert.True(t, cache.hashRefreshCalled)
 	assert.True(t, repo.refreshMVCalled)
 }
 
@@ -152,7 +147,7 @@ func TestRunnerSyncAll_UpdateLastFetchedCalledForEveryFeed(t *testing.T) {
 	assert.ElementsMatch(t, []int64{1, 2, 3}, repo.updateFetchedCalls)
 }
 
-func TestRunnerSyncAll_HashIndicatorsBypassTIUpsertAndRefreshHashCache(t *testing.T) {
+func TestRunnerSyncAll_HashIndicatorsBypassTIUpsertAndPersistToHashLibrary(t *testing.T) {
 	repo := &mockRepo{}
 	cache := &mockCache{}
 	feeds := []ti.Feed{
@@ -177,13 +172,12 @@ func TestRunnerSyncAll_HashIndicatorsBypassTIUpsertAndRefreshHashCache(t *testin
 	require.Len(t, repo.malwareHashBatches[0], 1)
 	assert.Equal(t, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", repo.malwareHashBatches[0][0].SHA256)
 	assert.True(t, cache.refreshCalled)
-	assert.True(t, cache.hashRefreshCalled)
 	assert.True(t, repo.refreshMVCalled)
 }
 
-func TestRunnerSyncAll_HashUpsertAndHashCacheErrorsAreBestEffort(t *testing.T) {
+func TestRunnerSyncAll_HashOnlyFeedUpsertErrorIsFatal(t *testing.T) {
 	repo := &mockRepo{malwareHashErr: errors.New("hash upsert failed")}
-	cache := &mockCache{hashRefreshErr: errors.New("hash cache unavailable")}
+	cache := &mockCache{}
 	feeds := []ti.Feed{
 		&mockFeed{
 			name:       "malwarebazaar",
@@ -206,7 +200,6 @@ func TestRunnerSyncAll_HashUpsertAndHashCacheErrorsAreBestEffort(t *testing.T) {
 	assert.Empty(t, repo.deactivateCalls)
 	// Cache and MV refresh are skipped when all feeds fail.
 	assert.False(t, cache.refreshCalled)
-	assert.False(t, cache.hashRefreshCalled)
 	assert.False(t, repo.refreshMVCalled)
 }
 
@@ -234,7 +227,6 @@ func TestRunnerSyncAll_MixedFeedHashUpsertFailureIsBestEffort(t *testing.T) {
 	assert.Len(t, repo.upsertIndicatorBatches[0], 1, "only non-hash indicator should be upserted")
 	assert.Len(t, repo.malwareHashBatches, 1)
 	assert.True(t, cache.refreshCalled)
-	assert.True(t, cache.hashRefreshCalled)
 	assert.True(t, repo.refreshMVCalled)
 }
 
@@ -256,7 +248,6 @@ func TestRunnerSyncAll_HashOnlyFeedCallsDeactivateStaleIndicators(t *testing.T) 
 	// Hash-only feeds should still call DeactivateStaleIndicators.
 	require.Len(t, repo.deactivateCalls, 1)
 	assert.Equal(t, int64(8), repo.deactivateCalls[0])
-	assert.True(t, cache.hashRefreshCalled)
 }
 
 func TestRunnerSyncAll_ContextCancellationSkipsRemainingFeeds(t *testing.T) {
@@ -397,20 +388,13 @@ func (m *mockRepo) RefreshAllMaterializedViews(_ context.Context) error {
 }
 
 type mockCache struct {
-	refreshCalled     bool
-	refreshErr        error
-	hashRefreshCalled bool
-	hashRefreshErr    error
+	refreshCalled bool
+	refreshErr    error
 }
 
 func (m *mockCache) RefreshDomainCache(_ context.Context) error {
 	m.refreshCalled = true
 	return m.refreshErr
-}
-
-func (m *mockCache) RefreshHashCache(_ context.Context) error {
-	m.hashRefreshCalled = true
-	return m.hashRefreshErr
 }
 
 func (m *mockCache) IsBlocklisted(_ context.Context, _ string) (bool, int, string, error) {

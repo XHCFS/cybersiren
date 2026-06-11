@@ -83,7 +83,7 @@ func main() {
 	defer rdb.Close()
 
 	repo := repository.NewTIRepository(pool, log, reg)
-	cache := sharedvalkey.NewTICache(rdb, repo, log, reg, int64(cfg.TIHashCacheTTLSeconds))
+	cache := sharedvalkey.NewTICache(rdb, repo, log, reg, int64(cfg.TIDomainCacheTTLSeconds))
 
 	enabledFeeds, err := db.New(pool).GetEnabledFeeds(ctx)
 	if err != nil {

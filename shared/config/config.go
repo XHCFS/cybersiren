@@ -34,7 +34,7 @@ type Config struct {
 	FeedOpenPhishAPIKey     string `koanf:"feed_openphish_api_key"`
 	FeedMalwareBazaarAPIKey string `koanf:"feed_malwarebazaar_api_key"`
 	SyncIntervalSeconds     int    `koanf:"sync_interval_seconds"`
-	TIHashCacheTTLSeconds   int    `koanf:"ti_hash_cache_ttl_seconds"`
+	TIDomainCacheTTLSeconds int    `koanf:"ti_domain_cache_ttl_seconds"`
 
 	Valkey     ValkeyConfig     `koanf:"valkey"`
 	Kafka      KafkaConfig      `koanf:"kafka"`
@@ -313,10 +313,10 @@ func Load() (*Config, error) {
 			Level:  "info",
 			Pretty: false,
 		},
-		JaegerEndpoint:        "",
-		MetricsPort:           9090,
-		SyncIntervalSeconds:   3600,
-		TIHashCacheTTLSeconds: 7200,
+		JaegerEndpoint:          "",
+		MetricsPort:             9090,
+		SyncIntervalSeconds:     3600,
+		TIDomainCacheTTLSeconds: 7200,
 		Valkey: ValkeyConfig{
 			Addr: "localhost:6379",
 			DB:   0,
@@ -616,13 +616,16 @@ func (c *Config) Validate() error {
 	if c.SyncIntervalSeconds <= 30 {
 		return fmt.Errorf("sync_interval_seconds must be greater than 30, got %d", c.SyncIntervalSeconds)
 	}
-	if c.TIHashCacheTTLSeconds <= 0 {
-		return fmt.Errorf("ti_hash_cache_ttl_seconds must be greater than 0, got %d", c.TIHashCacheTTLSeconds)
+	if c.TIDomainCacheTTLSeconds <= 0 {
+		return fmt.Errorf("ti_domain_cache_ttl_seconds must be greater than 0, got %d", c.TIDomainCacheTTLSeconds)
 	}
-	if c.TIHashCacheTTLSeconds < c.SyncIntervalSeconds {
+	// The TI domain cache is rewritten at the end of each sync cycle, so its TTL
+	// must outlive the interval (plus feed-fetch time) or blocklisted domains
+	// expire from the cache between syncs and svc-03 lookups miss them.
+	if c.TIDomainCacheTTLSeconds < c.SyncIntervalSeconds {
 		return fmt.Errorf(
-			"ti_hash_cache_ttl_seconds (%d) should be >= sync_interval_seconds (%d) to avoid cache expiry between syncs",
-			c.TIHashCacheTTLSeconds, c.SyncIntervalSeconds,
+			"ti_domain_cache_ttl_seconds (%d) should be >= sync_interval_seconds (%d) to avoid cache expiry between syncs",
+			c.TIDomainCacheTTLSeconds, c.SyncIntervalSeconds,
 		)
 	}
 

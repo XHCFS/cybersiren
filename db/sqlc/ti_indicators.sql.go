@@ -129,7 +129,8 @@ SET
             ORDER BY tag
         )
     ),
-    risk_score = GREATEST(ti_indicators.risk_score, EXCLUDED.risk_score)
+    risk_score = GREATEST(ti_indicators.risk_score, EXCLUDED.risk_score),
+    is_active = TRUE
 RETURNING (xmax = 0) AS inserted
 `
 
@@ -153,7 +154,9 @@ type UpsertTIIndicatorParams struct {
 // Upserts a single TI indicator. Use with batch loop from Go for chunk processing.
 // ON CONFLICT (feed_id, indicator_type, indicator_value):
 //
-//	update last_seen, merge threat_tags (distinct), GREATEST risk_score.
+//	update last_seen, merge threat_tags (distinct), GREATEST risk_score,
+//	and reactivate (is_active = TRUE) so an indicator that fell out of the feed
+//	and was deactivated comes back the moment it reappears.
 //	Do NOT overwrite first_seen or created_at.
 //
 // Returns TRUE when the row was newly inserted, FALSE when an existing row was updated.
