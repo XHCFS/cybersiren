@@ -125,3 +125,24 @@ func TestIsPublicIP(t *testing.T) {
 		require.Equal(t, tc.want, isPublicIP(net.ParseIP(tc.ip)), tc.ip)
 	}
 }
+
+// TestBlockNonPublicControl exercises the net.Dialer.Control SSRF hook the TLS
+// dialer (GetTLSCert) uses — it must reject loopback/metadata/private resolved
+// IPs and allow public ones, since the dialed host comes from an email URL.
+func TestBlockNonPublicControl(t *testing.T) {
+	t.Parallel()
+	blocked := []string{
+		"127.0.0.1:443", "169.254.169.254:80", "10.0.0.5:443",
+		"192.168.1.1:443", "[::1]:443", "0.0.0.0:443",
+	}
+	for _, addr := range blocked {
+		if err := blockNonPublicControl("tcp", addr, nil); err == nil {
+			t.Errorf("blockNonPublicControl(%q) = nil, want blocked", addr)
+		}
+	}
+	for _, addr := range []string{"8.8.8.8:443", "1.1.1.1:80"} {
+		if err := blockNonPublicControl("tcp", addr, nil); err != nil {
+			t.Errorf("blockNonPublicControl(%q) = %v, want allowed", addr, err)
+		}
+	}
+}

@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"syscall"
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -113,6 +114,24 @@ func isPublicIP(ip net.IP) bool {
 		return false
 	}
 	return true
+}
+
+// blockNonPublicControl is a net.Dialer.Control hook that rejects a connection
+// whose resolved destination is a non-public IP. It runs AFTER DNS resolution
+// with the concrete ip:port, so unlike a pre-dial host check it also defeats
+// DNS-rebinding. Use it on dialers that don't route through safeDialContext
+// (e.g. the TLS dialer), so a user-submitted hostname cannot SSRF-probe an
+// internal/cloud-metadata address.
+func blockNonPublicControl(_, address string, _ syscall.RawConn) error {
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		return fmt.Errorf("split host:port %q: %w", address, err)
+	}
+	ip := net.ParseIP(host)
+	if ip == nil || !isPublicIPFn(ip) {
+		return errBlockedAddress
+	}
+	return nil
 }
 
 const browserUA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"

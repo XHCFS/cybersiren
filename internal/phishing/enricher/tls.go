@@ -36,8 +36,13 @@ func GetTLSCert(ctx context.Context, hostname string, port int) TLSResult {
 	dialCtx, cancel := context.WithTimeout(ctx, 2500*time.Millisecond)
 	defer cancel()
 
+	// SSRF guard: hostname comes from a URL in an incoming email. InsecureSkipVerify
+	// is intentional (we want cert data even for expired/self-signed certs), but
+	// without an IP filter that lets an attacker dial internal/cloud-metadata hosts
+	// on :443 to blind-probe the network. Control rejects any non-public resolved IP
+	// before the TCP connect (mirrors safeDialContext; defeats DNS rebinding).
 	dialer := &tls.Dialer{
-		NetDialer: &net.Dialer{},
+		NetDialer: &net.Dialer{Control: blockNonPublicControl},
 		Config: &tls.Config{
 			InsecureSkipVerify: true, //nolint:gosec // intentional: we want cert data even for expired/self-signed
 			ServerName:         hostname,

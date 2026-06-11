@@ -22,7 +22,7 @@ func TestResolveIP_InvalidHost(t *testing.T) {
 func TestResolveIP_Cache(t *testing.T) {
 	t.Parallel()
 	// Prime the cache with a fake result.
-	globalDNSCache.set("cached-test.example", "1.2.3.4")
+	globalDNSCache.set("cached-test.example", "1.2.3.4", dnsCacheTTL)
 	ip := ResolveIP(context.Background(), "cached-test.example")
 	require.Equal(t, "1.2.3.4", ip)
 }

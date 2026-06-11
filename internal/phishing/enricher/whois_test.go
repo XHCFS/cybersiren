@@ -23,7 +23,7 @@ func TestLookupWHOIS_GarbageInput(t *testing.T) {
 func TestLookupWHOIS_Cache(t *testing.T) {
 	t.Parallel()
 	fake := WHOISResult{RegistrationDate: "2000-01-01", Registrar: "Test Registrar"}
-	globalWHOISCache.set("cached-whois.test", fake)
+	globalWHOISCache.set("cached-whois.test", fake, whoisSuccessTTL)
 	r := LookupWHOIS(context.Background(), "cached-whois.test")
 	require.Equal(t, fake, r)
 }
