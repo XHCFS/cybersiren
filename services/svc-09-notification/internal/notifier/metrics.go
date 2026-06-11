@@ -16,9 +16,9 @@
 package notifier
 
 import (
-	"errors"
-
 	"github.com/prometheus/client_golang/prometheus"
+
+	obsmetrics "github.com/saif/cybersiren/shared/observability/metrics"
 )
 
 // Outcome label values for MessagesTotal. A gated verdict ends in exactly one
@@ -65,7 +65,7 @@ type Metrics struct {
 func NewMetrics(reg *prometheus.Registry) *Metrics {
 	m := &Metrics{}
 
-	m.MessagesTotal = registerCounterVec(reg, prometheus.NewCounterVec(
+	m.MessagesTotal = obsmetrics.Register(reg, prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "notification_messages_total",
 			Help: "emails.verdict messages processed by SVC-09 partitioned by outcome.",
@@ -73,7 +73,7 @@ func NewMetrics(reg *prometheus.Registry) *Metrics {
 		[]string{"outcome"},
 	))
 
-	m.AlertsTotal = registerCounterVec(reg, prometheus.NewCounterVec(
+	m.AlertsTotal = obsmetrics.Register(reg, prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "notification_alerts_total",
 			Help: "Per-channel alert dispatch attempts partitioned by channel and result (sent|error|no_recipients).",
@@ -81,7 +81,7 @@ func NewMetrics(reg *prometheus.Registry) *Metrics {
 		[]string{"channel", "result"},
 	))
 
-	m.RateLimitFailOpenTotal = registerCounter(reg, prometheus.NewCounter(
+	m.RateLimitFailOpenTotal = obsmetrics.Register(reg, prometheus.NewCounter(
 		prometheus.CounterOpts{
 			Name: "notification_ratelimit_failopen_total",
 			Help: "Gated verdicts allowed because the rate limiter errored (rate limiting silently disabled).",
@@ -110,34 +110,4 @@ func (m *Metrics) bumpRateLimitFailOpen() {
 		return
 	}
 	m.RateLimitFailOpenTotal.Inc()
-}
-
-func registerCounterVec(reg *prometheus.Registry, c *prometheus.CounterVec) *prometheus.CounterVec {
-	if reg == nil {
-		return c
-	}
-	if err := reg.Register(c); err != nil {
-		var already prometheus.AlreadyRegisteredError
-		if errors.As(err, &already) {
-			if existing, ok := already.ExistingCollector.(*prometheus.CounterVec); ok {
-				return existing
-			}
-		}
-	}
-	return c
-}
-
-func registerCounter(reg *prometheus.Registry, c prometheus.Counter) prometheus.Counter {
-	if reg == nil {
-		return c
-	}
-	if err := reg.Register(c); err != nil {
-		var already prometheus.AlreadyRegisteredError
-		if errors.As(err, &already) {
-			if existing, ok := already.ExistingCollector.(prometheus.Counter); ok {
-				return existing
-			}
-		}
-	}
-	return c
 }

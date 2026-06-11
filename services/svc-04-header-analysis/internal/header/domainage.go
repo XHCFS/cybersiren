@@ -35,6 +35,18 @@ type EnricherDomainAgeLooker struct {
 	whois func(ctx context.Context, domain string) enricher.WHOISResult
 }
 
+// hotPathWHOISBudget bounds the synchronous WHOIS lookup on SVC-04's per-message
+// scoring path. The shared enricher allows up to 5s on a cache miss; on the serial
+// Kafka consumer that lets one slow/non-resolving registry stall the partition for
+// every later message. This caps the per-message cost below the enricher's 5s
+// while leaving ample room for a normal lookup (~1s observed) and the enricher's
+// 24h cache (a warm domain returns from cache without dialling, so the budget
+// never bites it). A lookup that can't finish in time yields "unknown" — a safe,
+// low-weight miss, distinct from age 0. The miss is re-attempted on the next
+// message rather than warmed in the background, keeping this fix self-contained in
+// SVC-04 (the enricher exposes no cache-only path).
+const hotPathWHOISBudget = 3 * time.Second
+
 // DomainAgeDays looks up the sender domain via the shared enricher and converts
 // the registration date string into an age in whole days relative to now.
 func (l EnricherDomainAgeLooker) DomainAgeDays(ctx context.Context, domain string) (int, bool) {
@@ -46,7 +58,9 @@ func (l EnricherDomainAgeLooker) DomainAgeDays(ctx context.Context, domain strin
 	if lookup == nil {
 		lookup = enricher.LookupWHOIS
 	}
-	res := lookup(ctx, domain)
+	lookupCtx, cancel := context.WithTimeout(ctx, hotPathWHOISBudget)
+	defer cancel()
+	res := lookup(lookupCtx, domain)
 	return domainAgeFromRegistration(res.RegistrationDate, time.Now())
 }
 

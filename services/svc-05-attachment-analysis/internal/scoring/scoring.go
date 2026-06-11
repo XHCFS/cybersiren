@@ -216,7 +216,7 @@ func ShannonEntropy(b []byte) float64 {
 // legitimately reports the compressed payload type). detectedType, when present
 // and disagreeing with the declared type for a mapped extension, also fires.
 func extensionMismatch(filename, contentType, detectedType string) bool {
-	ext := strings.ToLower(path.Ext(filename))
+	ext := extOf(filename)
 	if ext == "" {
 		return false
 	}
@@ -259,15 +259,26 @@ func normalizeMIME(s string) string {
 	return s
 }
 
+// trailingExtNoise is the set of trailing characters Windows ignores when it
+// resolves/executes a filename, so "invoice.exe." and "invoice.exe " both run as
+// "invoice.exe". Stripping them before taking the extension stops a one-character
+// filename trick from defeating every extension heuristic (path.Ext("invoice.exe.")
+// == "." and path.Ext("invoice.exe ") == ".exe " — neither is in any ext set).
+const trailingExtNoise = ". \t\r\n\f\v"
+
+// extOf returns the lower-cased file extension of name after trimming Windows-
+// ignored trailing dots/whitespace.
+func extOf(name string) string {
+	return strings.ToLower(path.Ext(strings.TrimRight(name, trailingExtNoise)))
+}
+
 func isDangerousExtension(filename string) bool {
-	ext := strings.ToLower(path.Ext(filename))
-	_, ok := dangerousExtensions[ext]
+	_, ok := dangerousExtensions[extOf(filename)]
 	return ok
 }
 
 func isMacroOffice(filename string) bool {
-	ext := strings.ToLower(path.Ext(filename))
-	_, ok := macroOfficeExtensions[ext]
+	_, ok := macroOfficeExtensions[extOf(filename)]
 	return ok
 }
 
@@ -275,7 +286,7 @@ func isMacroOffice(filename string) bool {
 // dangerous and a benign-looking extension precedes it (e.g. "invoice.pdf.exe").
 // A plain "archive.tar.gz" does not fire because .gz is not dangerous.
 func hasDoubleExtension(filename string) bool {
-	base := path.Base(strings.ToLower(filename))
+	base := path.Base(strings.ToLower(strings.TrimRight(filename, trailingExtNoise)))
 	lastExt := path.Ext(base)
 	if lastExt == "" {
 		return false

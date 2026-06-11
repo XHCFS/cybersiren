@@ -324,10 +324,14 @@ func (p *Processor) scoreOne(
 			if err := p.store.FlagMalicious(ctx, orgID, att.SHA256, res.Score, threatTagsFor(res, att)); err != nil {
 				return detail, fmt.Errorf("flag malicious (sha256=%s): %w", att.SHA256, err)
 			}
-		case dangerous:
+		case dangerous && att.SHA256 != "":
 			// Heuristic-only dangerous: record risk_score/threat_tags but do NOT set
 			// is_malicious (the library is platform-global with no org_id, so a TRUE
 			// flag here would poison every tenant and short-circuit future lookups to 90).
+			// The att.SHA256 != "" guard keeps an empty hash (filename-only heuristics
+			// can fire with no sha256) from merging into a shared sha256='' library row
+			// across all tenants — the hash/VT paths are already SHA256-gated, so the
+			// res.Malicious branch above never reaches here with an empty hash.
 			if err := p.store.RecordAttachmentRisk(ctx, orgID, att.SHA256, res.Score, threatTagsFor(res, att)); err != nil {
 				return detail, fmt.Errorf("record attachment risk (sha256=%s): %w", att.SHA256, err)
 			}
@@ -464,6 +468,14 @@ func decodeMessage(body []byte) (contractsk.AnalysisAttachments, error) {
 	}
 	if out.Meta.EmailID <= 0 {
 		return out, fmt.Errorf("analysis.attachments email_id must be > 0, got %d", out.Meta.EmailID)
+	}
+	if out.Meta.FetchedAt.IsZero() {
+		// fetched_at keys the email_attachments write-back (email_fetched_at = $2).
+		// A zero value would become SQL NULL and match no row (= NULL never matches),
+		// silently dropping every per-attachment risk_score. SVC-02 always stamps it,
+		// so a missing value is a malformed/contract-violating message: surface it
+		// loudly (the caller commits + counts it) rather than write to a NULL key.
+		return out, errors.New("analysis.attachments fetched_at is required")
 	}
 	return out, nil
 }

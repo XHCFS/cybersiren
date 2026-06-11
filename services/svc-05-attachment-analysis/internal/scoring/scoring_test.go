@@ -97,6 +97,34 @@ func TestScore_DoubleExtension(t *testing.T) {
 	}
 }
 
+func TestScore_TrailingDotSpaceDoesNotDefeatHeuristics(t *testing.T) {
+	cfg := testConfig()
+	// S1: Windows strips trailing dots/whitespace when resolving a filename, so
+	// "invoice.exe." / "invoice.exe " execute as "invoice.exe". path.Ext on the raw
+	// name yields "." / ".exe " (in no ext set), silently zeroing every heuristic.
+	// extOf must normalise them back to ".exe".
+	for _, name := range []string{"invoice.exe.", "invoice.exe ", "invoice.exe\t", "INVOICE.EXE.", "loader.scr.  "} {
+		res := Score(Attachment{Filename: name}, cfg)
+		if !res.Heuristics.IsDangerousExtension {
+			t.Errorf("%q: expected dangerous-extension despite trailing dot/space", name)
+		}
+		if res.Score < cfg.DangerousExtScore {
+			t.Errorf("%q: score = %d, want >= %d", name, res.Score, cfg.DangerousExtScore)
+		}
+	}
+	// Macro-office and double-extension lures with trailing noise still fire.
+	if !Score(Attachment{Filename: "invoice.docm."}, cfg).Heuristics.HasMacros {
+		t.Error("invoice.docm. : expected macro-office despite trailing dot")
+	}
+	if !Score(Attachment{Filename: "invoice.pdf.exe "}, cfg).Heuristics.DoubleExtension {
+		t.Error("invoice.pdf.exe (trailing space): expected double-extension")
+	}
+	// A genuinely benign name with a trailing dot stays benign.
+	if Score(Attachment{Filename: "report.pdf."}, cfg).Heuristics.IsDangerousExtension {
+		t.Error("report.pdf. must not be flagged dangerous")
+	}
+}
+
 func TestScore_ExtensionMismatch(t *testing.T) {
 	cfg := testConfig()
 	// .pdf declared as image/png ⇒ mismatch.

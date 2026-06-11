@@ -182,6 +182,47 @@ func TestDecodeMessage(t *testing.T) {
 	if _, err := decodeMessage(zb); err == nil {
 		t.Error("email_id=0 should error")
 	}
+	// N1: a missing fetched_at must error — it keys the email_attachments write-back
+	// (email_fetched_at = NULL would match no row and silently drop the score).
+	noFetched := contractsk.AnalysisAttachments{
+		Meta:        contractsk.MessageMeta{EmailID: 7, OrgID: 1}, // FetchedAt zero
+		Attachments: []contractsk.Attachment{{SHA256: "a", Filename: "x.pdf"}},
+	}
+	nfb, _ := json.Marshal(noFetched)
+	if _, err := decodeMessage(nfb); err == nil {
+		t.Error("missing fetched_at should error (N1)")
+	}
+}
+
+func TestHandle_EmptySHA256DangerousSkipsLibraryWrite(t *testing.T) {
+	st := newFakeStore()
+	pub := &fakePublisher{}
+	p := newTestProcessor(st, &fakeVT{}, pub)
+	// N2: a dangerous-filename attachment with an EMPTY sha256 (the hash/VT paths
+	// are SHA256-gated and skip, so only filename heuristics fire) must NOT write
+	// to attachment_library — a sha256='' row is platform-global and would merge
+	// every tenant's empty-hash attachments into one shared row.
+	m := contractsk.AnalysisAttachments{
+		Meta:        contractsk.NewMetaWithFetched(21, 1, time.Now().UTC()),
+		Attachments: []contractsk.Attachment{{SHA256: "", Filename: "invoice.pdf.exe"}},
+	}
+	if err := p.Handle(context.Background(), msgFor(m)); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if len(st.riskRecorded) != 0 {
+		t.Errorf("RecordAttachmentRisk must not be called for an empty sha256, got %v", st.riskRecorded)
+	}
+	if len(st.flagged) != 0 {
+		t.Errorf("FlagMalicious must not be called for an empty sha256, got %v", st.flagged)
+	}
+	// The score still flows — the dangerous/double-extension heuristics fire on the
+	// filename even with no hash.
+	if len(pub.published) != 1 {
+		t.Fatalf("expected 1 published score, got %d", len(pub.published))
+	}
+	if out := decodePublished(t, pub.published[0]); out.Score == 0 {
+		t.Errorf("dangerous attachment should still score > 0, got %d", out.Score)
+	}
 }
 
 func TestEncodeKey(t *testing.T) {

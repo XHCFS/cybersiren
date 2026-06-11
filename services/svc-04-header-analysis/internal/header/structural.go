@@ -62,8 +62,10 @@ func ExtractStructural(msg *contractsk.AnalysisHeadersMessage, cfg StructuralExt
 	}
 
 	// D9 body-derived structural signals, computed from the body the parser
-	// ships on analysis.headers (HTML preferred, plain-text fallback).
-	body := extractBodyStructural(msg, msg.ContentCharset)
+	// ships on analysis.headers (HTML preferred, plain-text fallback). The charset
+	// comes from the body part (bodyCharsetOf), not the top-level Content-Type,
+	// which is empty for multipart mail.
+	body := extractBodyStructural(msg, bodyCharsetOf(msg))
 	signals.HTMLOnly = body.HTMLOnly
 	signals.HasHiddenText = body.HasHiddenText
 	signals.HasForm = body.HasForm

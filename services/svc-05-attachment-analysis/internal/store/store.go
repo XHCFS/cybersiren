@@ -185,13 +185,22 @@ func (s *RepoStore) CacheVT(
 		ttl = 24 * time.Hour
 	}
 	ttlSeconds := int32(ttl.Seconds())
+	// raw_response is JSONB NOT NULL; a nil/empty []byte encodes as SQL NULL and
+	// violates the constraint — which is exactly the VT 404 negative-cache case
+	// (Result.NotFound carries no body). Coerce an empty body to the JSON null
+	// literal so the cache row actually persists instead of erroring and leaving
+	// every unknown hash to re-hit the VT API on each redelivery.
+	raw := in.Raw
+	if len(raw) == 0 {
+		raw = []byte("null")
+	}
 	err := repository.WithOrgTx(ctx, s.pool, orgID, func(q *dbsqlc.Queries) error {
 		_, qerr := q.UpsertEnrichmentResult(ctx, dbsqlc.UpsertEnrichmentResultParams{
 			EntityType:      dbsqlc.EntityTypeEnumAttachment,
 			EntityID:        attachmentLibraryID,
 			EmailFetchedAt:  pgconv.TimestamptzOrNull(fetchedAt),
 			Provider:        providerVirusTotal,
-			RawResponse:     in.Raw,
+			RawResponse:     raw,
 			MaliciousVotes:  pgconv.Int4OrNull(int32(in.MaliciousVotes)),
 			HarmlessVotes:   pgconv.Int4OrNull(int32(in.HarmlessVotes)),
 			SuspiciousVotes: pgconv.Int4OrNull(int32(in.SuspiciousVotes)),
@@ -249,10 +258,13 @@ func (s *RepoStore) UpdateEmailAttachmentScore(ctx context.Context, in EmailAtta
 	var affected int64
 	err := repository.WithOrgTx(ctx, s.pool, in.OrgID, func(q *dbsqlc.Queries) error {
 		n, qerr := q.UpdateEmailAttachmentRiskScore(ctx, dbsqlc.UpdateEmailAttachmentRiskScoreParams{
-			EmailID:          in.InternalID,
-			EmailFetchedAt:   pgconv.TimestamptzOrNull(in.FetchedAt),
-			AttachmentID:     in.AttachmentID,
-			RiskScore:        pgconv.Int4OrNull(int32(in.RiskScore)),
+			EmailID:        in.InternalID,
+			EmailFetchedAt: pgconv.TimestamptzOrNull(in.FetchedAt),
+			AttachmentID:   in.AttachmentID,
+			// Always-valid: the query SETs risk_score unconditionally (no COALESCE),
+			// so a benign score of 0 must write 0 ("scored, benign"), not NULL
+			// ("never scored"). Int4OrNull(0) would map to SQL NULL and lose the verdict.
+			RiskScore:        pgconv.Int4(int32(in.RiskScore)),
 			AnalysisMetadata: nilIfEmpty(in.AnalysisMetadata),
 		})
 		if qerr != nil {

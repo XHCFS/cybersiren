@@ -436,15 +436,24 @@ func TestWebhookChannel_RetryBackoffRespectsContext(t *testing.T) {
 	}
 }
 
-func TestWebhookBackoff_GrowsAndCaps(t *testing.T) {
+func TestWebhookChannel_DoesNotRetry4xx(t *testing.T) {
 	t.Parallel()
-	if got := webhookBackoff(1); got != webhookBaseBackoff {
-		t.Errorf("backoff(1) = %v, want %v", got, webhookBaseBackoff)
+	// A 4xx is a permanent client error (a misconfigured/unauthorised endpoint):
+	// the shared httputil client retries only 429/5xx/transport errors, NOT 4xx —
+	// unlike the old bespoke loop which retried every non-2xx. The endpoint must
+	// be hit exactly once and Send must still error.
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		w.WriteHeader(http.StatusBadRequest)
+	}))
+	defer srv.Close()
+
+	ch := NewWebhookChannel(config.WebhookConfig{URL: srv.URL, Timeout: time.Second, MaxRetries: 3})
+	if err := ch.Send(context.Background(), sampleAlert()); err == nil {
+		t.Fatal("expected an error on a 4xx webhook response")
 	}
-	if got := webhookBackoff(2); got != 2*webhookBaseBackoff {
-		t.Errorf("backoff(2) = %v, want %v", got, 2*webhookBaseBackoff)
-	}
-	if got := webhookBackoff(100); got != webhookMaxBackoff {
-		t.Errorf("backoff(100) = %v, want cap %v", got, webhookMaxBackoff)
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Errorf("endpoint hit %d times, want 1 (4xx must not be retried)", got)
 	}
 }

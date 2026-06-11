@@ -1,9 +1,9 @@
 package processor
 
 import (
-	"errors"
-
 	"github.com/prometheus/client_golang/prometheus"
+
+	obsmetrics "github.com/saif/cybersiren/shared/observability/metrics"
 )
 
 // Metrics holds the Prometheus collectors specific to SVC-05 (the shared/kafka
@@ -21,7 +21,7 @@ type Metrics struct {
 func NewMetrics(reg *prometheus.Registry) *Metrics {
 	m := &Metrics{}
 
-	m.MessagesTotal = registerCounterVec(reg, prometheus.NewCounterVec(
+	m.MessagesTotal = obsmetrics.Register(reg, prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "attachment_analysis_messages_total",
 			Help: "Total analysis.attachments messages processed by SVC-05 partitioned by result.",
@@ -29,7 +29,7 @@ func NewMetrics(reg *prometheus.Registry) *Metrics {
 		[]string{"result"},
 	))
 
-	m.ScoreTotal = registerCounterVec(reg, prometheus.NewCounterVec(
+	m.ScoreTotal = obsmetrics.Register(reg, prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "attachment_analysis_score_total",
 			Help: "Total per-email scores produced by SVC-05 partitioned by bucket.",
@@ -37,7 +37,7 @@ func NewMetrics(reg *prometheus.Registry) *Metrics {
 		[]string{"bucket"},
 	))
 
-	m.Duration = registerHistogram(reg, prometheus.NewHistogram(
+	m.Duration = obsmetrics.Register(reg, prometheus.NewHistogram(
 		prometheus.HistogramOpts{
 			Name: "attachment_analysis_duration_seconds",
 			Help: "Per-message processing duration for SVC-05.",
@@ -47,7 +47,7 @@ func NewMetrics(reg *prometheus.Registry) *Metrics {
 		},
 	))
 
-	m.ErrorsTotal = registerCounterVec(reg, prometheus.NewCounterVec(
+	m.ErrorsTotal = obsmetrics.Register(reg, prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "attachment_analysis_errors_total",
 			Help: "Total SVC-05 errors partitioned by pipeline stage.",
@@ -55,7 +55,7 @@ func NewMetrics(reg *prometheus.Registry) *Metrics {
 		[]string{"stage"},
 	))
 
-	m.VTLookups = registerCounterVec(reg, prometheus.NewCounterVec(
+	m.VTLookups = obsmetrics.Register(reg, prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "attachment_analysis_vt_lookups_total",
 			Help: "VirusTotal lookup outcomes partitioned by result.",
@@ -63,7 +63,7 @@ func NewMetrics(reg *prometheus.Registry) *Metrics {
 		[]string{"outcome"},
 	))
 
-	m.HeuristicHits = registerCounterVec(reg, prometheus.NewCounterVec(
+	m.HeuristicHits = obsmetrics.Register(reg, prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "attachment_analysis_heuristic_hits_total",
 			Help: "Heuristic fires recorded by SVC-05 partitioned by heuristic.",
@@ -107,34 +107,4 @@ func (m *Metrics) incHeuristic(name string) {
 		return
 	}
 	m.HeuristicHits.WithLabelValues(name).Inc()
-}
-
-func registerCounterVec(reg *prometheus.Registry, c *prometheus.CounterVec) *prometheus.CounterVec {
-	if reg == nil {
-		return c
-	}
-	if err := reg.Register(c); err != nil {
-		var already prometheus.AlreadyRegisteredError
-		if errors.As(err, &already) {
-			if existing, ok := already.ExistingCollector.(*prometheus.CounterVec); ok {
-				return existing
-			}
-		}
-	}
-	return c
-}
-
-func registerHistogram(reg *prometheus.Registry, h prometheus.Histogram) prometheus.Histogram {
-	if reg == nil {
-		return h
-	}
-	if err := reg.Register(h); err != nil {
-		var already prometheus.AlreadyRegisteredError
-		if errors.As(err, &already) {
-			if existing, ok := already.ExistingCollector.(prometheus.Histogram); ok {
-				return existing
-			}
-		}
-	}
-	return h
 }

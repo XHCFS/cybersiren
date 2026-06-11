@@ -25,7 +25,6 @@ type bodyStructuralSignals struct {
 var (
 	reHTMLTag = regexp.MustCompile(`(?is)<\s*(html|body|table|div|p|a|span|td|tr|br|img)\b`)
 	reFormTag = regexp.MustCompile(`(?is)<\s*form\b`)
-	reTag     = regexp.MustCompile(`(?is)<[^>]+>`)
 
 	// Visually-hidden text fingerprints, in CSS-style or attribute form. These
 	// are the classic ways a phishing message hides keyword-stuffing or hides a
@@ -66,21 +65,30 @@ func extractBodyStructural(msg *contractsk.AnalysisHeadersMessage, declaredChars
 	plain := msg.BodyPlain
 	out := bodyStructuralSignals{}
 
-	hasHTML := strings.TrimSpace(html) != "" && reHTMLTag.MatchString(html)
+	htmlTrimmed := strings.TrimSpace(html)
+	hasHTML := htmlTrimmed != "" && reHTMLTag.MatchString(html)
 
-	// html_only: the message renders as HTML but offers no meaningful plain-
-	// text alternative. Legitimate bulk senders almost always ship a multipart/
-	// alternative with a real text part; HTML-only mail is a mild phishing tell.
+	// html_only: the message renders as HTML but offers no meaningful plain-text
+	// alternative. SVC-02 tells us this directly via PlainSynthesised — it set
+	// BodyPlain = HTMLToText(BodyHTML) because no genuine text/plain part existed —
+	// so we no longer re-derive the synthesis by re-stripping the HTML with a
+	// different algorithm than the parser used (which diverged on <style>/<script>
+	// blocks and entities, silently dropping the signal). Legitimate bulk senders
+	// ship a real text part; an HTML-only message is a mild phishing tell.
 	if hasHTML {
-		out.HTMLOnly = !hasMeaningfulPlainText(plain, html)
+		out.HTMLOnly = msg.PlainSynthesised
 	}
 
-	// The remaining flags need markup to reason about. Fall back to the plain
-	// body only when there is no HTML part at all (text/plain phish can still
-	// declare a broken charset, hence the encoding check below also runs on it).
-	markup := html
-	if !hasHTML {
-		markup = plain
+	// Form / hidden-text detection runs on the HTML whenever the message carried
+	// ANY HTML part — including one built only from tags outside reHTMLTag's
+	// structural allowlist (a bare <form>/<input> credential-harvest payload, a
+	// white-on-white <font> block), which would otherwise fall through to the
+	// (often synthesised, tag-stripped) plain body and never match. Only with no
+	// HTML part at all do we reason over the plain body. reHTMLTag still gates the
+	// html_only decision above, which needs a recognisably-rendered document.
+	markup := plain
+	if htmlTrimmed != "" {
+		markup = html
 	}
 
 	if reFormTag.MatchString(markup) {
@@ -92,46 +100,19 @@ func extractBodyStructural(msg *contractsk.AnalysisHeadersMessage, declaredChars
 	return out
 }
 
-// hasMeaningfulPlainText reports whether the plain part carries a real reader-
-// facing alternative to the HTML. It is NOT enough for the plain part to be
-// non-empty: SVC-02 SYNTHESISES a plain body from the HTML when the message
-// carried no genuine text/plain part (parser.go sets BodyPlain = HTMLToText(html)
-// when the real plain part is empty), so an HTML-only message arrives here with a
-// non-empty BodyPlain whose letters/digits equal the tag-stripped HTML — and that
-// synthesised case must read as HTML-only. We therefore compare the collapsed
-// letter/digit content: a plain part that DIFFERS from the stripped HTML is a
-// real alternative; one that equals it (or is empty/whitespace/markup-only) is
-// effectively HTML-only.
-//
-// (Trade-off: a genuine sender whose plain part normalises identically to the
-// HTML is flagged html_only — a minor, low-weight false positive. Distinguishing
-// it from the synthesised case would need a "plain_synthesised" flag from SVC-02
-// on the contract; tracked as a follow-up. Treating any non-empty plain as real
-// instead makes html_only NEVER fire — the synthesised plain is always non-empty
-// — which kills the signal, so that approach was reverted after the smoke gate
-// caught it.)
-func hasMeaningfulPlainText(plain, html string) bool {
-	p := strings.TrimSpace(plain)
-	if p == "" {
-		return false
+// bodyCharsetOf resolves the charset SVC-04 reasons over for the encoding-anomaly
+// check: the per-body-part charset SVC-02 captured (BodyCharset), falling back to
+// the top-level ContentCharset for older producers / single-part messages. The
+// top-level charset is empty for multipart/* mail, so without BodyCharset the
+// declared-vs-observed charset signal is dead for every multipart message.
+func bodyCharsetOf(msg *contractsk.AnalysisHeadersMessage) string {
+	if msg == nil {
+		return ""
 	}
-	if normalizeBodyContent(p) == "" {
-		return false
+	if msg.BodyCharset != "" {
+		return msg.BodyCharset
 	}
-	stripped := normalizeBodyContent(reTag.ReplaceAllString(html, " "))
-	return normalizeBodyContent(p) != stripped || stripped == ""
-}
-
-// normalizeBodyContent lowercases and keeps only letters/digits so that
-// whitespace/markup differences don't mask "same content".
-func normalizeBodyContent(s string) string {
-	var b strings.Builder
-	for _, r := range strings.ToLower(s) {
-		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
-			b.WriteRune(r)
-		}
-	}
-	return b.String()
+	return msg.ContentCharset
 }
 
 func detectHiddenText(markup string) bool {
@@ -152,10 +133,15 @@ func detectHiddenText(markup string) bool {
 }
 
 // detectEncodingAnomaly flags two cheap, high-signal cases:
-//  1. a declared charset the body plainly violates (declares us-ascii/iso-8859-1
-//     but the body carries multibyte UTF-8 / control characters), and
+//  1. a declared 7-bit-ASCII charset the body plainly violates (declares
+//     us-ascii but the body carries non-ASCII / multibyte UTF-8 bytes), and
 //  2. an excessive ratio of non-printable control bytes, which is unusual for
 //     legitimate mail and shows up in obfuscated payloads.
+//
+// iso-8859-1 / latin-1 are deliberately NOT treated as an ASCII claim: their
+// 0x80–0xFF range is legitimately printable (accented Western-European copy),
+// so a body declaring iso-8859-1 with accented characters is normal mail, not
+// an anomaly.
 func detectEncodingAnomaly(declaredCharset, html, plain string) bool {
 	body := html
 	if strings.TrimSpace(body) == "" {
@@ -166,7 +152,7 @@ func detectEncodingAnomaly(declaredCharset, html, plain string) bool {
 	}
 
 	charset := strings.ToLower(strings.TrimSpace(declaredCharset))
-	asciiClaim := charset == "us-ascii" || charset == "ascii" || charset == "iso-8859-1" || charset == "latin-1"
+	asciiClaim := charset == "us-ascii" || charset == "ascii"
 	if asciiClaim && containsNonASCII(body) {
 		return true
 	}
@@ -180,9 +166,16 @@ func detectEncodingAnomaly(declaredCharset, html, plain string) bool {
 			ctrl++
 		}
 	}
-	if total == 0 {
+	// Require a meaningful body length before trusting the ratio: in a very short
+	// body a single stray control byte (a form-feed/ESC left by a quirky mailer)
+	// dominates the ratio (1/30 = 3.3% > 2%) and trips a false anomaly. A genuine
+	// obfuscated payload carries many control bytes across a longer body.
+	const (
+		ctrlAnomalyMinLen = 200
+		ctrlAnomalyRatio  = 0.02
+	)
+	if total < ctrlAnomalyMinLen {
 		return false
 	}
-	const ctrlAnomalyRatio = 0.02
 	return float64(ctrl)/float64(total) > ctrlAnomalyRatio
 }

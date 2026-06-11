@@ -87,9 +87,19 @@ func (w *WebhookChannel) Send(ctx context.Context, a Alert) error {
 		if lastErr == nil {
 			return nil
 		}
+		// A 4xx is a permanent client error (a misconfigured/unauthorised
+		// endpoint): retrying cannot fix it and only wastes the rate-limit
+		// window + the endpoint's attention, so stop immediately. Transport
+		// errors and 5xx remain retryable.
+		if errors.Is(lastErr, errPermanentWebhook) {
+			return fmt.Errorf("webhook POST: %w", lastErr)
+		}
 	}
 	return fmt.Errorf("webhook POST failed after %d attempt(s): %w", attempts, lastErr)
 }
+
+// errPermanentWebhook marks a non-retryable webhook failure (a 4xx response).
+var errPermanentWebhook = errors.New("permanent webhook error")
 
 func (w *WebhookChannel) post(ctx context.Context, body []byte) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, w.cfg.URL, bytes.NewReader(body))
@@ -112,10 +122,14 @@ func (w *WebhookChannel) post(ctx context.Context, body []byte) error {
 		_, _ = io.Copy(io.Discard, resp.Body)
 		_ = resp.Body.Close()
 	}()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+	switch {
+	case resp.StatusCode >= 200 && resp.StatusCode < 300:
+		return nil
+	case resp.StatusCode >= 400 && resp.StatusCode < 500:
+		return fmt.Errorf("%w: webhook returned status %d", errPermanentWebhook, resp.StatusCode)
+	default:
 		return fmt.Errorf("webhook returned status %d", resp.StatusCode)
 	}
-	return nil
 }
 
 // webhookBaseBackoff is the first retry delay; subsequent retries grow it

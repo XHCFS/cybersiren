@@ -216,3 +216,164 @@ func TestRepoStore_UpdateEmailAttachmentScore_KeysOnInternalID(t *testing.T) {
 		t.Fatalf("update keyed on logical email_id affected %d rows, want 0", affected)
 	}
 }
+
+// TestRepoStore_CacheVT_EmptyRawPersists is the regression guard for S2: a VT 404
+// negative-cache write carries no body (Result.NotFound ⇒ Raw=nil). enrichment_
+// results.raw_response is JSONB NOT NULL, and pgx encodes a nil []byte as SQL NULL,
+// so without coercing the empty body to the JSON null literal the INSERT violates
+// NOT NULL, the error is swallowed, and the negative cache never persists — every
+// unknown hash then re-hits the VT API on each redelivery. DB-integration test.
+func TestRepoStore_CacheVT_EmptyRawPersists(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping DB-integration test in -short mode")
+	}
+	dsn := os.Getenv("APP_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("set APP_DATABASE_URL to the non-bypass app role DSN for store integration tests")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer pool.Close()
+
+	s := NewRepoStore(pool)
+	const orgID = int64(1)
+	sha := "0000000000000000000000000000000000000000000000000000000000000516"
+
+	var libID int64
+	err = repository.WithOrgTx(ctx, pool, orgID, func(q *dbsqlc.Queries) error {
+		id, qerr := q.UpsertParsedAttachment(ctx, dbsqlc.UpsertParsedAttachmentParams{Sha256: sha})
+		if qerr != nil {
+			return qerr
+		}
+		libID = id
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("seed attachment_library: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM enrichment_results WHERE entity_id=$1 AND provider='virustotal'`, libID)
+		_, _ = pool.Exec(context.Background(), `DELETE FROM attachment_library WHERE sha256=$1`, sha)
+	})
+
+	// Empty Raw (the 404 negative-cache shape) must still persist.
+	if err := s.CacheVT(ctx, orgID, libID, time.Now().UTC(), VTCacheInput{}, time.Hour); err != nil {
+		t.Fatalf("cache vt with empty raw: %v", err)
+	}
+	cached, err := s.GetFreshVT(ctx, orgID, libID)
+	if err != nil {
+		t.Fatalf("read vt cache: %v", err)
+	}
+	if !cached.Found {
+		t.Fatal("empty-raw VT negative-cache row did not persist (S2 regression)")
+	}
+	if cached.MaliciousVotes != 0 {
+		t.Fatalf("negative cache should carry 0 malicious votes, got %d", cached.MaliciousVotes)
+	}
+}
+
+// TestRepoStore_UpdateEmailAttachmentScore_ZeroWritesZeroNotNull is the regression
+// guard for S3: a benign attachment scores 0, and the UPDATE SETs risk_score
+// unconditionally (no COALESCE), so 0 must persist as a valid 0 ("scored, benign")
+// — pgconv.Int4OrNull(0) would write SQL NULL ("never scored") and lose the
+// verdict. DB-integration test.
+func TestRepoStore_UpdateEmailAttachmentScore_ZeroWritesZeroNotNull(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping DB-integration test in -short mode")
+	}
+	dsn := os.Getenv("APP_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("set APP_DATABASE_URL to the non-bypass app role DSN for store integration tests")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer pool.Close()
+
+	s := NewRepoStore(pool)
+	const orgID = int64(1)
+	fetchedAt := time.Now().UTC()
+	ts := pgtype.Timestamptz{Time: fetchedAt, Valid: true}
+	sha := "0000000000000000000000000000000000000000000000000000000000000517"
+
+	var internalID, attachmentID int64
+	err = repository.WithOrgTx(ctx, pool, orgID, func(q *dbsqlc.Queries) error {
+		row, qerr := q.InsertEmail(ctx, dbsqlc.InsertEmailParams{
+			FetchedAt: ts,
+			OrgID:     pgtype.Int8{Int64: orgID, Valid: true},
+			MessageID: pgtype.Text{String: "<p2.1-zero-score-test@cybersiren>", Valid: true},
+		})
+		if qerr != nil {
+			return qerr
+		}
+		internalID = row.InternalID
+		id, qerr := q.UpsertParsedAttachment(ctx, dbsqlc.UpsertParsedAttachmentParams{Sha256: sha})
+		if qerr != nil {
+			return qerr
+		}
+		attachmentID = id
+		return q.InsertEmailAttachment(ctx, dbsqlc.InsertEmailAttachmentParams{
+			EmailID:        internalID,
+			EmailFetchedAt: ts,
+			AttachmentID:   attachmentID,
+			Filename:       pgtype.Text{String: "benign.pdf", Valid: true},
+			OrgID:          pgtype.Int8{Int64: orgID, Valid: true},
+		})
+	})
+	if err != nil {
+		t.Fatalf("seed email + attachment: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(),
+			`DELETE FROM emails WHERE internal_id = $1 AND fetched_at = $2`, internalID, fetchedAt)
+		_, _ = pool.Exec(context.Background(), `DELETE FROM attachment_library WHERE sha256=$1`, sha)
+	})
+
+	affected, err := s.UpdateEmailAttachmentScore(ctx, EmailAttachmentScore{
+		OrgID:        orgID,
+		InternalID:   internalID,
+		FetchedAt:    fetchedAt,
+		AttachmentID: attachmentID,
+		RiskScore:    0,
+	})
+	if err != nil {
+		t.Fatalf("update with score 0: %v", err)
+	}
+	if affected != 1 {
+		t.Fatalf("score-0 update affected %d rows, want 1", affected)
+	}
+
+	var rs pgtype.Int4
+	err = repository.WithOrgTx(ctx, pool, orgID, func(q *dbsqlc.Queries) error {
+		rows, qerr := q.ListEmailAttachments(ctx, dbsqlc.ListEmailAttachmentsParams{EmailID: internalID, EmailFetchedAt: ts})
+		if qerr != nil {
+			return qerr
+		}
+		for _, r := range rows {
+			if r.AttachmentID == attachmentID {
+				rs = r.RiskScore
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("read back risk_score: %v", err)
+	}
+	if !rs.Valid {
+		t.Fatal("risk_score is NULL after writing score 0 (S3 regression) — want a valid 0")
+	}
+	if rs.Int32 != 0 {
+		t.Fatalf("risk_score = %d, want 0", rs.Int32)
+	}
+}
