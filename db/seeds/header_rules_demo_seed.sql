@@ -130,6 +130,21 @@ VALUES
      '{
         "category": "reputation",
         "expr": {"signal": "reputation.is_free_provider", "op": "eq", "value": true}
+      }'::jsonb),
+
+    -- R.5  Newly-registered sender domain (<30 days). Only fires when the
+    --      WHOIS-backed reputation.domain_age_days snapshot key is present —
+    --      a non-resolving sender domain omits the key and never matches.
+    (NULL,
+     'svc04.reputation.young_domain',
+     'Sender domain registered within the last 30 days (newly-registered-domain risk).',
+     '1.0.0', 'active', 'header', 25,
+     '{
+        "category": "reputation",
+        "expr": {"all": [
+            {"signal": "reputation.domain_age_days", "op": "gte", "value": 0},
+            {"signal": "reputation.domain_age_days", "op": "lt",  "value": 30}
+        ]}
       }'::jsonb)
 ON CONFLICT (org_id, name, version) DO UPDATE
     SET description  = EXCLUDED.description,
@@ -183,6 +198,46 @@ VALUES
      '{
         "category": "structural",
         "expr": {"signal": "structural.missing_mailer", "op": "eq", "value": true}
+      }'::jsonb),
+
+    -- S.5  Body carries an HTML form (credential-harvest tell). D9 body signal.
+    (NULL,
+     'svc04.structural.embedded_form',
+     'Email body contains an HTML form (credential-harvest tell).',
+     '1.0.0', 'active', 'header', 20,
+     '{
+        "category": "structural",
+        "expr": {"signal": "structural.has_form", "op": "eq", "value": true}
+      }'::jsonb),
+
+    -- S.6  HTML-only body with no meaningful plain-text alternative. D9.
+    (NULL,
+     'svc04.structural.html_only',
+     'Email is HTML-only with no meaningful plain-text alternative.',
+     '1.0.0', 'active', 'header', 10,
+     '{
+        "category": "structural",
+        "expr": {"signal": "structural.html_only", "op": "eq", "value": true}
+      }'::jsonb),
+
+    -- S.7  Hidden text (display:none / zero-size / white-on-white). D9.
+    (NULL,
+     'svc04.structural.hidden_text',
+     'Email body contains hidden text (display:none / zero-size / white-on-white).',
+     '1.0.0', 'active', 'header', 15,
+     '{
+        "category": "structural",
+        "expr": {"signal": "structural.has_hidden_text", "op": "eq", "value": true}
+      }'::jsonb),
+
+    -- S.8  Encoding anomaly: declared charset violated or excessive control bytes. D9.
+    (NULL,
+     'svc04.structural.encoding_anomaly',
+     'Declared charset violated or excessive control bytes in body.',
+     '1.0.0', 'active', 'header', 10,
+     '{
+        "category": "structural",
+        "expr": {"signal": "structural.encoding_anomaly", "op": "eq", "value": true}
       }'::jsonb)
 ON CONFLICT (org_id, name, version) DO UPDATE
     SET description  = EXCLUDED.description,

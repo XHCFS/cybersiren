@@ -105,6 +105,19 @@ type AnalysisHeadersMessage struct {
 	// actually consumes.)
 	BodyHTML  string `json:"body_html,omitempty"`
 	BodyPlain string `json:"body_plain,omitempty"`
+	// BodyCharset is the declared charset of the body part SVC-04 reasons over
+	// (the HTML part when present, else the plain part) — captured by SVC-02 from
+	// the leaf text part during the MIME walk, NOT from the top-level Content-Type
+	// (which carries no charset for multipart/* messages). SVC-04's encoding-
+	// anomaly check uses it so the declared-vs-observed charset signal works for
+	// multipart mail; empty when the body part declared no charset.
+	BodyCharset string `json:"body_charset,omitempty"`
+	// PlainSynthesised is true when SVC-02 had no genuine text/plain part and
+	// derived BodyPlain from the HTML via HTMLToText. SVC-04 uses it to decide
+	// html_only deterministically (HTMLOnly = hasHTML && PlainSynthesised) instead
+	// of re-deriving the synthesis by re-stripping the HTML with a different
+	// algorithm.
+	PlainSynthesised bool `json:"plain_synthesised,omitempty"`
 }
 
 // ReceivedHop is a single entry in the Received-chain.

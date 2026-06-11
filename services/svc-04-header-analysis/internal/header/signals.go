@@ -51,9 +51,11 @@ type ReputationSignals struct {
 	IsFreeProvider     bool
 	TyposquatTarget    string
 	TyposquatDistance  int // 0 = no typosquat detected
-	// DomainAgeDays is intentionally a *int — nil means "unknown" (which
-	// is the case in the current pipeline; ti_indicators.first_seen is
-	// feed-observation time, not WHOIS registration). See ARCH-SPEC §13.
+	// DomainAgeDays is intentionally a *int. It is populated from a live
+	// WHOIS lookup (reputation.go via the shared enricher). nil now means a
+	// WHOIS miss/unavailable (5s timeout, no creation date in the record, or
+	// the lookup was skipped for a free provider) — distinct from age 0 (a
+	// domain registered today). See ARCH-SPEC §13.
 	DomainAgeDays *int
 }
 
@@ -69,6 +71,15 @@ type StructuralSignals struct {
 	MissingMailer           bool
 	SuspiciousMailerAgent   bool
 	NonASCIISenderDomain    bool
+
+	// Body-derived structural signals (D9 — computed HERE in SVC-04 from the
+	// body the parser ships on analysis.headers, NOT by the parser). See
+	// ARCH-SPEC §1 step 3b dimension (iii): "HTML-only messages, hidden text
+	// elements, embedded forms, encoding anomalies".
+	HTMLOnly        bool // message has an HTML part but no meaningful plain-text alternative
+	HasHiddenText   bool // HTML contains visually-hidden text (display:none / font-size:0 / white-on-white / off-screen)
+	HasForm         bool // HTML embeds a <form> (credential-harvest vector)
+	EncodingAnomaly bool // declared/observed charset mismatch or excessive non-printable content
 }
 
 // HeaderSignals is the union of all three dimensions plus a back-pointer

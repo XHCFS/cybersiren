@@ -85,5 +85,9 @@ INSERT INTO ti_indicators (
     ((SELECT id FROM feeds WHERE name = 'demo-seed'), 'domain', 'a08ulcab.highjoke.in.net',            'botnet_cc', 85, 0.82, TRUE, CURRENT_TIMESTAMP),
     ((SELECT id FROM feeds WHERE name = 'demo-seed'), 'domain', 'a4-scan-point.puroflusso.in.net',     'botnet_cc', 80, 0.78, TRUE, CURRENT_TIMESTAMP),
     ((SELECT id FROM feeds WHERE name = 'demo-seed'), 'domain', 'admin-panel.sectoralcontrol.in.net',  'botnet_cc', 88, 0.85, TRUE, CURRENT_TIMESTAMP),
-    ((SELECT id FROM feeds WHERE name = 'demo-seed'), 'domain', 'agentscript.dawnspire.in.net',        'botnet_cc', 95, 0.92, TRUE, CURRENT_TIMESTAMP)
+    ((SELECT id FROM feeds WHERE name = 'demo-seed'), 'domain', 'agentscript.dawnspire.in.net',        'botnet_cc', 95, 0.92, TRUE, CURRENT_TIMESTAMP),
+
+    -- IP indicator — Injection A's originating IP (Received-chain hop). Fires
+    -- svc04.reputation.ti_ip_match for the smoke superset fixture.
+    ((SELECT id FROM feeds WHERE name = 'demo-seed'), 'ip', '185.220.101.42', 'phishing', 90, 0.90, TRUE, CURRENT_TIMESTAMP)
 ON CONFLICT ON CONSTRAINT uq_ti_indicators_feed_type_value DO NOTHING;

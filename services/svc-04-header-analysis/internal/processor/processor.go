@@ -122,12 +122,15 @@ func (p *Processor) Handle(ctx context.Context, msg sharedconsumer.Message) erro
 		p.observeError("rules_load")
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "rules load failed")
-		logCtx.Error().Err(err).Msg("rules cache load failed")
+		logCtx.Error().Err(err).Msg("rules cache load failed; offset will NOT be committed")
 		p.metrics.MessagesTotal.WithLabelValues("error").Inc()
-		// Don't redeliver: a DB blip should be observable but should not
-		// block downstream processing indefinitely. We emit a neutral
-		// score (0) so SVC-07 can complete its 5-component aggregation.
-		return p.publishNeutral(ctx, parsed, time.Since(startedAt))
+		// Fail closed: a rules-load failure (cache miss AND a DB/cache error) must
+		// NOT commit a neutral header score of 0 — that permanently under-scores a
+		// phishing email that would have fired header rules, with no redelivery. NACK
+		// so the message is reprocessed once the cache/DB recovers, matching the
+		// rule_hits writer's fail-closed contract (ARCH-SPEC §6). A permanently
+		// failing load is the deferred shared-consumer dead-letter's concern (§16 D16).
+		return fmt.Errorf("rules load failed for org %d: %w", parsed.OrgID, err)
 	}
 
 	signals := header.HeaderSignals{
@@ -157,7 +160,7 @@ func (p *Processor) Handle(ctx context.Context, msg sharedconsumer.Message) erro
 
 	// Persist before publishing — ARCH-SPEC §6 requires that offset is
 	// only committed after rule_hits commit success.
-	outcome, writeErr := p.writer.Write(ctx, ruleHitEntityID(parsed), parsed.FetchedAt, evalResult.Fired)
+	outcome, writeErr := p.writer.Write(ctx, parsed.OrgID, ruleHitEntityID(parsed), parsed.FetchedAt, evalResult.Fired)
 	p.metrics.WriteRetries.WithLabelValues(outcome).Inc()
 	if writeErr != nil {
 		p.observeError("db_write")
@@ -166,13 +169,11 @@ func (p *Processor) Handle(ctx context.Context, msg sharedconsumer.Message) erro
 		logCtx.Error().Err(writeErr).Int("fired_rules", len(evalResult.Fired)).
 			Msg("rule_hits write failed; offset will NOT be committed")
 		p.metrics.MessagesTotal.WithLabelValues("error").Inc()
-		// Returning a non-nil error keeps the offset un-committed. Note
-		// that segmentio/kafka-go advances FetchMessage even when the
-		// handler errors, so the failed message will only be re-read
-		// after consumer restart or partition rebalance. The bounded
-		// retry-with-backoff inside RuleHitWriter is therefore the
-		// in-process retry path; this branch only triggers after that
-		// budget is exhausted.
+		// Returning a non-nil error keeps the offset un-committed, so the shared
+		// franz-go consumer redelivers the record (it does not commit the batch
+		// on a handler error). The bounded retry-with-backoff inside RuleHitWriter
+		// is the in-process retry path; this branch triggers only after that budget
+		// is exhausted.
 		return writeErr
 	}
 
@@ -214,20 +215,6 @@ func (p *Processor) Handle(ctx context.Context, msg sharedconsumer.Message) erro
 		attribute.Int("fired_rules_count", len(evalResult.Fired)),
 	)
 	span.SetStatus(codes.Ok, "")
-	return nil
-}
-
-func (p *Processor) publishNeutral(ctx context.Context, parsed contractsk.AnalysisHeadersMessage, elapsed time.Duration) error {
-	out := buildScoresHeader(parsed, header.HeaderSignals{}, rules.EvaluationResult{}, 0, elapsed)
-	body, err := json.Marshal(out)
-	if err != nil {
-		return fmt.Errorf("marshal neutral scores.header: %w", err)
-	}
-	if err := p.producer.Publish(ctx, encodeKey(parsed.EmailID), body, p.cfg.PublishRetryAttempts); err != nil { // extra kafka retries cfg
-		p.observeError("publish")
-		return fmt.Errorf("publish neutral scores.header: %w", err)
-	}
-	p.metrics.MessagesTotal.WithLabelValues("ok").Inc()
 	return nil
 }
 

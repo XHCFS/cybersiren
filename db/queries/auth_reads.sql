@@ -72,6 +72,23 @@ WHERE org_id = $1
   AND email = $2
   AND deleted_at IS NULL;
 
+-- name: ListOrgAdmins :many
+-- Admin contacts for an organisation, used by SVC-09 to address email alerts
+-- (ARCH-SPEC §1-step6a: "SELECT email, display_name FROM users WHERE org_id=?
+-- AND role='admin' AND deleted_at IS NULL"). users is a control-plane table and
+-- is NOT RLS-forced, so this read is not subject to the app.current_org_id GUC;
+-- the org_id filter is the tenant boundary. Ordered by email for a stable
+-- recipient list.
+SELECT
+    id,
+    email,
+    display_name
+FROM users
+WHERE org_id = $1
+  AND role = 'admin'
+  AND deleted_at IS NULL
+ORDER BY email;
+
 -- name: ListAuditLogForOrg :many
 -- Operator-facing audit trail for an organisation, newest first.
 SELECT

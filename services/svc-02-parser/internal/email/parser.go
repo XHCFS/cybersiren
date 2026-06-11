@@ -46,15 +46,26 @@ type ParsedEmail struct {
 	BodyHTML  string // raw HTML body part ("" when none)
 	BodyPlain string // HTML-stripped clean plain text (NLP body)
 
+	// BodyCharset is the declared charset of the body part SVC-04 reasons over
+	// (the HTML part's charset when present, else the plain part's), captured
+	// from the leaf text part during the walk. Empty when no part declared one.
+	BodyCharset string
+	// PlainSynthesised is set when finalize() derives BodyPlain from the HTML
+	// because no genuine text/plain part was present. SVC-04 uses it for html_only.
+	PlainSynthesised bool
+
 	URLs        []ExtractedURL
 	Attachments []Attachment
 	Recipients  []Recipient
 
 	// htmlBuf / plainBuf accumulate body parts during the MIME walk so repeated
 	// concatenation stays linear; finalize() stringifies them into BodyHTML /
-	// BodyPlain once the walk is done.
-	htmlBuf  strings.Builder
-	plainBuf strings.Builder
+	// BodyPlain once the walk is done. htmlCharset / plainCharset capture the
+	// charset= param of the corresponding leaf part (last value wins).
+	htmlBuf      strings.Builder
+	plainBuf     strings.Builder
+	htmlCharset  string
+	plainCharset string
 }
 
 // HasBody reports whether the parsed email carries any body content (HTML or
@@ -106,8 +117,15 @@ func Parse(raw []byte) (*ParsedEmail, error) {
 func (p *ParsedEmail) finalize() {
 	p.BodyHTML = p.htmlBuf.String()
 	p.BodyPlain = p.plainBuf.String()
+	// Prefer the HTML part's charset (SVC-04 reasons over the HTML body first);
+	// fall back to the plain part's.
+	p.BodyCharset = p.htmlCharset
+	if p.BodyCharset == "" {
+		p.BodyCharset = p.plainCharset
+	}
 	if strings.TrimSpace(p.BodyPlain) == "" && p.BodyHTML != "" {
 		p.BodyPlain = HTMLToText(p.BodyHTML)
+		p.PlainSynthesised = true
 	}
 	if p.BodyHTML != "" {
 		p.URLs = append(p.URLs, ExtractURLsFromHTML(p.BodyHTML)...)
@@ -202,11 +220,17 @@ func walkPart(mediaType string, params map[string]string, cte, disposition, cont
 			pe.htmlBuf.WriteByte('\n')
 		}
 		pe.htmlBuf.Write(decoded)
+		if c := params["charset"]; c != "" {
+			pe.htmlCharset = c
+		}
 	case mediaType == "text/plain", isText:
 		if pe.plainBuf.Len() > 0 {
 			pe.plainBuf.WriteByte('\n')
 		}
 		pe.plainBuf.Write(decoded)
+		if c := params["charset"]; c != "" {
+			pe.plainCharset = c
+		}
 	default:
 		// Unknown non-text leaf with no disposition: keep as an attachment so
 		// nothing is silently dropped.

@@ -13,6 +13,7 @@ import (
 
 	dbsqlc "github.com/saif/cybersiren/db/sqlc"
 	"github.com/saif/cybersiren/services/svc-04-header-analysis/internal/rules"
+	"github.com/saif/cybersiren/shared/postgres/repository"
 )
 
 // RuleHitWriter inserts every fired rule into rule_hits inside a single
@@ -39,11 +40,15 @@ func NewRuleHitWriter(pool *pgxpool.Pool, maxRetries int, log zerolog.Logger) *R
 // dedupe (rule_id, entity_type, entity_id, rule_version); duplicate upstream
 // deliveries create duplicate history rows.
 //
-// emailInternalID corresponds to emails.internal_id and emailFetchedAt to
+// orgID is the owning tenant — every write tx issues SET LOCAL
+// app.current_org_id = orgID so the rule_hits tenant_isolation RLS policy
+// (migration 018, G10/D12) admits the row once the app connects as a non-bypass
+// role. emailInternalID corresponds to emails.internal_id and emailFetchedAt to
 // emails.fetched_at. Both are required to support rule_hits polymorphic joins
 // against partitioned emails rows.
 func (w *RuleHitWriter) Write(
 	ctx context.Context,
+	orgID int64,
 	emailInternalID int64,
 	emailFetchedAt time.Time,
 	fired []rules.FiredRule,
@@ -66,7 +71,7 @@ func (w *RuleHitWriter) Write(
 			return "exhausted", err
 		}
 
-		err := w.runOnce(ctx, emailInternalID, emailFetchedAt, fired)
+		err := w.runOnce(ctx, orgID, emailInternalID, emailFetchedAt, fired)
 		if err == nil {
 			return "ok", nil
 		}
@@ -81,6 +86,7 @@ func (w *RuleHitWriter) Write(
 			Int("attempt", attempt+1).
 			Int("max_attempts", attempts).
 			Dur("backoff", backoff).
+			Int64("org_id", orgID).
 			Int64("email_internal_id", emailInternalID).
 			Int("fired_rules", len(fired)).
 			Msg("rule_hits transaction failed; retrying")
@@ -97,6 +103,7 @@ func (w *RuleHitWriter) Write(
 
 func (w *RuleHitWriter) runOnce(
 	ctx context.Context,
+	orgID int64,
 	emailInternalID int64,
 	emailFetchedAt time.Time,
 	fired []rules.FiredRule,
@@ -108,6 +115,14 @@ func (w *RuleHitWriter) runOnce(
 	defer func() {
 		_ = tx.Rollback(ctx)
 	}()
+
+	// G10/D12 RLS: bind the tenant boundary for this transaction. rule_hits is
+	// FORCE ROW LEVEL SECURITY (migration 018); without the GUC the
+	// tenant_isolation policy denies every row once the app connects as the
+	// non-bypass role. Mirrors SVC-08's decision writer.
+	if err := repository.SetOrgGUC(ctx, tx, orgID); err != nil {
+		return fmt.Errorf("set org guc: %w", err)
+	}
 
 	q := dbsqlc.New(tx)
 

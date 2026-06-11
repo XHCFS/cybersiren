@@ -70,6 +70,42 @@ SET
     updated_at   = NOW(),
     deleted_at   = NULL;
 
+-- name: RecordAttachmentRisk :exec
+-- SVC-05 heuristic-only risk record (ARCH-SPEC §1 step 3c, with a platform-
+-- global-library safety carve-out): when heuristics flag a file dangerous but
+-- there is NO hash/VT confirmation, record risk_score + threat_tags on the
+-- shared attachment_library row WITHOUT setting is_malicious. is_malicious is
+-- reserved for confirmed malice (UpsertMalwareHash) so one org's heuristic false
+-- positive on a common file (e.g. a legitimate macro-enabled Office document)
+-- cannot permanently brand that sha256 malicious for every tenant (the library
+-- has no org_id; a TRUE flag short-circuits all future lookups to score 90).
+INSERT INTO attachment_library (sha256, risk_score, threat_tags)
+VALUES ($1, $2, $3)
+ON CONFLICT (sha256)
+DO UPDATE
+SET
+    risk_score   = CASE
+        WHEN attachment_library.risk_score IS NULL THEN EXCLUDED.risk_score
+        WHEN EXCLUDED.risk_score IS NULL THEN attachment_library.risk_score
+        ELSE GREATEST(attachment_library.risk_score, EXCLUDED.risk_score)
+    END,
+    threat_tags  = (
+        SELECT ARRAY(
+            SELECT DISTINCT tag
+            FROM unnest(
+                COALESCE(attachment_library.threat_tags, '{}'::TEXT[]) ||
+                COALESCE(EXCLUDED.threat_tags, '{}'::TEXT[])
+            ) AS tag
+            WHERE tag IS NOT NULL
+              AND btrim(tag) <> ''
+            ORDER BY tag
+        )
+    ),
+    updated_at   = NOW(),
+    deleted_at   = NULL;
+-- is_malicious is intentionally NOT in the UPDATE SET: it keeps its current
+-- value (DEFAULT FALSE for a parser-created row; unchanged if already TRUE).
+
 -- name: ListMaliciousHashes :many
 -- Returns all malicious hashes for populating the TI hash cache.
 SELECT
@@ -80,4 +116,20 @@ SELECT
     updated_at
 FROM attachment_library
 WHERE is_malicious = TRUE
+  AND deleted_at IS NULL;
+
+-- name: GetAttachmentBySha256 :one
+-- SVC-05 per-attachment hash lookup (ARCH-SPEC §1 step 3c). Resolves the
+-- attachment_library row by its sha256 UNIQUE index so SVC-05 can read the
+-- is_malicious / risk_score / threat_tags verdict (and the library id used as
+-- the email_attachments.attachment_id FK and the VT cache entity_id). Returns
+-- no rows when the binary has never been observed.
+SELECT
+    id,
+    sha256,
+    is_malicious,
+    risk_score,
+    threat_tags
+FROM attachment_library
+WHERE sha256 = $1
   AND deleted_at IS NULL;

@@ -126,6 +126,42 @@ func TestParseFullMessage(t *testing.T) {
 	}
 }
 
+func TestParseBodyCharsetAndSynthesisFlag(t *testing.T) {
+	// Multipart with a genuine text/plain part: BodyCharset is captured from the
+	// body part (S5) — the top-level multipart Content-Type carries no charset —
+	// and PlainSynthesised is false because a real plain part exists (A1).
+	pe, err := Parse(buildMIME())
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if pe.BodyCharset != "utf-8" {
+		t.Errorf("BodyCharset = %q, want utf-8 (from the body part, not the empty top-level Content-Type)", pe.BodyCharset)
+	}
+	if pe.PlainSynthesised {
+		t.Error("PlainSynthesised must be false when a genuine text/plain part exists")
+	}
+
+	// HTML-only message (no text/plain part): SVC-02 synthesises BodyPlain from the
+	// HTML, so PlainSynthesised must be true and BodyCharset comes from the HTML part.
+	raw := "From: a@b.com\r\n" +
+		"Subject: hi\r\n" +
+		"Content-Type: text/html; charset=\"iso-8859-1\"\r\n\r\n" +
+		`<html><body><p>Pay now</p></body></html>` + "\r\n"
+	pe, err = Parse([]byte(raw))
+	if err != nil {
+		t.Fatalf("Parse html-only: %v", err)
+	}
+	if !pe.PlainSynthesised {
+		t.Error("PlainSynthesised must be true for an HTML-only message")
+	}
+	if pe.BodyCharset != "iso-8859-1" {
+		t.Errorf("BodyCharset = %q, want iso-8859-1", pe.BodyCharset)
+	}
+	if strings.TrimSpace(pe.BodyPlain) == "" {
+		t.Error("BodyPlain should be synthesised from the HTML")
+	}
+}
+
 func TestParseHeaderOnlyMessage(t *testing.T) {
 	raw := "From: a@b.example\r\nSubject: hi\r\n\r\nplain body text\r\n"
 	pe, err := Parse([]byte(raw))

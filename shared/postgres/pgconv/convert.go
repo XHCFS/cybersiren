@@ -34,6 +34,13 @@ func Int8(v int64) pgtype.Int8 {
 	return pgtype.Int8{Int64: v, Valid: true}
 }
 
+// Int4 returns an always-valid pgtype.Int4 for INSERT/unconditional-SET params,
+// where the zero value is a real value to be written (e.g. a benign attachment's
+// risk_score of 0 written by an UPDATE with no COALESCE — distinct from "unknown").
+func Int4(v int32) pgtype.Int4 {
+	return pgtype.Int4{Int32: v, Valid: true}
+}
+
 // Float8 returns an always-valid pgtype.Float8 for INSERT params, where the zero
 // value is a real value to be written.
 func Float8(v float64) pgtype.Float8 {

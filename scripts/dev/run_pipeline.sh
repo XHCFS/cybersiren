@@ -60,6 +60,20 @@ SVC_04_ENV=(
   CYBERSIREN_HEADER__CONSUMER_GROUP=cg-header-analysis
 )
 
+# svc-09 notification: enable the webhook TRANSPORT and point it at the local
+# recorder sink (started in start()). The org's notification_channels already
+# enables the webhook CHANNEL; this enables the transport (BuildChannels gates
+# on Enabled). URL is 127.0.0.1 (NOT host.docker.internal) because svc-09 runs
+# natively on the host here, not in a container. A secret makes X-Signature
+# present so the smoke can assert on it.
+WEBHOOK_PORT="${WEBHOOK_PORT:-9119}"
+SVC_09_ENV=(
+  CYBERSIREN_NOTIFICATION__WEBHOOK__ENABLED=true
+  "CYBERSIREN_NOTIFICATION__WEBHOOK__URL=http://127.0.0.1:${WEBHOOK_PORT}/"
+  CYBERSIREN_NOTIFICATION__WEBHOOK__TIMEOUT=5s
+  CYBERSIREN_NOTIFICATION__WEBHOOK__SECRET=smoke-webhook-secret
+)
+
 # Service spec rows: name | go-package | metrics_port | http_port (0 = none)
 SERVICES=(
   "svc-01-ingestion|./services/svc-01-ingestion/cmd/ingestion|9101|8081"
@@ -128,6 +142,34 @@ start() {
                               ./services/svc-09-notification/cmd/notification \
                               ./services/svc-10-api-dashboard/cmd/api
 
+  # Webhook recorder sink: a tiny stdlib HTTP server that appends each POST
+  # (headers + body) as one JSON line to webhook-sink.jsonl. svc-09 dispatches
+  # alerts here (SVC_09_ENV points the webhook transport at this port). Its
+  # pidfile lands in $PIDDIR so stop()'s *.pid loop tears it down automatically,
+  # even when the smoke fails (make smoke wraps inject under a stop-on-EXIT trap).
+  WEBHOOK_PORT="${WEBHOOK_PORT:-9119}"
+  SINK_OUT="$LOGDIR/webhook-sink.jsonl"
+  : > "$SINK_OUT"   # truncate any record from a previous run
+  echo "==> Starting webhook sink on 127.0.0.1:$WEBHOOK_PORT → $SINK_OUT"
+  python3 - "$WEBHOOK_PORT" "$SINK_OUT" >"$LOGDIR/webhook-sink.log" 2>&1 <<'PY' &
+import sys, http.server, json
+port = int(sys.argv[1]); out = sys.argv[2]
+class H(http.server.BaseHTTPRequestHandler):
+    def do_POST(self):
+        n = int(self.headers.get('Content-Length', '0'))
+        body = self.rfile.read(n)
+        with open(out, 'a') as f:
+            f.write(json.dumps({
+                "headers": dict(self.headers),
+                "body": body.decode('utf-8', 'replace'),
+            }) + "\n")
+        self.send_response(200); self.end_headers()
+    def log_message(self, *a):
+        pass
+http.server.HTTPServer(('127.0.0.1', port), H).serve_forever()
+PY
+  echo $! > "$PIDDIR/webhook-sink.pid"
+
   echo "==> Starting stubs"
   for spec in "${SERVICES[@]}"; do
     IFS='|' read -r name pkg mport hport <<<"$spec"
@@ -147,6 +189,9 @@ start() {
     fi
     if [[ "$name" == "svc-04-header-analysis" ]]; then
       env_args+=("${SVC_04_ENV[@]}")
+    fi
+    if [[ "$name" == "svc-09-notification" ]]; then
+      env_args+=("${SVC_09_ENV[@]}")
     fi
 
     echo "  $name (metrics=$mport http=$hport) → $log"
