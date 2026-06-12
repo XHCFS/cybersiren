@@ -187,6 +187,16 @@ func (a *Aggregator) Handle(ctx context.Context, msg kafkaconsumer.Message) erro
 		span.SetAttributes(attribute.String("aggregator.status", "wait_scores"))
 		return nil
 	}
+	// The bucket is complete, but a concurrent scores.header handler may not
+	// have merged __partition_internal_id yet (HSET field then HSETNX id are
+	// two ops). Publishing now would fall back to email_id and mis-key the
+	// verdict. Wait for the id to land — a later arrival or the scores.header
+	// handler itself re-triggers; the timeout sweeper is the backstop.
+	if internalIDPending(state) {
+		a.observeMessage(msg.Topic, "wait")
+		span.SetAttributes(attribute.String("aggregator.status", "wait_internal_id"))
+		return nil
+	}
 
 	// Separate Valkey key with short TTL — not a hash field — so a crash
 	// after publish cannot leave a permanent lock that blocks retry while

@@ -17,9 +17,16 @@ REPO_ROOT="$(cd "$HERE/../../../.." && pwd)"
 FIXTURE_FILE="$HERE/fixtures/scan_cases.json"
 TI_FIXTURE="${TI_FIXTURE:-/tmp/cybersiren-e2e-ti-fixture.json}"
 SVC_BIN="${SVC_BIN:-/tmp/cybersiren-svc-03-e2e}"
-STUB_PORT="${STUB_PORT:-8765}"
-SVC_PORT="${SVC_PORT:-18083}"
-SVC_METRICS_PORT="${SVC_METRICS_PORT:-19090}"
+
+# Default to free loopback ports so the e2e never collides with a running
+# stack: Prometheus owns host :19090, the smoke pipeline owns 9101-9110, and
+# the fusion-sidecar container owns :8765. Override any of these via env.
+pick_free_port() {
+  python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()'
+}
+STUB_PORT="${STUB_PORT:-$(pick_free_port)}"
+SVC_PORT="${SVC_PORT:-$(pick_free_port)}"
+SVC_METRICS_PORT="${SVC_METRICS_PORT:-$(pick_free_port)}"
 SVC_BASE="http://127.0.0.1:${SVC_PORT}"
 STUB_BASE="http://127.0.0.1:${STUB_PORT}"
 STUB_PID=""

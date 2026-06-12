@@ -72,11 +72,13 @@ func TestExtractInputs_FromComponentDetails(t *testing.T) {
 			},
 		},
 	})
-	// scores.nlp as svc-06 emits it: a ScoreEnvelope whose Details map carries
-	// subject + plain_text + intent_labels (nlp-pipeline/main.go).
-	nlp := mustJSON(contracts.ScoreEnvelope{
-		Component: contracts.ComponentNLP,
-		Details: map[string]interface{}{
+	// scores.nlp as svc-06 emits it: a {component, details} envelope whose
+	// details map carries subject + plain_text + intent_labels
+	// (nlp-pipeline/main.go). Built as a raw map — the same wire shape the
+	// decoder consumes — rather than the deprecated contracts.ScoreEnvelope.
+	nlp := mustJSON(map[string]any{
+		"component": contracts.ComponentNLP,
+		"details": map[string]any{
 			"intent_labels": []string{"phishing", "urgency"},
 			"subject":       "ALERT: invoice 12345",
 			"plain_text":    "click here to verify",
@@ -104,12 +106,13 @@ func TestExtractInputs_FromComponentDetails(t *testing.T) {
 }
 
 func TestExtractBody(t *testing.T) {
-	// scores.nlp as svc-06 emits it (ScoreEnvelope.Details), carrying
-	// plain_text + subject.
+	// scores.nlp as svc-06 emits it (a {component, details} envelope),
+	// carrying plain_text + subject. Raw map = the wire shape the decoder
+	// consumes, without the deprecated contracts.ScoreEnvelope.
 	d := contracts.ComponentDetails{
-		NLP: mustJSON(contracts.ScoreEnvelope{
-			Component: contracts.ComponentNLP,
-			Details: map[string]interface{}{
+		NLP: mustJSON(map[string]any{
+			"component": contracts.ComponentNLP,
+			"details": map[string]any{
 				"plain_text": "  Click HERE to confirm  ",
 				"subject":    "Reset password",
 			},

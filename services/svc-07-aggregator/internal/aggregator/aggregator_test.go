@@ -348,6 +348,42 @@ func TestResolvePartitionKeys_PrefersForwardedInternalID(t *testing.T) {
 	assert.Equal(t, int64(999), out2.InternalID, "falls back to email_id when none forwarded")
 }
 
+// A message-driven publish must wait while scores.header is present with a real
+// internal_id but __partition_internal_id hasn't been merged yet (the HSET-field
+// then HSETNX-id race) — otherwise emails.scored mis-keys off email_id. A header
+// that carried internal_id==0 is never coming, so we must NOT wait.
+func TestInternalIDPending(t *testing.T) {
+	t.Parallel()
+
+	headerWithID, err := json.Marshal(contracts.ScoresHeaderMessage{
+		EmailID: 999, OrgID: 1, Component: contracts.ComponentHeader, InternalID: 42,
+	})
+	require.NoError(t, err)
+	headerNoID, err := json.Marshal(contracts.ScoresHeaderMessage{
+		EmailID: 999, OrgID: 1, Component: contracts.ComponentHeader, InternalID: 0,
+	})
+	require.NoError(t, err)
+
+	t.Run("partition id already merged -> not pending", func(t *testing.T) {
+		st := map[string]string{
+			contracts.TopicScoresHeader: string(headerWithID),
+			fieldPartitionInternalID:    "42",
+		}
+		assert.False(t, internalIDPending(st))
+	})
+	t.Run("scores.header not yet arrived -> not pending", func(t *testing.T) {
+		assert.False(t, internalIDPending(map[string]string{}))
+	})
+	t.Run("header present with real id, partition field lagging -> pending", func(t *testing.T) {
+		st := map[string]string{contracts.TopicScoresHeader: string(headerWithID)}
+		assert.True(t, internalIDPending(st))
+	})
+	t.Run("header carried id==0 (never coming) -> not pending", func(t *testing.T) {
+		st := map[string]string{contracts.TopicScoresHeader: string(headerNoID)}
+		assert.False(t, internalIDPending(st))
+	})
+}
+
 func TestExtractIDs_EnvelopeAndFlatShapes(t *testing.T) {
 	t.Parallel()
 
