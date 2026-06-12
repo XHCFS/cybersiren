@@ -14,12 +14,24 @@
 
 set -euo pipefail
 
-INGEST_URL="${INGEST_URL:-http://localhost:8081/ingest}"
+# svc-01 now exposes the authenticated API-upload endpoint POST /api/v1/scan
+# (the old unauthenticated /ingest shim is retired). The org is bound from the
+# API key, NEVER the request body (G10/RLS), and svc-01 mints the logical
+# email_id as a UUIDv7 (G17) — the client no longer chooses it.
+INGEST_URL="${INGEST_URL:-http://localhost:8081/api/v1/scan}"
 TIMEOUT="${TIMEOUT:-60}"
 COMPOSE="${COMPOSE:-docker compose -f deploy/compose/docker-compose.yml --env-file deploy/compose/.env}"
 
-EMAIL_ID="${EMAIL_ID:-$(date +%s%N | head -c 16)}"
+# The fixed demo API key seeded by db/seeds/api_key_demo_seed.sql, bound to
+# org_id=1 (the Demo Tenant). Presented as `Authorization: Bearer <key>`.
+DEMO_API_KEY="${DEMO_API_KEY:-cs_demokey000000000000000000000DEMO}"
 ORG_ID="${ORG_ID:-1}"
+
+# Per-run correlation token. The server mints the real email_id (a UUIDv7
+# string) and returns it on the POST; this token is only used to make each
+# run's Message-ID unique so the 7-day (org, message_id) dedup does not
+# suppress a re-run of `make smoke` within the dedup window.
+RUN_TOKEN="${RUN_TOKEN:-$(date +%s%N)}"
 
 # Default sample EML. Crafted to trigger SPF/DKIM/DMARC mis-alignment
 # (svc-04), a suspicious URL (svc-03), and urgency / credential-prompt
@@ -55,7 +67,7 @@ Reply-To: noreply@paypa1-secure.tk
 To: victim@example.com
 Subject: URGENT: Your PayPal account will be suspended in 24 hours
 Date: Mon, 02 May 2026 12:30:00 +0000
-Message-ID: <20260502123000.smoke@paypa1-secure.tk>
+Message-ID: <SMOKE-MSGID-A@paypa1-secure.tk>
 MIME-Version: 1.0
 Content-Type: multipart/mixed; boundary="OUTER-MIX-8a3c9"
 
@@ -114,7 +126,7 @@ Reply-To: noreply@example.com
 To: victim@example.com
 Subject: Account notice
 Date: Mon, 02 May 2026 12:31:00 +0000
-Message-ID: <20260502123100.smokeb@iana.org>
+Message-ID: <SMOKE-MSGID-B@iana.org>
 MIME-Version: 1.0
 Content-Type: text/plain; charset=utf-8
 
@@ -140,40 +152,69 @@ pg_query() {
     psql -U postgres -d cybersiren -tAc "$1" 2>/dev/null
 }
 
-# inject posts one fixture and returns the matched emails.verdict record (JSON)
-# on stdout, or exits non-zero if no verdict arrives within $TIMEOUT.
-#   $1 = email_id   $2 = base64-encoded RFC822   $3 = From header  $4 = Subject
+# inject posts one fixture to the authenticated /api/v1/scan endpoint, captures
+# the SERVER-MINTED email_id (a UUIDv7 string — svc-01 now mints it, G17), then
+# waits for an emails.verdict record keyed by that same email_id. On stdout it
+# prints TWO lines: line 1 is the server-minted email_id (UUID), line 2 is the
+# matched verdict record (JSON). It runs in a command substitution (subshell),
+# so it cannot export a variable to the caller — returning the id on stdout is
+# how the caller learns it. Exits non-zero if the POST is not accepted or no
+# verdict arrives within $TIMEOUT.
+#   $1 = message_id (RFC-5322, unique per run for dedup)
+#   $2 = base64-encoded RFC822
 inject_and_wait() {
-  local email_id="$1" eml_b64="$2" from_hdr="$3" subject="$4"
-  local payload resp out match
+  local message_id="$1" eml_b64="$2"
+  local payload resp out match server_email_id
 
-  payload=$(python3 - "$email_id" "$ORG_ID" "$eml_b64" "$from_hdr" "$subject" <<'PY'
+  # JSON request shape for /api/v1/scan: {"raw_rfc822": "<base64>",
+  # "message_id": "..."}. There is intentionally NO email_id and NO org_id —
+  # svc-01 mints the email_id (UUIDv7) and binds the org from the API key (G10).
+  payload=$(python3 - "$eml_b64" "$message_id" <<'PY'
 import json, sys
-email_id = int(sys.argv[1])
-org_id = int(sys.argv[2])
-eml_b64 = sys.argv[3]
-from_hdr = sys.argv[4]
-subject = sys.argv[5]
+eml_b64 = sys.argv[1]
+message_id = sys.argv[2]
 print(json.dumps({
-    "email_id": email_id,
-    "org_id": org_id,
-    "source_adapter": "smoke-http",
-    "message_id": f"<{email_id}@smoke>",
-    "raw_message_b64": eml_b64,
-    "headers": {"From": from_hdr, "Subject": subject},
+    "raw_rfc822": eml_b64,
+    "message_id": message_id,
 }))
 PY
 )
 
-  echo "==> POST $INGEST_URL  email_id=$email_id" >&2
-  resp="$(curl -fsS -X POST "$INGEST_URL" -H 'Content-Type: application/json' --data-raw "$payload")"
+  echo "==> POST $INGEST_URL  (authenticated; server mints email_id)  message_id=$message_id" >&2
+  # Authenticate with the seeded demo key (Authorization: Bearer). The org is
+  # bound from the key, never the body. A bad/missing key is a 401.
+  resp="$(curl -fsS -X POST "$INGEST_URL" \
+    -H 'Content-Type: application/json' \
+    -H "Authorization: Bearer ${DEMO_API_KEY}" \
+    --data-raw "$payload")"
   echo "    $resp" >&2
 
-  echo "==> Waiting up to ${TIMEOUT}s for emails.verdict for $email_id" >&2
+  # Capture the server-minted email_id (UUIDv7 string) from the 202 response
+  # body: {"status":"accepted","email_id":"<uuid>"}. A non-accepted outcome
+  # (duplicate / quota_exceeded / error) carries no email_id and is a smoke
+  # failure here.
+  server_email_id="$(python3 -c 'import json,sys
+try:
+    d=json.load(sys.stdin)
+except Exception:
+    print(""); sys.exit(0)
+print(d.get("email_id","") if d.get("status")=="accepted" else "")' <<<"$resp")"
+  if [[ -z "$server_email_id" ]]; then
+    echo "FAIL: /api/v1/scan did not return an accepted email_id (response: ${resp})" >&2
+    exit 1
+  fi
+  echo "==> server minted email_id=$server_email_id" >&2
+
+  echo "==> Waiting up to ${TIMEOUT}s for emails.verdict for $server_email_id" >&2
   # rpk topic consume has no per-call deadline flag, so each poll runs under
   # `timeout`. We use `docker exec` (not `docker compose exec`) to skip the
   # compose-CLI startup cost (~300 ms per call) and a 200 ms cadence so we
   # don't sit on the verdict for an extra second.
+  #
+  # email_id is now a JSON STRING (UUIDv7), so we match the quoted form
+  # "email_id":"<uuid>" exactly — not the old bare-integer form.
+  local needle
+  needle="\"email_id\":\"${server_email_id}\""
   local deadline
   deadline=$(( $(date +%s) + TIMEOUT ))
   match=""
@@ -182,18 +223,19 @@ PY
       -X brokers=localhost:9092 \
       --offset start --num 100 \
       --format '%v\n' 2>/dev/null || true)"
-    if grep -q "\"email_id\":${email_id}\b" <<<"$out"; then
-      match="$(grep "\"email_id\":${email_id}\b" <<<"$out" | head -1)"
+    if grep -qF "$needle" <<<"$out"; then
+      match="$(grep -F "$needle" <<<"$out" | head -1)"
       break
     fi
     sleep 0.2
   done
 
   if [[ -z "$match" ]]; then
-    echo "FAIL: no emails.verdict record for $email_id within ${TIMEOUT}s" >&2
+    echo "FAIL: no emails.verdict record for $server_email_id within ${TIMEOUT}s" >&2
     exit 1
   fi
-  printf '%s\n' "$match"
+  # Line 1 = server-minted email_id (UUID); line 2 = matched verdict JSON.
+  printf '%s\n%s\n' "$server_email_id" "$match"
 }
 
 # json_field extracts a top-level scalar field from a one-line JSON record.
@@ -206,20 +248,29 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 # =============================================================================
 # INJECTION A — superset fixture. All 2a features asserted HARD below.
 # =============================================================================
+# Stamp this run's unique Message-ID into fixture A so the 7-day (org,
+# message_id) dedup never suppresses a re-run within the dedup window. The same
+# value is passed to /api/v1/scan as message_id so svc-01's dedup claim and
+# svc-02's email_identities registration agree.
+MSGID_A="<smoke-a-${RUN_TOKEN}@paypa1-secure.tk>"
 EML_A="${SAMPLE_EML:-$DEFAULT_EML}"
+EML_A="${EML_A/<SMOKE-MSGID-A@paypa1-secure.tk>/$MSGID_A}"
 EML_A_B64="$(printf '%s' "$EML_A" | base64 -w0)"
 
-# The compose demo-seed service applies the TI + attachment seeds asynchronously
-# during `make smoke` bring-up. Wait until they are committed before injecting,
-# so the first (cold) email cannot race the seed and silently drop ti_ip_match
-# (svc-04 Postgres TI fallback) or the svc-05 attachment write-back.
-echo "==> Waiting for demo seeds (TI ip + attachment hash) to commit"
+# The compose demo-seed service applies the demo API key + TI + attachment seeds
+# asynchronously during `make smoke` bring-up. Wait until they are committed
+# before injecting, so (a) the authenticated POST cannot race the demo-key seed
+# and 401, and (b) the first (cold) email cannot race the data seeds and silently
+# drop ti_ip_match (svc-04 Postgres TI fallback) or the svc-05 attachment
+# write-back.
+echo "==> Waiting for demo seeds (API key + TI ip + attachment hash) to commit"
 seed_deadline=$(( $(date +%s) + 60 ))
 while :; do
+  key_ready="$(pg_query "SELECT 1 FROM api_keys WHERE org_id=1 AND key_prefix='cs_demokey0' AND revoked_at IS NULL LIMIT 1;")"
   ti_ready="$(pg_query "SELECT 1 FROM ti_indicators WHERE indicator_type::text='ip' AND indicator_value='185.220.101.42' AND is_active=TRUE LIMIT 1;")"
   att_ready="$(pg_query "SELECT 1 FROM attachment_library WHERE sha256='${SEEDED_ATTACHMENT_SHA256}' AND is_malicious LIMIT 1;")"
-  [[ "$ti_ready" == "1" && "$att_ready" == "1" ]] && { echo "  seeds ready"; break; }
-  [[ $(date +%s) -ge $seed_deadline ]] && fail "demo seeds not committed within 60s (ti_ip=${ti_ready:-0} attachment=${att_ready:-0})"
+  [[ "$key_ready" == "1" && "$ti_ready" == "1" && "$att_ready" == "1" ]] && { echo "  seeds ready"; break; }
+  [[ $(date +%s) -ge $seed_deadline ]] && fail "demo seeds not committed within 60s (api_key=${key_ready:-0} ti_ip=${ti_ready:-0} attachment=${att_ready:-0})"
   sleep 0.5
 done
 
@@ -231,11 +282,15 @@ docker exec "$VALKEY_CONTAINER" redis-cli --no-raw KEYS 'notif:*' 2>/dev/null \
   | sed -E 's/^[0-9]+\) "?//; s/"?$//' | grep -E '^notif:' \
   | xargs -r -I{} docker exec "$VALKEY_CONTAINER" redis-cli DEL {} >/dev/null 2>&1 || true
 
-match="$(inject_and_wait "$EMAIL_ID" "$EML_A_B64" \
-  "PayPal Billing <billing@paypa1-secure.tk>" \
-  "URGENT: Your PayPal account will be suspended in 24 hours")"
+# inject_and_wait prints two lines: line 1 = server-minted email_id (UUID),
+# line 2 = the matched verdict JSON. Bind EMAIL_ID to the real UUID so the
+# downstream scores.* / webhook correlations below key off it.
+inject_out="$(inject_and_wait "$MSGID_A" "$EML_A_B64")"
+EMAIL_ID="$(sed -n '1p' <<<"$inject_out")"
+match="$(sed -n '2p' <<<"$inject_out")"
+[[ -n "$EMAIL_ID" && -n "$match" ]] || fail "Injection A produced no email_id/verdict"
 
-echo "==> verdict PASS (Injection A)"
+echo "==> verdict PASS (Injection A) email_id=$EMAIL_ID"
 echo "$match"
 
 # Resolve the surrogate internal_id straight off the verdict record — it is a
@@ -271,12 +326,13 @@ IFS='|' read -r a2_mal a2_score a2_tag <<<"$row"
 echo "  A2 OK: is_malicious=t risk_score=90 threat_tags⊇{malware}"
 
 # --- Assertion 3: scores.attachment payload --------------------------------
+# email_id is a UUIDv7 STRING now: match the quoted JSON form, not a bare int.
 a3=""
 deadline=$(( $(date +%s) + 20 ))
 while [[ $(date +%s) -lt $deadline ]]; do
   out="$(timeout 0.5s docker exec "$RPK_CONTAINER" rpk topic consume scores.attachment \
     -X brokers=localhost:9092 --offset start --num 200 --format '%v\n' 2>/dev/null || true)"
-  a3="$(grep "\"email_id\":${EMAIL_ID}\b" <<<"$out" | head -1 || true)"
+  a3="$(grep -F "\"email_id\":\"${EMAIL_ID}\"" <<<"$out" | head -1 || true)"
   [[ -n "$a3" ]] && break
   sleep 0.2
 done
@@ -315,7 +371,8 @@ with open(path) as f:
         rec = json.loads(line)
         body = rec.get("body", "")
         hdrs = {k.lower(): v for k, v in rec.get("headers", {}).items()}
-        if f'"email_id":{eid}' in body.replace(" ", "") and "x-signature" in hdrs:
+        # email_id is a UUIDv7 string now: match the quoted JSON form.
+        if f'"email_id":"{eid}"' in body.replace(" ", "") and "x-signature" in hdrs:
             ok = True
             break
 print("yes" if ok else "no")
@@ -346,14 +403,20 @@ echo "  A6 OK: rate-limit key=${rkey} ttl=${rttl}s"
 # =============================================================================
 # INJECTION B — real-domain fixture. SOFT-assert domain-age (WHOIS external).
 # =============================================================================
-EMAIL_ID_B="${EMAIL_ID_B:-$(( EMAIL_ID + 1 ))}"
+# Stamp a distinct per-run Message-ID (different from A) so dedup treats B as a
+# separate email both within and across runs.
+MSGID_B="<smoke-b-${RUN_TOKEN}@iana.org>"
 EML_B="${SAMPLE_EML_B:-$DEFAULT_EML_B}"
+EML_B="${EML_B/<SMOKE-MSGID-B@iana.org>/$MSGID_B}"
 EML_B_B64="$(printf '%s' "$EML_B" | base64 -w0)"
 
-match_b="$(inject_and_wait "$EMAIL_ID_B" "$EML_B_B64" \
-  "Notifications <noreply@example.com>" "Account notice")"
+inject_out_b="$(inject_and_wait "$MSGID_B" "$EML_B_B64")"
+# Bind B's server-minted email_id for the scores.header correlation below.
+EMAIL_ID_B="$(sed -n '1p' <<<"$inject_out_b")"
+match_b="$(sed -n '2p' <<<"$inject_out_b")"
+[[ -n "$EMAIL_ID_B" && -n "$match_b" ]] || fail "Injection B produced no email_id/verdict"
 
-echo "==> verdict PASS (Injection B)"
+echo "==> verdict PASS (Injection B) email_id=$EMAIL_ID_B"
 INTERNAL_ID_B="$(json_field internal_id <<<"$match_b")"
 
 # --- Assertion 7 (SOFT): svc-04 domain-age SIGNAL via live WHOIS ------------
@@ -368,7 +431,8 @@ deadline=$(( $(date +%s) + 20 ))
 while [[ $(date +%s) -lt $deadline ]]; do
   out="$(timeout 0.5s docker exec "$RPK_CONTAINER" rpk topic consume scores.header \
     -X brokers=localhost:9092 --offset start --num 400 --format '%v\n' 2>/dev/null || true)"
-  dah="$(grep "\"email_id\":${EMAIL_ID_B}\b" <<<"$out" | head -1 || true)"
+  # email_id is a UUIDv7 string: match the quoted JSON form.
+  dah="$(grep -F "\"email_id\":\"${EMAIL_ID_B}\"" <<<"$out" | head -1 || true)"
   [[ -n "$dah" ]] && break
   sleep 0.2
 done
