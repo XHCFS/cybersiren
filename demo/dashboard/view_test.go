@@ -48,7 +48,7 @@ func TestViewOf_LegacyEnvelopeDetail(t *testing.T) {
 		},
 	}
 
-	st := newStore(10)
+	st := newStore(10, "")
 	st.recordSubmit(id, "upload", "Urgent: your account has been limited", "PayPal Security")
 	st.applyScored(es)
 	v := viewOf(st.get(id))

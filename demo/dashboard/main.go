@@ -36,6 +36,7 @@ type config struct {
 	GoogleRedirectURL  string
 	GmailPollInterval  time.Duration
 	TokenFile          string
+	StoreFile          string
 }
 
 func loadConfig() config {
@@ -49,6 +50,7 @@ func loadConfig() config {
 		GoogleRedirectURL:  env("GOOGLE_REDIRECT_URL", "http://localhost:8090/oauth/callback"),
 		GmailPollInterval:  envDur("GMAIL_POLL_INTERVAL", time.Minute),
 		TokenFile:          env("GMAIL_TOKEN_FILE", ""),
+		StoreFile:          env("DEMO_STORE_FILE", "demo/dashboard/.scans.json"),
 	}
 }
 
@@ -109,10 +111,11 @@ func main() {
 	log := zerolog.New(zerolog.ConsoleWriter{Out: os.Stderr, TimeFormat: time.RFC3339}).
 		With().Timestamp().Str("service", "demo-dashboard").Logger()
 	cfg := loadConfig()
-	st := newStore(200)
+	st := newStore(200, cfg.StoreFile)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	go st.runFlusher(ctx)
 
 	startConsumers(ctx, cfg, st, log)
 

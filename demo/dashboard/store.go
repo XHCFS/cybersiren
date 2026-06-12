@@ -1,7 +1,9 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"os"
 	"sync"
 	"time"
 
@@ -31,20 +33,92 @@ type scan struct {
 }
 
 // store is a bounded, in-memory cache of scans keyed by email_id, plus an
-// ordered feed of the email_ids this dashboard submitted. It is purely
-// ephemeral demo state — there is no DB and nothing survives a restart.
+// ordered feed of the email_ids this dashboard submitted. There is no DB; when a
+// persistence file is configured it is mirrored to a small gitignored JSON file
+// so scans survive a restart (the Kafka consumers resume from their committed
+// offset and would not replay them).
 type store struct {
 	mu    sync.RWMutex
 	byID  map[string]*scan
 	feed  []string // email_ids in submit order, newest last
 	limit int
+	file  string // JSON persistence path ("" = ephemeral / no persistence)
+	dirty bool
 }
 
-func newStore(limit int) *store {
+func newStore(limit int, file string) *store {
 	if limit <= 0 {
 		limit = 200
 	}
-	return &store{byID: make(map[string]*scan), limit: limit}
+	s := &store{byID: make(map[string]*scan), limit: limit, file: file}
+	s.load()
+	return s
+}
+
+// persistedStore is the on-disk shape of the store.
+type persistedStore struct {
+	ByID map[string]*scan `json:"by_id"`
+	Feed []string         `json:"feed"`
+}
+
+// load reads the persistence file into the store, if configured and present.
+func (s *store) load() {
+	if s.file == "" {
+		return
+	}
+	b, err := os.ReadFile(s.file)
+	if err != nil {
+		return
+	}
+	var p persistedStore
+	if json.Unmarshal(b, &p) != nil {
+		return
+	}
+	s.mu.Lock()
+	if p.ByID != nil {
+		s.byID = p.ByID
+	}
+	s.feed = p.Feed
+	s.evictLocked()
+	s.mu.Unlock()
+}
+
+// flush atomically writes the store to disk when there is unsaved state.
+func (s *store) flush() {
+	if s.file == "" {
+		return
+	}
+	s.mu.Lock()
+	if !s.dirty {
+		s.mu.Unlock()
+		return
+	}
+	b, err := json.Marshal(persistedStore{ByID: s.byID, Feed: s.feed})
+	s.dirty = false
+	s.mu.Unlock()
+	if err != nil {
+		return
+	}
+	tmp := s.file + ".tmp"
+	if os.WriteFile(tmp, b, 0o600) == nil {
+		_ = os.Rename(tmp, s.file)
+	}
+}
+
+// runFlusher persists the store every couple seconds while dirty, with a final
+// flush when ctx is cancelled (graceful shutdown), so scans survive a restart.
+func (s *store) runFlusher(ctx context.Context) {
+	t := time.NewTicker(2 * time.Second)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			s.flush()
+			return
+		case <-t.C:
+			s.flush()
+		}
+	}
 }
 
 // getOrCreate returns the scan for id, creating an empty one if absent. Caller
@@ -69,6 +143,7 @@ func (s *store) recordSubmit(id, source, subject, from string) {
 	sc.From = from
 	sc.SubmittedAt = time.Now().UTC()
 	s.feed = append(s.feed, id)
+	s.dirty = true
 	s.evictLocked()
 }
 
@@ -82,6 +157,7 @@ func (s *store) applyScored(es *contracts.EmailsScored) {
 	sc.ScoredAt = time.Now().UTC()
 	sc.Header = decodeInto[contracts.ScoresHeaderMessage](es.ComponentDetails.Header)
 	sc.Attach = decodeInto[contracts.ScoresAttachment](es.ComponentDetails.Attachment)
+	s.dirty = true
 	s.evictLocked()
 }
 
@@ -92,6 +168,7 @@ func (s *store) applyVerdict(ev *contracts.EmailsVerdict) {
 	sc := s.getOrCreate(ev.Meta.EmailID)
 	sc.Verdict = ev
 	sc.VerdictAt = time.Now().UTC()
+	s.dirty = true
 	s.evictLocked()
 }
 
