@@ -18,20 +18,22 @@ UI: **http://localhost:8090**
 
 ## Run it
 
-The dashboard needs the **pipeline running** (svc-01 listening on `:8081`, Kafka up). Bring the pipeline
-up the usual way (`make up-infra && make db-setup` then `./scripts/dev/run_pipeline.sh start`, or `make
-smoke`). Then start the dashboard:
-
-**Natively (simplest for local dev):**
+### One command (recommended)
 ```bash
-go run ./demo/dashboard
-# → http://localhost:8090
+make demo-up      # → http://localhost:8090
+make demo-down    # stop everything
 ```
+`make demo-up` resets the DB volume (so it never trips the "type already exists" migration error), brings up
+infra + the NLP sidecar, seeds the demo API key, starts the native pipeline (svc-01..09), and launches the
+dashboard. For Gmail, `export GOOGLE_CLIENT_ID=… GOOGLE_CLIENT_SECRET=…` first (see below). The dashboard log
+is `.smoke-logs/demo-dashboard.log`.
 
-**Via docker-compose (demo profile):**
+### Manual (if the pipeline is already up)
+The dashboard only needs svc-01 on `:8081` + Kafka up. Once those are running:
 ```bash
-cd deploy/compose
-docker compose --profile demo up -d demo-dashboard
+go run ./demo/dashboard          # native, from the repo root → http://localhost:8090
+# or, containerised:
+docker compose -f deploy/compose/docker-compose.yml --profile demo up -d demo-dashboard
 ```
 
 ### Config (env, all optional)

@@ -452,6 +452,16 @@ smoke: check-docker check-compose-env check-nlp-model
 smoke-stop:
 	@./scripts/dev/run_pipeline.sh stop
 
+## demo-up: One command — full pipeline + standalone demo dashboard (http://localhost:8090).
+##          Resets the DB volume, brings up infra + NLP, seeds the demo key, starts
+##          svc-01..09, and launches the dashboard. (Throwaway demo tooling — see demo/.)
+demo-up: check-docker check-compose-env check-nlp-model
+	@./demo/run-demo.sh up
+
+## demo-down: Stop the demo dashboard + native pipeline + infra started by `make demo-up`.
+demo-down:
+	@./demo/run-demo.sh down
+
 ## e2e-svc-03: End-to-end test of svc-03 /scan with a stubbed L2 sidecar
 ##            and injected TI fixture. Exercises guard short-circuits, L2
 ##            escalation, and the TI re-invitation path. Postgres must be
