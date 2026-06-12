@@ -41,9 +41,12 @@ type Config struct {
 
 // Handler processes a single Kafka message and returns nil on success.
 //
-// On non-nil error the consumer logs the failure, increments error metrics,
-// and skips committing the offset for that record (the message will be
-// re-read on consumer restart or partition rebalance).
+// On a non-nil error the consumer logs the failure, increments error metrics,
+// and does NOT commit the record's offset: the partition is rewound to the
+// failed record so it (and the records after it) are re-fetched and retried on
+// the next poll (at-least-once). A permanently-failing record therefore stalls
+// its partition until it succeeds — the bounded-retry + dead-letter escape is a
+// deferred platform task (spec §16 D16 / P8 8a-v).
 type Handler func(ctx context.Context, msg Message) error
 
 // Message is the consumer's view of a Kafka record. The embedded
@@ -184,49 +187,80 @@ func (c *Consumer) Run(ctx context.Context, handler Handler) error {
 			continue
 		}
 
-		batchOK := true
-		fetches.EachRecord(func(rec *kgo.Record) {
-			recCtx, span := c.tracer.WithProcessSpan(rec)
-			start := time.Now()
-
-			recLog := c.log.With().
-				Str("topic", rec.Topic).
-				Int32("partition", rec.Partition).
-				Int64("offset", rec.Offset).
-				Str("email_id", string(rec.Key)).
-				Logger()
-			recCtx = recLog.WithContext(recCtx)
-
-			msg := Message{
-				Topic:       rec.Topic,
-				Partition:   int(rec.Partition),
-				Offset:      rec.Offset,
-				Key:         rec.Key,
-				Value:       rec.Value,
-				Headers:     toHeaders(rec.Headers),
-				Time:        rec.Timestamp,
-				SpanContext: trace.SpanFromContext(recCtx).SpanContext(),
-			}
-
-			if err := handler(recCtx, msg); err != nil {
-				c.observeError(c.cfg.Topic, c.cfg.GroupID, "handler")
-				c.observeMessages(c.cfg.Topic, c.cfg.GroupID, "error")
-				recLog.Error().Err(err).Msg("kafka handler error; offset will not be committed")
-				batchOK = false
-				span.RecordError(err)
-				span.End()
+		// Process records grouped by partition so a handler failure rewinds ONLY
+		// the offending partition. We commit the contiguous successful PREFIX of
+		// each partition; on the first handler error in a partition we rewind the
+		// consume position to that record (SetOffsets) and stop processing the
+		// partition, so the failed record — and everything after it — is re-fetched
+		// and retried rather than skipped. franz-go advances the fetch cursor to the
+		// batch tail at poll time, so the previous code (skip-commit-on-any-error +
+		// CommitUncommittedOffsets) silently DROPPED a failed offset the moment a
+		// later batch committed the cumulative head — i.e. every fail-secure NACK in
+		// the pipeline lost its message instead of redelivering. A permanently
+		// failing ("poison") record now stalls its partition until it succeeds; the
+		// bounded-retry + dead-letter escape is the deferred platform task (§16 D16
+		// / P8 8a-v).
+		var toCommit []*kgo.Record
+		fetches.EachPartition(func(ftp kgo.FetchTopicPartition) {
+			if ftp.Err != nil {
+				c.observeError(ftp.Topic, c.cfg.GroupID, "fetch")
+				c.log.Error().Err(ftp.Err).Str("topic", ftp.Topic).
+					Int32("partition", ftp.Partition).Msg("partition fetch error")
 				return
 			}
+			for _, rec := range ftp.Records {
+				recCtx, span := c.tracer.WithProcessSpan(rec)
+				start := time.Now()
 
-			sharedkafka.IncConsumed(c.cfg.GroupID, rec.Topic)
-			c.observeMessages(c.cfg.Topic, c.cfg.GroupID, "ok")
-			c.observeProcessingLatency(c.cfg.Topic, c.cfg.GroupID, time.Since(start))
-			span.End()
+				recLog := c.log.With().
+					Str("topic", rec.Topic).
+					Int32("partition", rec.Partition).
+					Int64("offset", rec.Offset).
+					Str("email_id", string(rec.Key)).
+					Logger()
+				recCtx = recLog.WithContext(recCtx)
+
+				msg := Message{
+					Topic:       rec.Topic,
+					Partition:   int(rec.Partition),
+					Offset:      rec.Offset,
+					Key:         rec.Key,
+					Value:       rec.Value,
+					Headers:     toHeaders(rec.Headers),
+					Time:        rec.Timestamp,
+					SpanContext: trace.SpanFromContext(recCtx).SpanContext(),
+				}
+
+				if err := handler(recCtx, msg); err != nil {
+					c.observeError(c.cfg.Topic, c.cfg.GroupID, "handler")
+					c.observeMessages(c.cfg.Topic, c.cfg.GroupID, "error")
+					recLog.Error().Err(err).Msg("kafka handler error; rewinding partition to retry (offset not committed)")
+					// Rewind this partition to the failed record (carrying the leader
+					// epoch so the reset is fenced) so it and the records after it are
+					// re-fetched on the next poll.
+					c.client.SetOffsets(map[string]map[int32]kgo.EpochOffset{
+						rec.Topic: {rec.Partition: {Epoch: rec.LeaderEpoch, Offset: rec.Offset}},
+					})
+					span.RecordError(err)
+					span.End()
+					return // stop this partition; records after the failure are not processed
+				}
+
+				sharedkafka.IncConsumed(c.cfg.GroupID, rec.Topic)
+				c.observeMessages(c.cfg.Topic, c.cfg.GroupID, "ok")
+				c.observeProcessingLatency(c.cfg.Topic, c.cfg.GroupID, time.Since(start))
+				toCommit = append(toCommit, rec)
+				span.End()
+			}
 		})
 
-		if batchOK {
-			commitCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-			if err := c.client.CommitUncommittedOffsets(commitCtx); err != nil {
+		if len(toCommit) > 0 {
+			// Commit only the successfully-processed records, on a shutdown-
+			// independent context so the final batch is not dropped when ctx is
+			// already cancelled by SIGTERM (a dropped commit reprocesses the batch on
+			// the next restart).
+			commitCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			if err := c.client.CommitRecords(commitCtx, toCommit...); err != nil {
 				c.observeError(c.cfg.Topic, c.cfg.GroupID, "commit")
 				c.log.Error().Err(err).Msg("commit offsets failed")
 			}
