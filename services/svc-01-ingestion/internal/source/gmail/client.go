@@ -65,7 +65,9 @@ type historyListResponse struct {
 // listHistory pages through history.list starting at startHistoryID, returning
 // every newly-added message id (deduplicated) and the latest historyId to
 // persist as the new cursor. labelIDs (e.g. ["INBOX"]) narrows the result.
-func (c *client) listHistory(ctx context.Context, startHistoryID string, labelIDs []string) (msgIDs []string, latestHistoryID string, err error) {
+func (c *client) listHistory(
+	ctx context.Context, startHistoryID string, labelIDs []string,
+) (msgIDs []string, latestHistoryID string, err error) {
 	seen := map[string]struct{}{}
 	pageToken := ""
 	latestHistoryID = startHistoryID

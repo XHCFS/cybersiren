@@ -19,7 +19,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"os"
-	"path/filepath"
 
 	"github.com/rs/zerolog"
 
@@ -35,6 +34,7 @@ import (
 	"github.com/saif/cybersiren/services/svc-01-ingestion/internal/source/apiupload"
 	gmailsrc "github.com/saif/cybersiren/services/svc-01-ingestion/internal/source/gmail"
 	"github.com/saif/cybersiren/services/svc-01-ingestion/internal/verdict"
+	"github.com/saif/cybersiren/services/svc-01-ingestion/internal/webui"
 )
 
 const serviceName = "svc-01-ingestion"
@@ -136,16 +136,12 @@ func registerRoutes(mux *http.ServeMux, deps svckit.Deps) {
 	}
 }
 
-// staticDir is the demo UI's asset root, relative to the service working
-// directory (the image WORKDIR / repo service dir). Kept here so the serving
-// path and the FileServer root agree.
-const staticDir = "./static"
-
 // registerDemoUI serves the bundled same-origin demo page and a tiny,
 // config-derived Gmail status endpoint the page polls. Same-origin means the
-// browser talks only to svc-01 — there is no CORS to configure.
+// browser talks only to svc-01 — there is no CORS to configure. The assets are
+// embedded (see internal/webui), so serving is independent of the working dir.
 func registerDemoUI(mux *http.ServeMux, deps svckit.Deps) {
-	indexPath := filepath.Join(staticDir, "index.html")
+	ui := webui.FS()
 
 	// GET / serves the single-page app. The stdlib ServeMux routes every
 	// unmatched path to "/", so guard it to the exact root and 404 the rest
@@ -159,12 +155,12 @@ func registerDemoUI(mux *http.ServeMux, deps svckit.Deps) {
 			http.Error(w, "GET required", http.StatusMethodNotAllowed)
 			return
 		}
-		http.ServeFile(w, r, indexPath)
+		http.ServeFileFS(w, r, ui, "index.html")
 	})
 
 	// Assets (none today — the page is inline — but wired so future split-out
 	// CSS/JS is served same-origin with correct content types).
-	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir(staticDir))))
+	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServerFS(ui)))
 
 	// GET /gmail/status reports whether the Gmail adapter is wired, and how
 	// (push vs poll), plus the watched mailbox. It exposes NO tenant data — only

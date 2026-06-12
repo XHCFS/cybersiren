@@ -2,6 +2,7 @@ package gmail
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -21,7 +22,7 @@ func Build(cfg config.GmailConfig, core source.Ingestor, valkey valkeygo.Client,
 		return nil, nil
 	}
 	if err := cfg.Validate(); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("gmail: invalid config: %w", err)
 	}
 	if valkey == nil {
 		return nil, errors.New("gmail: a Valkey client is required to persist the history cursor")
