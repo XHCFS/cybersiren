@@ -66,8 +66,12 @@ up() {
   $DC --profile svc-03 up -d fusion-sidecar
   for _ in $(seq 1 40); do curl -fsS http://localhost:8765/health >/dev/null 2>&1 && break; sleep 2; done
 
-  step "[5/6] Migrating + seeding the database"
+  step "[5/6] Migrating + seeding the database + TI cache"
   make db-setup
+  # Seed one known-bad domain into the Valkey TI cache so the "TI blocklist"
+  # sample matches (the svc-11 feed-sync service is not run in the demo).
+  docker exec cybersiren-valkey valkey-cli HSET 'ti_domain:{malware-c2-delivery.test}' \
+    ti_indicator_id 990001 risk_score 95 threat_type malware_c2 >/dev/null 2>&1 || true
 
   step "[6/6] Starting the native pipeline + demo dashboard"
   # Point svc-03 at the fusion-sidecar via the fast in-process Go enricher so L2
