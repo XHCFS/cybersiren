@@ -16,7 +16,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"os"
 
@@ -33,8 +32,6 @@ import (
 	"github.com/saif/cybersiren/services/svc-01-ingestion/internal/quota"
 	"github.com/saif/cybersiren/services/svc-01-ingestion/internal/source/apiupload"
 	gmailsrc "github.com/saif/cybersiren/services/svc-01-ingestion/internal/source/gmail"
-	"github.com/saif/cybersiren/services/svc-01-ingestion/internal/verdict"
-	"github.com/saif/cybersiren/services/svc-01-ingestion/internal/webui"
 )
 
 const serviceName = "svc-01-ingestion"
@@ -104,20 +101,6 @@ func registerRoutes(mux *http.ServeMux, deps svckit.Deps) {
 	adapter.Register(adapterMux)
 	mux.Handle("/api/v1/", authn.Middleware(adapterMux))
 
-	// Demo-UI verdict reads (GET /verdict, /verdict/latest). Wrapped in the SAME
-	// API-key middleware as /api/v1/scan: the reads hit FORCE-RLS tables and so
-	// need an org context (WithOrgTx), and the demo key already grants
-	// verdict:read. The bundled page prefills that key, so it stays one-click.
-	verdictMux := http.NewServeMux()
-	verdict.New(deps.Pool, deps.Log).Register(verdictMux)
-	mux.Handle("/verdict", authn.Middleware(verdictMux))
-	mux.Handle("/verdict/", authn.Middleware(verdictMux))
-
-	// Same-origin demo UI (B4): a single self-contained page that drives both
-	// ingestion paths. Served by svc-01 itself so there is no CORS surface. Not a
-	// production feature — a demo affordance for real users.
-	registerDemoUI(mux, deps)
-
 	// Gmail adapter (optional). It shares the SAME ingestion core as the API
 	// adapter, so dedup/quota/UUIDv7 apply identically. The push endpoint is
 	// NOT behind the API-key middleware — its own verifyPush gate (shared token
@@ -134,52 +117,6 @@ func registerRoutes(mux *http.ServeMux, deps svckit.Deps) {
 			deps.Log.Info().Msg("gmail push endpoint registered at POST /gmail/push")
 		}
 	}
-}
-
-// registerDemoUI serves the bundled same-origin demo page and a tiny,
-// config-derived Gmail status endpoint the page polls. Same-origin means the
-// browser talks only to svc-01 — there is no CORS to configure. The assets are
-// embedded (see internal/webui), so serving is independent of the working dir.
-func registerDemoUI(mux *http.ServeMux, deps svckit.Deps) {
-	ui := webui.FS()
-
-	// GET / serves the single-page app. The stdlib ServeMux routes every
-	// unmatched path to "/", so guard it to the exact root and 404 the rest
-	// (the page is self-contained — there are no other top-level routes).
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/" {
-			http.NotFound(w, r)
-			return
-		}
-		if r.Method != http.MethodGet {
-			http.Error(w, "GET required", http.StatusMethodNotAllowed)
-			return
-		}
-		http.ServeFileFS(w, r, ui, "index.html")
-	})
-
-	// Assets (none today — the page is inline — but wired so future split-out
-	// CSS/JS is served same-origin with correct content types).
-	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServerFS(ui)))
-
-	// GET /gmail/status reports whether the Gmail adapter is wired, and how
-	// (push vs poll), plus the watched mailbox. It exposes NO tenant data — only
-	// configuration toggles — so it needs no auth. The B3 runbook flips these on.
-	mux.HandleFunc("/gmail/status", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			http.Error(w, "GET required", http.StatusMethodNotAllowed)
-			return
-		}
-		g := deps.Cfg.Gmail
-		status := map[string]any{
-			"enabled": g.Enabled,
-			"push":    gmailsrc.PushEnabled(g),
-			"poll":    gmailsrc.PollEnabled(g),
-			"mailbox": g.User,
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(status)
-	})
 }
 
 // onReady starts the Gmail background loops (watch registration + 24h renewal,

@@ -1,0 +1,2 @@
+# Local Gmail refresh token persisted by the demo (never commit OAuth tokens).
+.gmail-token

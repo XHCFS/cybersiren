@@ -373,6 +373,37 @@ services:
       - cybersiren
     restart: unless-stopped
 
+  # ── demo-dashboard (standalone, throwaway demo UI) ────────────────────────
+  # NOT a pipeline service. A deletable stand-in for the svc-10 dashboard: it
+  # forwards .eml uploads + Gmail messages to svc-01's /api/v1/scan and consumes
+  # emails.scored / emails.verdict for the per-module breakdown. svc-01 runs
+  # natively (run_pipeline.sh) on the host, so it is reached via host-gateway.
+  # Delete demo/ + this block to remove the demo entirely. UI: http://localhost:8090
+  demo-dashboard:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.demo_dashboard
+    profiles: ["demo"]
+    # No hard depends_on: the dashboard is resilient — its Kafka consumers
+    # reconnect when brokers appear and the UI/forwarding works regardless. This
+    # also lets it come up with just `--profile demo` (kafka is a separate profile).
+    ports:
+      - "8090:8090"
+    environment:
+      DEMO_ADDR: ":8090"
+      KAFKA_BROKERS: kafka:29092
+      SVC01_SCAN_URL: http://host.docker.internal:8081/api/v1/scan
+      DEMO_API_KEY: cs_demokey000000000000000000000DEMO
+      # Optional Gmail "Sign in with Google" — see demo/dashboard/README.md.
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      GOOGLE_REDIRECT_URL: ${GOOGLE_REDIRECT_URL:-http://localhost:8090/oauth/callback}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - cybersiren
+    restart: unless-stopped
+
   # ── svc-06-nlp ─────────────────────────────────────────────────────────────
   # NLP email classifier. Runs the DistilBERT inference service (Python FastAPI)
   # alongside the Go HTTP wrapper that serves the demo UI and proxies /predict.

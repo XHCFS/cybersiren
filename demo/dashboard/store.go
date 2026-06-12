@@ -1,0 +1,204 @@
+package main
+
+import (
+	"encoding/json"
+	"sync"
+	"time"
+
+	contracts "github.com/saif/cybersiren/shared/contracts/kafka"
+)
+
+// scan is everything the dashboard knows about one email it is tracking. It is
+// assembled from three sources over time: the submit (subject/from/source), the
+// emails.scored message (per-module breakdown), and the emails.verdict message
+// (final label). All fields are best-effort — the UI renders whatever is present.
+type scan struct {
+	EmailID     string
+	Source      string // "upload" | "gmail"
+	Subject     string
+	From        string
+	SubmittedAt time.Time
+
+	Scored   *contracts.EmailsScored
+	URL      *contracts.ScoresURL
+	Header   *contracts.ScoresHeaderMessage
+	NLP      *contracts.ScoresNLP
+	Attach   *contracts.ScoresAttachment
+	ScoredAt time.Time
+
+	Verdict   *contracts.EmailsVerdict
+	VerdictAt time.Time
+}
+
+// store is a bounded, in-memory cache of scans keyed by email_id, plus an
+// ordered feed of the email_ids this dashboard submitted. It is purely
+// ephemeral demo state — there is no DB and nothing survives a restart.
+type store struct {
+	mu    sync.RWMutex
+	byID  map[string]*scan
+	feed  []string // email_ids in submit order, newest last
+	limit int
+}
+
+func newStore(limit int) *store {
+	if limit <= 0 {
+		limit = 200
+	}
+	return &store{byID: make(map[string]*scan), limit: limit}
+}
+
+// getOrCreate returns the scan for id, creating an empty one if absent. Caller
+// must hold s.mu.
+func (s *store) getOrCreate(id string) *scan {
+	sc := s.byID[id]
+	if sc == nil {
+		sc = &scan{EmailID: id}
+		s.byID[id] = sc
+	}
+	return sc
+}
+
+// recordSubmit registers an email this dashboard just forwarded to svc-01 and
+// adds it to the feed.
+func (s *store) recordSubmit(id, source, subject, from string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sc := s.getOrCreate(id)
+	sc.Source = source
+	sc.Subject = subject
+	sc.From = from
+	sc.SubmittedAt = time.Now().UTC()
+	s.feed = append(s.feed, id)
+	s.evictLocked()
+}
+
+// applyScored folds an emails.scored message into the cache, decoding the
+// verbatim component_details into typed per-module structs.
+func (s *store) applyScored(es *contracts.EmailsScored) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sc := s.getOrCreate(es.Meta.EmailID)
+	sc.Scored = es
+	sc.ScoredAt = time.Now().UTC()
+	sc.URL = decodeInto[contracts.ScoresURL](es.ComponentDetails.URL)
+	sc.Header = decodeInto[contracts.ScoresHeaderMessage](es.ComponentDetails.Header)
+	sc.NLP = decodeInto[contracts.ScoresNLP](es.ComponentDetails.NLP)
+	sc.Attach = decodeInto[contracts.ScoresAttachment](es.ComponentDetails.Attachment)
+	s.evictLocked()
+}
+
+// applyVerdict folds an emails.verdict message into the cache.
+func (s *store) applyVerdict(ev *contracts.EmailsVerdict) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sc := s.getOrCreate(ev.Meta.EmailID)
+	sc.Verdict = ev
+	sc.VerdictAt = time.Now().UTC()
+	s.evictLocked()
+}
+
+// get returns a shallow copy of the scan for id, or nil if unknown.
+func (s *store) get(id string) *scan {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	sc := s.byID[id]
+	if sc == nil {
+		return nil
+	}
+	cp := *sc
+	return &cp
+}
+
+// feedItems returns the most-recent submitted scans, newest first.
+func (s *store) feedItems() []feedItem {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]feedItem, 0, len(s.feed))
+	for i := len(s.feed) - 1; i >= 0; i-- {
+		sc := s.byID[s.feed[i]]
+		if sc == nil {
+			continue
+		}
+		out = append(out, feedItem{
+			EmailID:     sc.EmailID,
+			Source:      sc.Source,
+			Subject:     sc.Subject,
+			From:        sc.From,
+			SubmittedAt: sc.SubmittedAt,
+			Status:      statusOf(sc),
+			Label:       labelOf(sc),
+			RiskScore:   riskOf(sc),
+		})
+	}
+	return out
+}
+
+// evictLocked keeps the cache bounded. It drops the oldest feed entries and any
+// cached scan no longer referenced by the feed. Caller must hold s.mu.
+func (s *store) evictLocked() {
+	for len(s.feed) > s.limit {
+		s.feed = s.feed[1:]
+	}
+	if len(s.byID) <= s.limit*2 {
+		return
+	}
+	keep := make(map[string]struct{}, len(s.feed))
+	for _, id := range s.feed {
+		keep[id] = struct{}{}
+	}
+	for id := range s.byID {
+		if _, ok := keep[id]; !ok {
+			delete(s.byID, id)
+		}
+	}
+}
+
+// decodeInto unmarshals a verbatim component_details blob into T, returning nil
+// when the blob is empty (component absent) or malformed.
+func decodeInto[T any](raw json.RawMessage) *T {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil
+	}
+	var v T
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return nil
+	}
+	return &v
+}
+
+// feedItem is the compact row shown in the recent-scans list.
+type feedItem struct {
+	EmailID     string    `json:"email_id"`
+	Source      string    `json:"source"`
+	Subject     string    `json:"subject"`
+	From        string    `json:"from"`
+	SubmittedAt time.Time `json:"submitted_at"`
+	Status      string    `json:"status"`
+	Label       string    `json:"label,omitempty"`
+	RiskScore   *int      `json:"risk_score,omitempty"`
+}
+
+func statusOf(sc *scan) string {
+	if sc.Verdict != nil {
+		return "scored"
+	}
+	if sc.Scored != nil {
+		return "scoring"
+	}
+	return "pending"
+}
+
+func labelOf(sc *scan) string {
+	if sc.Verdict != nil {
+		return sc.Verdict.VerdictLabel
+	}
+	return ""
+}
+
+func riskOf(sc *scan) *int {
+	if sc.Verdict != nil {
+		r := sc.Verdict.RiskScore
+		return &r
+	}
+	return nil
+}

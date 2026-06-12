@@ -248,13 +248,17 @@ test-cover:
 vet:
 	go vet ./...
 
+# golangci-lint may be installed under $GOPATH/bin without that being on PATH
+# (common with `go install`). Prefer a PATH copy, else fall back to GOPATH/bin.
+GOLANGCI ?= $(shell command -v golangci-lint 2>/dev/null || echo $(shell go env GOPATH)/bin/golangci-lint)
+
 ## lint: Run golangci-lint
 lint:
-	golangci-lint run ./...
+	$(GOLANGCI) run ./...
 
 ## lint-fix: Run golangci-lint with auto-fix
 lint-fix:
-	golangci-lint run --fix ./...
+	$(GOLANGCI) run --fix ./...
 
 # =============================================================================
 # ── Utilities ────────────────────────────────────────────────────────────────
