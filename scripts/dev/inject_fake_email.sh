@@ -223,6 +223,14 @@ while :; do
   sleep 0.5
 done
 
+# Clear any stale per-campaign notification rate-limit keys (notif:<org>:<campaign>,
+# 1h TTL). Both smoke emails share a campaign fingerprint, so a previous run within
+# the hour would otherwise suppress this run's alert and fail A5/A6. Idempotent.
+echo "==> Clearing per-campaign notification rate-limit keys (notif:*)"
+docker exec "$VALKEY_CONTAINER" redis-cli --no-raw KEYS 'notif:*' 2>/dev/null \
+  | sed -E 's/^[0-9]+\) "?//; s/"?$//' | grep -E '^notif:' \
+  | xargs -r -I{} docker exec "$VALKEY_CONTAINER" redis-cli DEL {} >/dev/null 2>&1 || true
+
 match="$(inject_and_wait "$EMAIL_ID" "$EML_A_B64" \
   "PayPal Billing <billing@paypa1-secure.tk>" \
   "URGENT: Your PayPal account will be suspended in 24 hours")"
