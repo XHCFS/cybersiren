@@ -161,6 +161,23 @@ func (a *Adapter) Stop(ctx context.Context) error {
 	return a.gmail.stop(ctx)
 }
 
+// tick runs one background-loop iteration with panic recovery. RunWatchRenewer
+// and RunPollLoop are launched as bare goroutines off main, so a panic in a
+// Gmail API call / sync would otherwise unwind the goroutine and crash the
+// whole svc-01 process (taking the API-upload path down too). Here a panic is
+// recovered and logged, and the loop lives to tick again.
+func (a *Adapter) tick(name string, fn func() error) {
+	defer func() {
+		if r := recover(); r != nil {
+			a.log.Error().Str("loop", name).Interface("panic", r).
+				Msg("gmail: recovered from panic in background loop tick")
+		}
+	}()
+	if err := fn(); err != nil {
+		a.log.Error().Err(err).Str("loop", name).Msg("gmail: background loop tick failed")
+	}
+}
+
 // RunWatchRenewer renews the watch on WatchRenewInterval until ctx is done. Run
 // it in a goroutine for the lifetime of the service so the watch never lapses.
 func (a *Adapter) RunWatchRenewer(ctx context.Context) {
@@ -171,9 +188,10 @@ func (a *Adapter) RunWatchRenewer(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			if _, err := a.Watch(ctx); err != nil {
-				a.log.Error().Err(err).Msg("gmail: watch renewal failed")
-			}
+			a.tick("watch-renewer", func() error {
+				_, err := a.Watch(ctx)
+				return err
+			})
 		}
 	}
 }
@@ -194,9 +212,7 @@ func (a *Adapter) RunPollLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			if err := a.syncHistory(ctx); err != nil {
-				a.log.Error().Err(err).Msg("gmail: poll sync failed")
-			}
+			a.tick("poll", func() error { return a.syncHistory(ctx) })
 		}
 	}
 }
@@ -284,6 +300,17 @@ func (a *Adapter) syncHistory(ctx context.Context) error {
 func (a *Adapter) processMessage(ctx context.Context, gmailMessageID string) error {
 	msg, err := a.gmail.getRawMessage(ctx, gmailMessageID)
 	if err != nil {
+		// A 404 means the message was deleted (or made un-gettable) between
+		// history.list and this fetch — a routine Gmail race. The message is
+		// gone, so SKIP it and let the cursor advance past it. Returning an
+		// error here would hold the cursor and re-walk this same window every
+		// tick forever, starving all later mail behind one vanished id.
+		var ae *apiError
+		if errors.As(err, &ae) && ae.status == http.StatusNotFound {
+			a.log.Warn().Str("gmail_message_id", gmailMessageID).
+				Msg("gmail: message not found (deleted before fetch); skipping")
+			return nil
+		}
 		return fmt.Errorf("get raw message: %w", err)
 	}
 	raw, err := decodeRawRFC822(msg.Raw)

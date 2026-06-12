@@ -115,7 +115,11 @@ func (a *Adapter) parseRequest(r *http.Request) (source.IngestRequest, error) {
 			return source.IngestRequest{}, errors.New("raw_rfc822 must be valid base64")
 		}
 		raw = decoded
-		messageID = j.MessageID
+		// Canonicalise the caller-supplied id (strip <>) so a JSON client that
+		// copies "<id@host>" verbatim dedups to the SAME key as the raw-.eml and
+		// Gmail paths (which derive it via rfc822.MessageID). Without this the
+		// same email via two shapes produces two dedup keys → double-persist.
+		messageID = rfc822.TrimMessageID(j.MessageID)
 	} else {
 		// Raw .eml upload (message/rfc822, text/plain, or unset). The bytes are
 		// the message verbatim.

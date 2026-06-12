@@ -58,15 +58,6 @@ func newStore(limit int, file string) *store {
 	return s
 }
 
-// withLogger attaches a logger for flush diagnostics, returning the store for
-// chaining. Optional: the store defaults to a no-op logger.
-func (s *store) withLogger(log zerolog.Logger) *store {
-	s.mu.Lock()
-	s.log = log
-	s.mu.Unlock()
-	return s
-}
-
 // persistedStore is the on-disk shape of the store.
 type persistedStore struct {
 	ByID map[string]*scan `json:"by_id"`

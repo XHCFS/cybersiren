@@ -141,7 +141,8 @@ func (e *Engine) Handle(ctx context.Context, msg kafkaconsumer.Message) error {
 			// NACK would wedge the partition forever on an unfixable message.
 			e.log.Error().Err(err).
 				Int("partition", msg.Partition).Int64("offset", msg.Offset).
-				Msg("emails.scored has unresolved internal_id (<=0); verdict cannot be addressed — dropping (svc-07 should have dropped this at the producer)")
+				Msg("emails.scored has unresolved internal_id (<=0); verdict cannot be addressed — " +
+					"dropping (svc-07 should have dropped this at the producer)")
 		} else {
 			e.log.Error().Err(err).
 				Int("partition", msg.Partition).Int64("offset", msg.Offset).

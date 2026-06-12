@@ -1,13 +1,36 @@
 package processor
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/rs/zerolog"
+
 	"github.com/saif/cybersiren/services/svc-04-header-analysis/internal/rules"
 	contractsk "github.com/saif/cybersiren/shared/contracts/kafka"
 )
+
+// TestRuleHitWriter_SkipsZeroInternalID asserts the writer skips (rather than
+// orphan-INSERTs) a rule_hits write when internal_id is unresolved (0). The pool
+// is a non-nil sentinel that is never dialed — the zero-id guard returns before
+// runOnce would touch it. Without the guard, rule_hits.entity_id (BIGINT NOT
+// NULL, no FK) would silently accept an orphan row pointing at no email.
+func TestRuleHitWriter_SkipsZeroInternalID(t *testing.T) {
+	t.Parallel()
+	w := &RuleHitWriter{pool: &pgxpool.Pool{}, log: zerolog.Nop()}
+	fired := []rules.FiredRule{{Rule: rules.CachedRule{ID: 1, Version: "1.0.0", ScoreImpact: 10}}}
+
+	outcome, err := w.Write(context.Background(), 7, 0, time.Now(), fired)
+	if err != nil {
+		t.Fatalf("Write with internal_id=0 should skip cleanly, got err: %v", err)
+	}
+	if outcome != "ok" {
+		t.Fatalf("outcome = %q, want ok (skipped, not written, not an error)", outcome)
+	}
+}
 
 // rule_hits.entity_id must be emails.internal_id (the DB BIGSERIAL svc-02
 // assigns). email_id is a UUIDv7 string and can NOT substitute (LANDMINE B): a

@@ -98,6 +98,32 @@ func TestHandleScan_JSONBase64(t *testing.T) {
 	}
 }
 
+// TestHandleScan_JSONMessageIDStripsBrackets pins the cross-path dedup fix: a
+// JSON client that supplies message_id with its native angle brackets must dedup
+// on the SAME canonical key the raw-.eml/Gmail paths derive (via rfc822), not on
+// the bracketed form — else the same email via two shapes double-persists.
+func TestHandleScan_JSONMessageIDStripsBrackets(t *testing.T) {
+	core := &fakeCore{outcome: source.Outcome{EmailID: "e-uuid", Status: source.StatusAccepted}}
+	a := New(core, zerolog.Nop())
+
+	bodyJSON, _ := json.Marshal(map[string]string{
+		"raw_rfc822": base64.StdEncoding.EncodeToString([]byte(rawEML)),
+		"message_id": "<supplied-id@b.test>",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/scan", bytes.NewReader(bodyJSON))
+	req.Header.Set("Content-Type", "application/json")
+	req = withPrincipal(req, 1, 2)
+	rr := httptest.NewRecorder()
+	a.handleScan(rr, req)
+
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202", rr.Code)
+	}
+	if core.got.MessageID != "supplied-id@b.test" {
+		t.Errorf("message_id = %q, want supplied-id@b.test (angle brackets stripped)", core.got.MessageID)
+	}
+}
+
 func TestHandleScan_NoPrincipal_401(t *testing.T) {
 	core := &fakeCore{}
 	a := New(core, zerolog.Nop())

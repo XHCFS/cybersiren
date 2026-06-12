@@ -40,3 +40,19 @@ func TestMessageID(t *testing.T) {
 		})
 	}
 }
+
+func TestTrimMessageID(t *testing.T) {
+	t.Parallel()
+	cases := []struct{ in, want string }{
+		{"<id@host>", "id@host"}, // the natural copy-paste form
+		{"id@host", "id@host"},   // already canonical
+		{"", ""},                 // empty stays empty (not deduplicated)
+		{"<<weird>>", "weird"},   // strips all leading/trailing brackets
+		{"<id@host", "id@host"},  // tolerant of a missing close bracket
+	}
+	for _, c := range cases {
+		if got := TrimMessageID(c.in); got != c.want {
+			t.Errorf("TrimMessageID(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}

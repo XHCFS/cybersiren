@@ -59,6 +59,10 @@ linters-settings:
       - "net/http"
       - "bufio"
       - "io"
+      # valkey-go errors are returned raw by the shared/valkey primitives by
+      # design (the caller owns wrapping + fail-open/closed policy); see that
+      # package's doc.
+      - "github.com/valkey-io/valkey-go"
 
   godot:
     scope: declarations

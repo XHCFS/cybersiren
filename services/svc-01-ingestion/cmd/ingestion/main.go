@@ -120,7 +120,8 @@ func registerRoutes(mux *http.ServeMux, deps svckit.Deps) {
 			// nor an audience is configured: the endpoint will reject every push
 			// until the operator sets one.
 			if deps.Cfg.Gmail.PushToken == "" && deps.Cfg.Gmail.PushAudience == "" {
-				deps.Log.Warn().Msg("gmail: push enabled but neither push_token nor push_audience is configured; /gmail/push will REJECT all callers (fail-closed) until one is set")
+				deps.Log.Warn().Msg("gmail: push enabled but neither push_token nor push_audience " +
+					"is configured; /gmail/push will REJECT all callers (fail-closed) until one is set")
 			}
 		}
 	}

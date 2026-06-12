@@ -1,17 +1,23 @@
 package gmail
 
 import (
+	"context"
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net/http"
 	"strings"
+	"time"
 )
 
 // maxPushBodyBytes caps the Pub/Sub push envelope. The body is a tiny
 // {emailAddress, historyId} notification, so 64 KiB is generous.
 const maxPushBodyBytes = 64 << 10
+
+// pushSyncTimeout bounds the detached history sync a push triggers, so a wedged
+// Gmail call cannot leak a goroutine indefinitely.
+const pushSyncTimeout = 2 * time.Minute
 
 // pushEnvelope is the Pub/Sub push-subscription POST body: the actual Gmail
 // notification is base64 JSON inside message.data.
@@ -77,10 +83,15 @@ func (a *Adapter) handlePush(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Run the sync synchronously and ack. Errors are logged but still ack'd —
-	// the fallback poll loop + next push will re-cover any gap, and a 5xx here
-	// only causes Pub/Sub to hammer us with redeliveries.
-	if err := a.syncHistory(r.Context()); err != nil {
+	// Run the sync on a context DETACHED from the request, then ack. If we ran
+	// it on r.Context(), a sync slower than Pub/Sub's ack deadline would be
+	// cancelled mid-flight when Pub/Sub drops the connection — and then
+	// redelivered and re-cancelled, a loop that makes no progress. We detach
+	// (bounded by pushSyncTimeout) and ack 204 regardless; errors self-heal via
+	// the poll loop + next push, and a 5xx would only invite redelivery storms.
+	syncCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), pushSyncTimeout)
+	defer cancel()
+	if err := a.syncHistory(syncCtx); err != nil {
 		a.log.Error().Err(err).Msg("gmail: push-triggered sync failed (poll loop will recover)")
 	}
 

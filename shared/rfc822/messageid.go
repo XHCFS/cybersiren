@@ -22,5 +22,16 @@ func MessageID(raw []byte) string {
 	if err != nil {
 		return ""
 	}
-	return strings.Trim(msg.Header.Get("Message-Id"), "<>")
+	return TrimMessageID(msg.Header.Get("Message-Id"))
+}
+
+// TrimMessageID strips the surrounding angle brackets from an RFC 5322
+// Message-ID so the value is canonical wherever it is used as a key — svc-01's
+// dedup claim and svc-02's email_identities registration. It is the single
+// source of truth for that trimming: a caller that already holds a Message-ID
+// string (a JSON request field, a parsed header) must run it through here so
+// its key matches one derived from raw bytes via MessageID. Returns "" for an
+// empty input.
+func TrimMessageID(s string) string {
+	return strings.Trim(s, "<>")
 }

@@ -43,6 +43,7 @@ import (
 	"github.com/saif/cybersiren/shared/objectstore"
 	"github.com/saif/cybersiren/shared/postgres/pgconv"
 	"github.com/saif/cybersiren/shared/postgres/repository"
+	"github.com/saif/cybersiren/shared/rfc822"
 	"github.com/saif/cybersiren/shared/svckit"
 )
 
@@ -590,9 +591,12 @@ func storageURIAt(uris []string, i int) string {
 
 func messageID(raw contracts.EmailsRaw, h mail.Header) string {
 	if raw.MessageID != "" {
-		return raw.MessageID
+		// svc-01 already canonicalises this, but trim defensively so the
+		// email_identities registry stays canonical even for an older/foreign
+		// producer that forwarded a bracketed id.
+		return rfc822.TrimMessageID(raw.MessageID)
 	}
-	return strings.Trim(h.Get("Message-Id"), "<>")
+	return rfc822.TrimMessageID(h.Get("Message-Id"))
 }
 
 func splitAddress(raw string) (addr, name string) {

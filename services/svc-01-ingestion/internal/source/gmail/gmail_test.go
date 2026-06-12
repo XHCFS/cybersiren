@@ -296,6 +296,45 @@ func TestSyncHistory_HistoryTooOldReseeds(t *testing.T) {
 	}
 }
 
+// TestSyncHistory_DeletedMessageSkippedNotHeld asserts a messages.get 404 (the
+// message was deleted between history.list and the fetch — a routine Gmail race)
+// is SKIPPED: the cursor ADVANCES past the vanished id rather than being held
+// forever, which would starve all later mail behind one un-fetchable message.
+// Contrast TestSyncHistory_CursorHeldOnMessageFailure, where a 500 is a real
+// failure that correctly holds the cursor.
+func TestSyncHistory_DeletedMessageSkippedNotHeld(t *testing.T) {
+	srv := newGmailFixtureServer(t)
+	srv.messageStatus = http.StatusNotFound // message deleted before fetch
+	pub := &recordingPublisher{}
+	hist := NewMemoryHistoryStore()
+	if err := hist.Set(context.Background(), testOrgID, fixtureStartCursor); err != nil {
+		t.Fatal(err)
+	}
+	a := newAdapter(t, srv, pub, &fakeDedup{fresh: true}, hist)
+
+	if err := a.syncHistory(context.Background()); err != nil {
+		t.Fatalf("syncHistory: %v", err)
+	}
+	// Nothing published — the message is gone.
+	if pub.count() != 0 {
+		t.Errorf("published %d emails.raw, want 0 for a 404'd message", pub.count())
+	}
+	// Crucially the cursor ADVANCES past the deleted id (404 skipped, not held),
+	// so the window does not re-walk forever.
+	cur, _ := hist.Get(context.Background(), testOrgID)
+	if cur != fixtureLatestHistory {
+		t.Errorf("cursor = %q after a 404'd message, want it ADVANCED to %q (deleted message skipped, not a permanent halt)", cur, fixtureLatestHistory)
+	}
+}
+
+// TestTick_RecoversPanic asserts a panic inside a background-loop tick is
+// recovered, not propagated — the loops run as bare goroutines off main, so an
+// unrecovered panic would crash the whole svc-01 process (API path included).
+func TestTick_RecoversPanic(t *testing.T) {
+	a := &Adapter{log: zerolog.Nop()}
+	a.tick("test", func() error { panic("boom") }) // must NOT propagate
+}
+
 // TestDuplicateSuppressed asserts a duplicate (dedup returns not-fresh) does NOT
 // publish emails.raw — the shared core's dedup applies to Gmail mail too.
 func TestDuplicateSuppressed(t *testing.T) {

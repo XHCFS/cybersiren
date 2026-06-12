@@ -227,9 +227,13 @@ func (g *gmailConnector) pollOnce(ctx context.Context) {
 		}
 		// On the first poll, only scan the few most-recent messages so we give
 		// immediate feedback without bulk-scanning the whole recent inbox. The
-		// skipped messages are deliberately left un-"seen" so a later poll scans
-		// every genuinely-new arrival exactly once.
+		// older pre-connect messages are marked seen (NOT forwarded) so a later
+		// poll treats them as baseline and forwards only genuinely-new arrivals
+		// — without this they'd flood svc-01 on the very next tick.
 		if !baselined && i >= baselineForward {
+			g.mu.Lock()
+			g.seen[id] = struct{}{}
+			g.mu.Unlock()
 			continue
 		}
 		// Mark as seen only once we commit to scanning it, so the baseline skip
