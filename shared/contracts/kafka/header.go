@@ -24,10 +24,11 @@
 //	PK without a DB lookup. scores.header forwards `internal_id` because the
 //	aggregator (SVC-07) that builds emails.scored has no DB access (§4) and
 //	header is the always-present component.
-//	SVC-02 (P1.1) populates `internal_id` from the INSERT RETURNING;
-//	until then it is zero and consumers fall back to `email_id` (the interim
-//	int64 email_id == internal_id equivalence). There is NO permanent
-//	`email_id == internal_id` invariant.
+//	SVC-02 (P1.1) populates `internal_id` from the INSERT RETURNING.
+//	`email_id` is now a UUIDv7 string and can NEVER stand in for the int64
+//	`internal_id`: consumers that need the DB surrogate key MUST read
+//	`internal_id` and treat a zero value as "not yet assigned" (NOT fall back
+//	to email_id). There is NO `email_id == internal_id` equivalence.
 package kafka
 
 import (
@@ -43,15 +44,16 @@ import (
 // treat zero-values as "missing", not as failed authentication.
 type AnalysisHeadersMessage struct {
 	// EmailID is the logical email identifier (ARCH-SPEC §1 / §16 D11):
-	// assigned by SVC-01, the Kafka partition key, opaque. UUIDv7 string by
-	// contract, carried as an int64 on an interim basis (swap tracked by
-	// #142). Distinct from InternalID — do not depend on its numeric shape.
-	EmailID int64 `json:"email_id"`
+	// assigned by SVC-01 (uuid.NewV7()), the Kafka partition key, opaque.
+	// UUIDv7 string by contract. Distinct from InternalID — do not depend on
+	// its shape and never use it as the DB surrogate key.
+	EmailID string `json:"email_id"`
 	// InternalID is the DB BIGSERIAL surrogate (emails.internal_id). With
 	// FetchedAt it forms the partitioned emails composite PK; SVC-04 writes it
 	// to rule_hits.entity_id (ARCH-SPEC §14 step 3b). Populated by SVC-02
-	// (P1.1) from the INSERT RETURNING; zero until then, when consumers fall
-	// back to EmailID (interim int64 email_id == internal_id equivalence).
+	// (P1.1) from the INSERT RETURNING; consumers that need the DB key read it
+	// directly and treat zero as "not yet assigned" — there is no email_id
+	// fallback (email_id is a UUIDv7 string, not an int64).
 	InternalID int64 `json:"internal_id,omitempty"`
 	// FetchedAt is emails.fetched_at, the partition key on the partitioned
 	// emails table and the companion for rule_hits.email_fetched_at.
@@ -129,7 +131,7 @@ type ReceivedHop struct {
 
 // ScoresHeaderMessage matches the `scores.header` topic payload.
 type ScoresHeaderMessage struct {
-	EmailID int64 `json:"email_id"`
+	EmailID string `json:"email_id"`
 	// InternalID is the DB BIGSERIAL surrogate (emails.internal_id), forwarded
 	// by SVC-04 from analysis.headers so SVC-07 — which has no DB access (§4) —
 	// can place it on emails.scored without a lookup. Header is the always-
@@ -137,7 +139,7 @@ type ScoresHeaderMessage struct {
 	// the reliable carrier for the surrogate id. With FetchedAt it forms the
 	// partitioned emails composite PK that SVC-08 writes against. Zero until
 	// SVC-02 populates internal_id from the INSERT RETURNING (P1.1); consumers
-	// fall back to EmailID (interim int64 email_id == internal_id equivalence).
+	// read it directly (email_id is a UUIDv7 string and cannot substitute).
 	InternalID int64 `json:"internal_id,omitempty"`
 	OrgID      int64 `json:"org_id"`
 	// FetchedAt is emails.fetched_at; with InternalID it is the composite PK
@@ -160,14 +162,15 @@ type ScoresHeaderMessage struct {
 }
 
 // Validate enforces the documented [0, 100] range on the composite Score and
-// rejects a message carrying neither id. The auth/reputation/structural sub-
+// rejects a message with no logical id. The auth/reputation/structural sub-
 // scores are dimension contributions, not the spec's [0, 100] score, so they
-// are left unbounded. EmailID and InternalID are the two-id pair (ARCH-SPEC §1
-// / §16 D11): consumers fall back to EmailID until SVC-02 populates InternalID,
-// so a message with both zero addresses nothing and is rejected.
+// are left unbounded. EmailID is the always-present logical id (UUIDv7 string);
+// InternalID is the separate DB surrogate and may legitimately be zero until
+// SVC-02 has assigned it — email_id can no longer stand in for it, so the
+// guard keys only off the logical id's presence.
 func (m ScoresHeaderMessage) Validate() error {
-	if m.EmailID == 0 && m.InternalID == 0 {
-		return fmt.Errorf("scores: message has neither email_id nor internal_id")
+	if m.EmailID == "" {
+		return fmt.Errorf("scores: message has no email_id")
 	}
 	return validateScore("header", m.Score)
 }

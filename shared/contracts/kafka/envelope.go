@@ -14,8 +14,7 @@ const SchemaVersion = 1
 //
 // OrgID is an int64 BIGINT that lines up with the orgs.id PK used by svc-04
 // and svc-08 when they write to Postgres. EmailID is the canonical email
-// identifier: per ARCH-SPEC §1 its contract type is a UUIDv7 string, carried
-// as int64 only on an interim basis (see the EmailID field comment below).
+// identifier: per ARCH-SPEC §1 its contract type is a UUIDv7 string (#142).
 // The aggregator (svc-07) carries both along as the partition key on every
 // produce.
 //
@@ -26,19 +25,13 @@ const SchemaVersion = 1
 type MessageMeta struct {
 	// EmailID is the canonical, logical email identifier. ARCH-SPEC §1
 	// (Canonical Identifier Strategy) pins its contract type as a UUIDv7
-	// string: assigned once by SVC-01, carried verbatim in every Kafka
-	// message and Redis key, and used as the partition key end to end. It is
-	// distinct from the Postgres row identity (emails.internal_id BIGINT +
-	// fetched_at), which travels alongside it on emails.scored.
-	//
-	// It is typed int64 here only as an interim measure: SVC-01 currently
-	// emits time.Now().UnixNano()/1000 (a microsecond timestamp), leaking an
-	// int64 through the contract instead of a UUIDv7. Swapping the emitter to
-	// uuid.NewV7() — and widening this field to a UUIDv7 string — is tracked
-	// by issue #142, not this change. Until then, downstream code should treat
-	// email_id as an opaque identifier and not depend on its numeric shape, so
-	// that the #142 swap lands cleanly.
-	EmailID       int64     `json:"email_id"`
+	// string: assigned once by SVC-01 (uuid.NewV7()), carried verbatim in
+	// every Kafka message and Redis key, and used as the partition key end to
+	// end. It is distinct from the Postgres row identity (emails.internal_id
+	// BIGINT + fetched_at), which travels alongside it on emails.scored.
+	// Downstream code must treat it as an opaque string and never depend on
+	// its shape.
+	EmailID       string    `json:"email_id"`
 	OrgID         int64     `json:"org_id"`
 	FetchedAt     time.Time `json:"fetched_at,omitempty"`
 	Timestamp     time.Time `json:"timestamp"`
@@ -49,7 +42,7 @@ type MessageMeta struct {
 
 // NewMeta returns a MessageMeta with Timestamp = now and SchemaVersion set.
 // TraceID/SpanID are filled in by the producer wrapper from the active span.
-func NewMeta(emailID, orgID int64) MessageMeta {
+func NewMeta(emailID string, orgID int64) MessageMeta {
 	return MessageMeta{
 		EmailID:       emailID,
 		OrgID:         orgID,
@@ -60,7 +53,7 @@ func NewMeta(emailID, orgID int64) MessageMeta {
 
 // NewMetaWithFetched returns a MessageMeta with FetchedAt populated (emails
 // table partition key). Use on analysis.plans and scores.* producers.
-func NewMetaWithFetched(emailID, orgID int64, fetchedAt time.Time) MessageMeta {
+func NewMetaWithFetched(emailID string, orgID int64, fetchedAt time.Time) MessageMeta {
 	m := NewMeta(emailID, orgID)
 	m.FetchedAt = fetchedAt.UTC()
 	return m

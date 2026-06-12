@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	db "github.com/saif/cybersiren/db/sqlc"
+	"github.com/saif/cybersiren/shared/postgres/pgconv"
 )
 
 // EmailRepository persists a parsed email and all of its child artefacts
@@ -82,7 +83,14 @@ type PersistParsedFull struct {
 	// registry (migration 015). Empty means the message carries no usable
 	// Message-ID — such emails are intentionally NOT registered and are inserted
 	// without cross-partition dedup (the registry excludes NULL message_ids).
-	MessageID   string
+	MessageID string
+	// EmailID is the logical UUIDv7 email_id (G5/G17) assigned by svc-01 and
+	// carried on the wire. It is stamped onto the email_identities row at
+	// registration (migration 035) so a holder of only the opaque email_id can
+	// later resolve the canonical (internal_id, fetched_at) partition key (the
+	// svc-01 demo-UI /verdict read). Empty / invalid maps to a NULL column; such
+	// rows are simply not resolvable by email_id.
+	EmailID     string
 	URLs        []ParsedURL
 	Attachments []ParsedAttachment
 	Recipients  []ChildRecipient
@@ -186,6 +194,7 @@ func persistParsedTx(ctx context.Context, q persistQueries, orgID int64, in Pers
 		MessageID:  in.MessageID,
 		InternalID: key.InternalID,
 		FetchedAt:  key.FetchedAt,
+		EmailID:    pgconv.UUIDOrNull(in.EmailID),
 	})
 	switch {
 	case err == nil:

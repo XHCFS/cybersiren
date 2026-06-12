@@ -769,7 +769,12 @@ func TestGmailConfig_Validate(t *testing.T) {
 		ClientSecret: "secret-456",
 		RefreshToken: "refresh-789",
 		Scopes:       []string{"https://www.googleapis.com/auth/gmail.readonly"},
+		OrgID:        7,
+		PushEnabled:  true,
+		PollEnabled:  true,
+		WatchTopic:   "projects/demo/topics/gmail-push",
 		PollInterval: 5 * time.Minute,
+		HTTPTimeout:  30 * time.Second,
 	}
 	if err := valid.Validate(); err != nil {
 		t.Fatalf("expected valid gmail config to pass, got: %v", err)
@@ -784,7 +789,11 @@ func TestGmailConfig_Validate(t *testing.T) {
 		{"missing client_secret", func(g *GmailConfig) { g.ClientSecret = "" }, "gmail.client_secret"},
 		{"missing refresh_token", func(g *GmailConfig) { g.RefreshToken = "" }, "gmail.refresh_token"},
 		{"empty scopes", func(g *GmailConfig) { g.Scopes = nil }, "gmail.scopes"},
+		{"missing org_id", func(g *GmailConfig) { g.OrgID = 0 }, "gmail.org_id"},
 		{"poll_interval zero", func(g *GmailConfig) { g.PollInterval = 0 }, "gmail.poll_interval"},
+		{"http_timeout zero", func(g *GmailConfig) { g.HTTPTimeout = 0 }, "gmail.http_timeout"},
+		{"no delivery mode", func(g *GmailConfig) { g.PushEnabled = false; g.PollEnabled = false }, "push_enabled or poll_enabled"},
+		{"push without topic", func(g *GmailConfig) { g.WatchTopic = "" }, "gmail.watch_topic"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -49,3 +49,54 @@ LIMIT 1;
 -- Persists the emails.verdict JSON written for this verdict so redelivery can
 -- republish identical bytes. Written in the same tx as the verdict insert.
 UPDATE verdicts SET kafka_verdict_wire = $1::jsonb WHERE id = $2;
+
+-- name: GetEmailVerdict :one
+-- Demo-read: returns the current verdict label + aggregate risk score for one
+-- email, keyed on the partitioned (internal_id, fetched_at) composite key.
+-- current_verdicts is the DISTINCT-ON-latest view over verdicts; emails carries
+-- the 0-100 aggregate risk_score written by the Decision Engine (SVC-08). Both
+-- the view and emails are RLS-forced, so this MUST run inside WithOrgTx — the
+-- org GUC scopes the row to the caller's tenant. Returns no row until SVC-08 has
+-- recorded a verdict for the email (the demo UI keeps polling until it does).
+SELECT
+    cv.label,
+    cv.confidence,
+    cv.source,
+    cv.model_version,
+    cv.created_at AS verdict_at,
+    e.risk_score
+FROM current_verdicts cv
+JOIN emails e
+  ON e.internal_id = cv.entity_id
+ AND e.fetched_at = sqlc.arg(fetched_at)::timestamptz
+WHERE cv.entity_type = 'email'
+  AND cv.entity_id = sqlc.arg(internal_id);
+
+-- name: GetLatestEmailVerdictForOrg :one
+-- Demo-read: the single most-recent verdicted email for the caller's org,
+-- returned with its logical email_id, verdict label, and aggregate risk score.
+-- Backs the svc-01 demo-UI Gmail panel (the DB does not persist source_adapter,
+-- so "latest verdict" stands in for "latest Gmail verdict" once Gmail ingestion
+-- is the live source). RLS-forced: MUST run inside WithOrgTx. Orders by the
+-- email's fetched_at so the freshest ingested email wins; returns no row when
+-- the org has no verdicted email yet.
+SELECT
+    ei.email_id,
+    e.internal_id,
+    e.fetched_at,
+    e.subject,
+    cv.label,
+    cv.confidence,
+    cv.created_at AS verdict_at,
+    e.risk_score
+FROM emails e
+JOIN current_verdicts cv
+  ON cv.entity_type = 'email'
+ AND cv.entity_id = e.internal_id
+LEFT JOIN email_identities ei
+  ON ei.org_id = e.org_id
+ AND ei.internal_id = e.internal_id
+WHERE e.org_id = $1
+  AND e.deleted_at IS NULL
+ORDER BY e.fetched_at DESC
+LIMIT 1;

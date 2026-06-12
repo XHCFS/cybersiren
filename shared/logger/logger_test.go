@@ -111,10 +111,10 @@ func TestWithOrgID(t *testing.T) {
 func TestWithEmailID(t *testing.T) {
 	logger, buf := bufLogger()
 	ctx := logger.WithContext(context.Background())
-	ctx = WithEmailID(ctx, 99)
+	ctx = WithEmailID(ctx, "e99")
 	entry := logAndParse(t, ctx, buf)
-	if v, ok := entry["email_id"].(float64); !ok || int64(v) != 99 {
-		t.Errorf("email_id = %v, want 99", entry["email_id"])
+	if entry["email_id"] != "e99" {
+		t.Errorf("email_id = %v, want e99", entry["email_id"])
 	}
 }
 
@@ -156,7 +156,7 @@ func TestWithChainedContextFields(t *testing.T) {
 	ctx := logger.WithContext(context.Background())
 	ctx = WithRequestID(ctx, "req-xyz")
 	ctx = WithOrgID(ctx, 10)
-	ctx = WithEmailID(ctx, 20)
+	ctx = WithEmailID(ctx, "e20")
 	entry := logAndParse(t, ctx, buf)
 	if entry["request_id"] != "req-xyz" {
 		t.Errorf("request_id = %v, want %q", entry["request_id"], "req-xyz")
@@ -164,8 +164,8 @@ func TestWithChainedContextFields(t *testing.T) {
 	if v, ok := entry["org_id"].(float64); !ok || int64(v) != 10 {
 		t.Errorf("org_id = %v, want 10", entry["org_id"])
 	}
-	if v, ok := entry["email_id"].(float64); !ok || int64(v) != 20 {
-		t.Errorf("email_id = %v, want 20", entry["email_id"])
+	if entry["email_id"] != "e20" {
+		t.Errorf("email_id = %v, want e20", entry["email_id"])
 	}
 }
 

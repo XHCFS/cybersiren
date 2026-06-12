@@ -69,14 +69,14 @@ func (n *Notifier) Handle(ctx context.Context, msg kafkaconsumer.Message) error 
 	}
 
 	log := n.log.With().
-		Int64("email_id", v.Meta.EmailID).
+		Str("email_id", v.Meta.EmailID).
 		Int64("org_id", v.Meta.OrgID).
 		Str("verdict", v.VerdictLabel).
 		Int("risk_score", v.RiskScore).
 		Logger()
 
 	span.SetAttributes(
-		attribute.Int64("email_id", v.Meta.EmailID),
+		attribute.String("email_id", v.Meta.EmailID),
 		attribute.Int64("org_id", v.Meta.OrgID),
 		attribute.String("verdict_label", v.VerdictLabel),
 		attribute.Int("risk_score", v.RiskScore),

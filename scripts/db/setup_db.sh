@@ -23,6 +23,7 @@ MIGRATIONS_DIR="${MIGRATIONS_DIR:-${REPO_ROOT}/db/migrations}"
 FEEDS_SEED_FILE="${FEEDS_SEED_FILE:-${REPO_ROOT}/db/seeds/feeds.sql}"
 HEADER_RULES_SEED_FILE="${HEADER_RULES_SEED_FILE:-${REPO_ROOT}/db/seeds/header_rules_demo_seed.sql}"
 ORGANISATIONS_SEED_FILE="${ORGANISATIONS_SEED_FILE:-${REPO_ROOT}/db/seeds/organisations_seed.sql}"
+API_KEY_DEMO_SEED_FILE="${API_KEY_DEMO_SEED_FILE:-${REPO_ROOT}/db/seeds/api_key_demo_seed.sql}"
 
 # Docker compose container name for postgres
 POSTGRES_CONTAINER="${POSTGRES_CONTAINER:-cybersiren-postgres}"
@@ -105,6 +106,27 @@ if [ "${MODE}" != "migrate-only" ]; then
                 < "${ORGANISATIONS_SEED_FILE}"
         fi
         echo "Organisations seed complete."
+    fi
+
+    # Seed the demo API key (idempotent: ON CONFLICT (key_hash) DO NOTHING).
+    # Binds one fixed key to org_id=1 so svc-01's POST /api/v1/scan authenticates
+    # in the demo. Depends on the organisations seed (FK) + migration 034.
+    if [ -f "${API_KEY_DEMO_SEED_FILE}" ]; then
+        echo "Seeding demo API key (idempotent)..."
+        if command -v psql &> /dev/null; then
+            PGPASSWORD="${DB_PASSWORD}" psql \
+                -h "${DB_HOST}" \
+                -p "${DB_PORT}" \
+                -U "${DB_USER}" \
+                -d "${DB_NAME}" \
+                -v ON_ERROR_STOP=1 \
+                -f "${API_KEY_DEMO_SEED_FILE}"
+        else
+            docker exec -i -e PGPASSWORD="${DB_PASSWORD}" "${POSTGRES_CONTAINER}" \
+                psql -U "${DB_USER}" -d "${DB_NAME}" -v ON_ERROR_STOP=1 \
+                < "${API_KEY_DEMO_SEED_FILE}"
+        fi
+        echo "Demo API key seed complete."
     fi
 
     # Seed feeds table (idempotent: each INSERT uses ON CONFLICT on feeds.name)

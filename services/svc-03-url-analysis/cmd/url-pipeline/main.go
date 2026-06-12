@@ -16,7 +16,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"strconv"
 	"sync"
 	"time"
 
@@ -164,7 +163,7 @@ func handle(ctx context.Context, msg kafkaconsumer.Message, deps svckit.Deps) er
 		return fmt.Errorf("decode analysis.urls: %w", err)
 	}
 
-	log := zerolog.Ctx(ctx).With().Int64("email_id", input.Meta.EmailID).Logger()
+	log := zerolog.Ctx(ctx).With().Str("email_id", input.Meta.EmailID).Logger()
 
 	scans := make([]urlScan, 0, len(input.URLs))
 	maxScore := 0
@@ -210,7 +209,7 @@ func handle(ctx context.Context, msg kafkaconsumer.Message, deps svckit.Deps) er
 	if !ok {
 		return fmt.Errorf("svc-03: producer for %s not configured", contracts.TopicScoresURL)
 	}
-	if err := prod.Publish(ctx, []byte(strconv.FormatInt(input.Meta.EmailID, 10)), body, 1); err != nil { // +1 kafka retry
+	if err := prod.Publish(ctx, []byte(input.Meta.EmailID), body, 1); err != nil { // +1 kafka retry
 		return fmt.Errorf("publish scores.url: %w", err)
 	}
 
@@ -284,14 +283,11 @@ func persistEnrichment(
 	}
 
 	// Two-id model (G17): SVC-03 keys the email_urls lookup on the DB BIGSERIAL
-	// internal_id SVC-02 assigned and carried on analysis.urls. Prefer that real
-	// internal_id; fall back to Meta.EmailID only while SVC-02 has not yet
-	// populated it (the interim email_id == internal_id equivalence). We do NOT
-	// re-derive internal_id via a DB lookup.
+	// internal_id SVC-02 assigned and carried on analysis.urls. email_id is a
+	// UUIDv7 string and can NOT substitute for it, so a zero internal_id stays
+	// zero (the persist layer skips a zero-keyed write-back). We do NOT re-derive
+	// internal_id via a DB lookup.
 	internalID := input.InternalID
-	if internalID == 0 {
-		internalID = input.Meta.EmailID
-	}
 	email := persist.Email{
 		OrgID:      input.Meta.OrgID,
 		InternalID: internalID,
@@ -301,7 +297,7 @@ func persistEnrichment(
 
 	if err := persister.Persist(ctx, email); err != nil {
 		log.Warn().Err(err).
-			Int64("email_id", input.Meta.EmailID).
+			Str("email_id", input.Meta.EmailID).
 			Int64("internal_id", internalID).
 			Msg("enrichment persistence reported errors (scores already published; NACKing for retry)")
 		return fmt.Errorf("persist email enrichment: %w", err)

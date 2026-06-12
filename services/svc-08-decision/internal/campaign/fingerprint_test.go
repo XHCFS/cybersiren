@@ -58,7 +58,7 @@ func TestExtractInputs_FromComponentDetails(t *testing.T) {
 	// scores.header as svc-04 emits it: sender_domain lives on signals
 	// (HeaderSignals.SenderDomain), populated from ReputationSignals.
 	header := mustJSON(contracts.ScoresHeaderMessage{
-		EmailID:   1,
+		EmailID:   "e1",
 		Component: contracts.ComponentHeader,
 		Signals: contracts.HeaderSignals{
 			SenderDomain: "evil.example.com",

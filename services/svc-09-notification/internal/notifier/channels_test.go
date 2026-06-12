@@ -24,7 +24,7 @@ func sampleAlert() Alert {
 	camp := int64(42)
 	return Alert{
 		OrgID:        7,
-		EmailID:      1234,
+		EmailID:      "e1234",
 		InternalID:   9,
 		VerdictLabel: "phishing",
 		RiskScore:    88,

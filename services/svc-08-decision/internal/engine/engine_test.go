@@ -73,7 +73,7 @@ func (f *fakePublisher) Publish(_ context.Context, key, value []byte, retries in
 	return nil
 }
 
-func makeScoredMessage(t *testing.T, internalID, emailID int64) kafkaconsumer.Message {
+func makeScoredMessage(t *testing.T, internalID int64, emailID string) kafkaconsumer.Message {
 	t.Helper()
 	fetched := time.Date(2026, 5, 3, 10, 0, 0, 0, time.UTC)
 	url := 77
@@ -89,11 +89,11 @@ func makeScoredMessage(t *testing.T, internalID, emailID int64) kafkaconsumer.Me
 
 func TestDecodeScored_AllowsDistinctInternalAndMetaEmailID(t *testing.T) {
 	t.Parallel()
-	msg := makeScoredMessage(t, 2001, 1001)
+	msg := makeScoredMessage(t, 2001, "e1001")
 	got, err := decodeScored(msg.Value)
 	require.NoError(t, err)
 	require.Equal(t, int64(2001), got.InternalID)
-	require.Equal(t, int64(1001), got.Meta.EmailID)
+	require.Equal(t, "e1001", got.Meta.EmailID)
 }
 
 func TestHandle_DegradesWhenRulesUnavailable(t *testing.T) {
@@ -110,7 +110,7 @@ func TestHandle_DegradesWhenRulesUnavailable(t *testing.T) {
 		zerolog.Nop(),
 	)
 
-	err := eng.Handle(context.Background(), makeScoredMessage(t, 1001, 1001))
+	err := eng.Handle(context.Background(), makeScoredMessage(t, 1001, "e1001"))
 	require.NoError(t, err)
 	require.Equal(t, 1, writer.writes)
 	require.Equal(t, VerdictSourceRule, writer.lastInput.VerdictSource)
@@ -139,7 +139,7 @@ func TestHandle_UsesStoredKafkaWireOnDedupeReplay(t *testing.T) {
 		zerolog.Nop(),
 	)
 
-	err := eng.Handle(context.Background(), makeScoredMessage(t, 3001, 3001))
+	err := eng.Handle(context.Background(), makeScoredMessage(t, 3001, "e3001"))
 	require.NoError(t, err)
 	require.Len(t, pub.records, 1)
 	require.JSONEq(t, string(stored), string(pub.records[0].value))

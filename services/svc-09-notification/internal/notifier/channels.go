@@ -325,7 +325,7 @@ func (e *EmailChannel) buildMessage(a Alert) []byte {
 	fmt.Fprintf(&b, "Verdict:     %s\r\n", a.VerdictLabel)
 	fmt.Fprintf(&b, "Risk score:  %d/100\r\n", a.RiskScore)
 	fmt.Fprintf(&b, "Confidence:  %.2f\r\n", a.Confidence)
-	fmt.Fprintf(&b, "Email ID:    %d\r\n", a.EmailID)
+	fmt.Fprintf(&b, "Email ID:    %s\r\n", a.EmailID)
 	if a.CampaignID != nil {
 		fmt.Fprintf(&b, "Campaign ID: %d\r\n", *a.CampaignID)
 	}

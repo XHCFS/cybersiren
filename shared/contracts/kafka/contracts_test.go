@@ -14,7 +14,7 @@ import (
 func TestRoundTrip_AllPayloads(t *testing.T) {
 	now := time.Date(2026, 5, 2, 12, 0, 0, 0, time.UTC)
 	meta := contracts.MessageMeta{
-		EmailID:       1001,
+		EmailID:       "01890000-0000-7000-8000-000000001001",
 		OrgID:         42,
 		Timestamp:     now,
 		TraceID:       "00000000000000000000000000000001",
@@ -50,7 +50,7 @@ func TestRoundTrip_AllPayloads(t *testing.T) {
 		{
 			name: "AnalysisHeadersMessage",
 			payload: contracts.AnalysisHeadersMessage{
-				EmailID:      1001,
+				EmailID:      "01890000-0000-7000-8000-000000001001",
 				InternalID:   5005,
 				FetchedAt:    now,
 				OrgID:        42,
@@ -164,7 +164,7 @@ func TestRoundTrip_AllPayloads(t *testing.T) {
 					AggregationLatencyMS: 312,
 					ComponentDetails: contracts.ComponentDetails{
 						URL:    json.RawMessage(`{"meta":{},"score":72}`),
-						Header: json.RawMessage(`{"email_id":1001,"score":85}`),
+						Header: json.RawMessage(`{"email_id":"01890000-0000-7000-8000-000000001001","score":85}`),
 						NLP:    json.RawMessage(`{"meta":{},"score":60}`),
 					},
 				}
@@ -234,7 +234,7 @@ func TestAllTopicsCount(t *testing.T) {
 // TestSpecWireTags pins the spec field names so a rename doesn't silently
 // break the wire contract with the non-Go consumers / persisted columns.
 func TestSpecWireTags(t *testing.T) {
-	meta := contracts.NewMeta(1, 2)
+	meta := contracts.NewMeta("e1", 2)
 
 	raw, err := json.Marshal(contracts.EmailsRaw{Meta: meta, RawMessageB64: "Zg==", APIKeyID: 7})
 	require.NoError(t, err)
@@ -271,7 +271,7 @@ func TestSpecWireTags(t *testing.T) {
 		assert.Contains(t, string(txt), k)
 	}
 
-	hdr, err := json.Marshal(contracts.AnalysisHeadersMessage{EmailID: 1, InternalID: 9, OrgID: 2, BodyHTML: "<p>x</p>", BodyPlain: "x"})
+	hdr, err := json.Marshal(contracts.AnalysisHeadersMessage{EmailID: "e1", InternalID: 9, OrgID: 2, BodyHTML: "<p>x</p>", BodyPlain: "x"})
 	require.NoError(t, err)
 	assert.Contains(t, string(hdr), `"body_html"`)
 	assert.Contains(t, string(hdr), `"body_plain"`)
@@ -291,7 +291,7 @@ func TestSpecWireTags(t *testing.T) {
 	// scores.header forwards internal_id so the aggregator (no DB access) can
 	// place the surrogate PK on emails.scored without a lookup.
 	shdr, err := json.Marshal(contracts.ScoresHeaderMessage{
-		EmailID: 1, InternalID: 9, OrgID: 2, Component: contracts.ComponentHeader, Score: 50,
+		EmailID: "e1", InternalID: 9, OrgID: 2, Component: contracts.ComponentHeader, Score: 50,
 	})
 	require.NoError(t, err)
 	assert.Contains(t, string(shdr), `"internal_id":9`)
@@ -306,7 +306,7 @@ func TestSpecWireTags(t *testing.T) {
 // TestTypedScoresScoreIsInt guards G13's float→int score change on the typed
 // payloads.
 func TestTypedScoresScoreIsInt(t *testing.T) {
-	meta := contracts.NewMeta(1, 2)
+	meta := contracts.NewMeta("e1", 2)
 	for _, b := range [][]byte{
 		mustJSON(t, contracts.ScoresURL{Meta: meta, Component: contracts.ComponentURL, Score: 100}),
 		mustJSON(t, contracts.ScoresAttachment{Meta: meta, Component: contracts.ComponentAttachment, Score: 100}),
@@ -333,7 +333,7 @@ func ptr(i int) *int { return &i }
 // + ids-present pass, out-of-range scores (negative and >100) fail, the two-id
 // header pair rejects both-zero, and nil pointer scores do not trip.
 func TestValidate_ScorePayloads(t *testing.T) {
-	meta := contracts.NewMeta(1001, 42)
+	meta := contracts.NewMeta("e1001", 42)
 
 	cases := []struct {
 		name    string
@@ -357,13 +357,16 @@ func TestValidate_ScorePayloads(t *testing.T) {
 		{"ScoresNLP/negative", contracts.ScoresNLP{Meta: meta, Component: contracts.ComponentNLP, Score: -1}, true},
 		{"ScoresNLP/over", contracts.ScoresNLP{Meta: meta, Component: contracts.ComponentNLP, Score: 101}, true},
 
-		// ── ScoresHeaderMessage (score range + two-id pair) ─────────────
-		{"ScoresHeaderMessage/ok", contracts.ScoresHeaderMessage{EmailID: 1001, InternalID: 5005, OrgID: 42, Component: contracts.ComponentHeader, Score: 50, AuthSubScore: 200}, false},
-		{"ScoresHeaderMessage/emailID-only", contracts.ScoresHeaderMessage{EmailID: 1001, OrgID: 42, Component: contracts.ComponentHeader, Score: 50}, false},
-		{"ScoresHeaderMessage/internalID-only", contracts.ScoresHeaderMessage{InternalID: 5005, OrgID: 42, Component: contracts.ComponentHeader, Score: 50}, false},
-		{"ScoresHeaderMessage/both-ids-zero", contracts.ScoresHeaderMessage{OrgID: 42, Component: contracts.ComponentHeader, Score: 50}, true},
-		{"ScoresHeaderMessage/negative", contracts.ScoresHeaderMessage{EmailID: 1001, Component: contracts.ComponentHeader, Score: -1}, true},
-		{"ScoresHeaderMessage/over", contracts.ScoresHeaderMessage{EmailID: 1001, Component: contracts.ComponentHeader, Score: 101}, true},
+		// ── ScoresHeaderMessage (score range + logical-id presence) ─────
+		// email_id is the always-present logical id (UUIDv7 string); it can no
+		// longer stand in for the int64 internal_id, so Validate keys only off
+		// email_id's presence (LANDMINE B). internal_id may legitimately be zero.
+		{"ScoresHeaderMessage/ok", contracts.ScoresHeaderMessage{EmailID: "e1001", InternalID: 5005, OrgID: 42, Component: contracts.ComponentHeader, Score: 50, AuthSubScore: 200}, false},
+		{"ScoresHeaderMessage/emailID-only", contracts.ScoresHeaderMessage{EmailID: "e1001", OrgID: 42, Component: contracts.ComponentHeader, Score: 50}, false},
+		{"ScoresHeaderMessage/internalID-only", contracts.ScoresHeaderMessage{InternalID: 5005, OrgID: 42, Component: contracts.ComponentHeader, Score: 50}, true},
+		{"ScoresHeaderMessage/no-email-id", contracts.ScoresHeaderMessage{OrgID: 42, Component: contracts.ComponentHeader, Score: 50}, true},
+		{"ScoresHeaderMessage/negative", contracts.ScoresHeaderMessage{EmailID: "e1001", Component: contracts.ComponentHeader, Score: -1}, true},
+		{"ScoresHeaderMessage/over", contracts.ScoresHeaderMessage{EmailID: "e1001", Component: contracts.ComponentHeader, Score: 101}, true},
 
 		// ── EmailsScored (nullable component scores) ────────────────────
 		{"EmailsScored/all-nil", contracts.EmailsScored{Meta: meta, InternalID: 1001}, false},
@@ -400,7 +403,7 @@ func TestValidate_ScorePayloads(t *testing.T) {
 // that passes validation round-trips byte-for-byte identically to one that was
 // never validated.
 func TestValidate_DoesNotMutateWire(t *testing.T) {
-	meta := contracts.NewMeta(1001, 42)
+	meta := contracts.NewMeta("e1001", 42)
 	s := contracts.ScoresURL{Meta: meta, Component: contracts.ComponentURL, Score: 72, URLCount: 5}
 
 	before, err := json.Marshal(s)
@@ -412,17 +415,17 @@ func TestValidate_DoesNotMutateWire(t *testing.T) {
 }
 
 func TestNewMetaSchemaVersion(t *testing.T) {
-	m := contracts.NewMeta(7, 8)
+	m := contracts.NewMeta("e7", 8)
 	assert.Equal(t, contracts.SchemaVersion, m.SchemaVersion)
-	assert.Equal(t, int64(7), m.EmailID)
+	assert.Equal(t, "e7", m.EmailID)
 	assert.Equal(t, int64(8), m.OrgID)
 	assert.False(t, m.Timestamp.IsZero())
 }
 
 func TestNewMetaWithFetched(t *testing.T) {
 	clock := time.Date(2026, 4, 10, 15, 30, 0, 0, time.UTC)
-	m := contracts.NewMetaWithFetched(10, 20, clock)
-	assert.Equal(t, int64(10), m.EmailID)
+	m := contracts.NewMetaWithFetched("e10", 20, clock)
+	assert.Equal(t, "e10", m.EmailID)
 	assert.Equal(t, int64(20), m.OrgID)
 	assert.True(t, m.FetchedAt.Equal(clock))
 	assert.Equal(t, contracts.SchemaVersion, m.SchemaVersion)
@@ -430,12 +433,12 @@ func TestNewMetaWithFetched(t *testing.T) {
 
 func TestMessageMetaFetchedAtJSONRoundTrip(t *testing.T) {
 	// Omitting fetched_at on the wire must decode to zero FetchedAt so consumers treat it as absent.
-	payload := []byte(`{"email_id":1,"org_id":2,"timestamp":"2026-01-02T03:04:05Z","schema_version":1}`)
+	payload := []byte(`{"email_id":"e1","org_id":2,"timestamp":"2026-01-02T03:04:05Z","schema_version":1}`)
 	var m contracts.MessageMeta
 	require.NoError(t, json.Unmarshal(payload, &m))
 	assert.True(t, m.FetchedAt.IsZero())
 
-	with := contracts.NewMetaWithFetched(1, 2, time.Date(2026, 3, 3, 1, 0, 0, 0, time.FixedZone("east", 3600)))
+	with := contracts.NewMetaWithFetched("e1", 2, time.Date(2026, 3, 3, 1, 0, 0, 0, time.FixedZone("east", 3600)))
 	b2, err := json.Marshal(with)
 	require.NoError(t, err)
 	assert.Contains(t, string(b2), `"fetched_at":"2026-03-03T00:00:00Z"`)
@@ -447,7 +450,7 @@ func TestMessageMetaFetchedAtJSONRoundTrip(t *testing.T) {
 
 func TestEmailsScored_nilScorePointersOmitJSONKeys(t *testing.T) {
 	now := time.Date(2026, 5, 2, 12, 0, 0, 0, time.UTC)
-	meta := contracts.NewMetaWithFetched(42, 7, now)
+	meta := contracts.NewMetaWithFetched("e42", 7, now)
 	es := contracts.EmailsScored{
 		Meta:             meta,
 		InternalID:       1001,
