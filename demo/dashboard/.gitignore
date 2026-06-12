@@ -1,2 +1,5 @@
 # Local Gmail refresh token persisted by the demo (never commit OAuth tokens).
 .gmail-token
+
+# Local secrets for the demo (Google OAuth client id/secret). Never commit.
+.env

@@ -7,6 +7,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"embed"
 	"errors"
@@ -14,6 +15,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -66,7 +68,44 @@ func envDur(k string, d time.Duration) time.Duration {
 	return d
 }
 
+// loadDotenv loads KEY=VALUE pairs from an optional .env file (default
+// demo/dashboard/.env, override via DEMO_ENV_FILE) into the process environment.
+// Real environment variables always win — a value already set is never
+// overwritten. Blank lines and #-comments are skipped; an optional leading
+// "export " and surrounding quotes on the value are stripped. A missing file is
+// fine (the demo just runs with defaults / whatever is already exported).
+func loadDotenv() {
+	path := env("DEMO_ENV_FILE", "demo/dashboard/.env")
+	f, err := os.Open(path)
+	if err != nil {
+		return
+	}
+	defer func() { _ = f.Close() }()
+
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		line = strings.TrimPrefix(line, "export ")
+		k, v, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		k = strings.TrimSpace(k)
+		v = strings.Trim(strings.TrimSpace(v), `"'`)
+		if k == "" {
+			continue
+		}
+		if _, exists := os.LookupEnv(k); !exists {
+			_ = os.Setenv(k, v)
+		}
+	}
+}
+
 func main() {
+	loadDotenv()
 	log := zerolog.New(zerolog.ConsoleWriter{Out: os.Stderr, TimeFormat: time.RFC3339}).
 		With().Timestamp().Str("service", "demo-dashboard").Logger()
 	cfg := loadConfig()

@@ -82,12 +82,15 @@ Open <https://console.cloud.google.com/apis/credentials> → **Create Credential
 3. **Create** → copy the **Client ID** and **Client secret**.
 
 ### 5. Run with the credentials
+Put the client id/secret in a local `.env` (gitignored) — the demo loads it automatically:
 ```bash
-export GOOGLE_CLIENT_ID="<your client id>"
-export GOOGLE_CLIENT_SECRET="<your client secret>"
-go run ./demo/dashboard          # or: docker compose --profile demo up -d demo-dashboard
+cp demo/dashboard/.env.example demo/dashboard/.env
+# edit the file: set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET
+make demo-up                     # → prints "Gmail sign-in: ENABLED"
 ```
-(With compose, put the two vars in your shell or a `.env` next to the compose file.)
+`go run ./demo/dashboard` reads the same `demo/dashboard/.env`. Exported environment variables always
+override the file. (Containerised? The `demo-dashboard` compose service instead reads `GOOGLE_CLIENT_ID` /
+`GOOGLE_CLIENT_SECRET` from your shell or `deploy/compose/.env`.)
 
 ### 6. Connect
 Open <http://localhost:8090>, click **Sign in with Google**, pick your account, approve the read-only
