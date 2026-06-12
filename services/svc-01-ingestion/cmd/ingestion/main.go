@@ -1,8 +1,11 @@
 // svc-01-ingestion is the Ingestion Service: the entry point of the pipeline.
-// It exposes the API-upload adapter (POST /api/v1/scan), authenticates every
-// request against an API key (binding org_id from the key, never the body —
+// It exposes the API-upload adapter (POST /api/v1/scan) AND the Gmail adapter
+// (Pub/Sub push at POST /gmail/push + a fallback poll loop), authenticates API
+// requests against an API key (binding org_id from the key, never the body —
 // G10), enforces a 7-day (org, message_id) dedup and a monthly ingestion quota,
 // assigns the logical email_id as a UUIDv7 (G17/#142), and publishes emails.raw.
+// Both adapters share the same ingestion core, so dedup/quota/UUIDv7 apply
+// uniformly regardless of source.
 //
 // It does NOT write the emails table — svc-02 is the SOLE emails writer (the v0
 // INSERT shim is retired). Adapter scope (D2): API-upload + Gmail only; IMAP and
@@ -12,6 +15,7 @@
 package main
 
 import (
+	"context"
 	"net/http"
 	"os"
 
@@ -27,9 +31,17 @@ import (
 	"github.com/saif/cybersiren/services/svc-01-ingestion/internal/pgstore"
 	"github.com/saif/cybersiren/services/svc-01-ingestion/internal/quota"
 	"github.com/saif/cybersiren/services/svc-01-ingestion/internal/source/apiupload"
+	gmailsrc "github.com/saif/cybersiren/services/svc-01-ingestion/internal/source/gmail"
 )
 
 const serviceName = "svc-01-ingestion"
+
+// gmailAdapter is the optional Gmail adapter, built once in registerRoutes (so
+// its push route is bound) and reused in onReady (to start its watch/poll/renew
+// loops). It is nil when the Gmail adapter is disabled in config. Assigned
+// exactly once before the consumer loop starts and only read afterward, so no
+// synchronisation is required.
+var gmailAdapter *gmailsrc.Adapter
 
 func main() {
 	if err := svckit.Run(svckit.Spec{
@@ -41,6 +53,8 @@ func main() {
 		// HTTPRoutes runs after the pool, Valkey client, and producers are wired
 		// (svckit.Run order), so the full app is assembled here.
 		HTTPRoutes: registerRoutes,
+		// OnReady starts the Gmail watch/poll/renew loops once everything is up.
+		OnReady: onReady,
 	}); err != nil {
 		l := zerolog.New(os.Stderr)
 		l.Error().Err(err).Send()
@@ -49,7 +63,8 @@ func main() {
 }
 
 // registerRoutes assembles the ingestion app from svckit deps and binds the
-// API-upload adapter behind the API-key auth middleware.
+// API-upload adapter behind the API-key auth middleware plus, when enabled, the
+// Gmail Pub/Sub push endpoint.
 func registerRoutes(mux *http.ServeMux, deps svckit.Deps) {
 	// KeyManager knows the lookup-prefix length + validation rules from config.
 	km, err := sharedauth.NewKeyManager(
@@ -85,4 +100,43 @@ func registerRoutes(mux *http.ServeMux, deps svckit.Deps) {
 	adapterMux := http.NewServeMux()
 	adapter.Register(adapterMux)
 	mux.Handle("/api/v1/", authn.Middleware(adapterMux))
+
+	// Gmail adapter (optional). It shares the SAME ingestion core as the API
+	// adapter, so dedup/quota/UUIDv7 apply identically. The push endpoint is
+	// NOT behind the API-key middleware — its own verifyPush gate (shared token
+	// / OIDC audience) authenticates Google's Pub/Sub push instead.
+	ga, gerr := gmailsrc.Build(deps.Cfg.Gmail, core, deps.Valkey, deps.Log)
+	if gerr != nil {
+		deps.Log.Error().Err(gerr).Msg("gmail adapter init failed; Gmail ingestion disabled")
+		return
+	}
+	if ga != nil {
+		gmailAdapter = ga
+		if gmailsrc.PushEnabled(deps.Cfg.Gmail) {
+			ga.Register(mux)
+			deps.Log.Info().Msg("gmail push endpoint registered at POST /gmail/push")
+		}
+	}
+}
+
+// onReady starts the Gmail background loops (watch registration + 24h renewal,
+// and the fallback poll loop) after all clients are wired. It is a no-op when
+// the Gmail adapter is disabled.
+func onReady(ctx context.Context, deps svckit.Deps) error {
+	if gmailAdapter == nil {
+		return nil
+	}
+	if gmailsrc.PushEnabled(deps.Cfg.Gmail) {
+		// Register the watch so Gmail starts pushing; seed the history cursor.
+		// A failure here is non-fatal — the poll loop still recovers mail, and
+		// the renewer retries — so we log rather than abort startup.
+		if _, err := gmailAdapter.Watch(ctx); err != nil {
+			deps.Log.Error().Err(err).Msg("gmail: initial watch failed (poll loop will still run)")
+		}
+		go gmailAdapter.RunWatchRenewer(ctx)
+	}
+	if gmailsrc.PollEnabled(deps.Cfg.Gmail) {
+		go gmailAdapter.RunPollLoop(ctx)
+	}
+	return nil
 }

@@ -426,7 +426,12 @@ func Load() (*Config, error) {
 		Gmail: GmailConfig{
 			Enabled:      false,
 			Scopes:       []string{"https://www.googleapis.com/auth/gmail.readonly"},
+			User:         "me",
+			LabelIDs:     []string{"INBOX"},
+			PushEnabled:  true,
+			PollEnabled:  true,
 			PollInterval: 5 * time.Minute,
+			HTTPTimeout:  30 * time.Second,
 		},
 	}
 
@@ -884,14 +889,24 @@ func (w WebhookConfig) Validate() error {
 	return nil
 }
 
-// GmailConfig holds the OAuth2 settings for the SVC-01 Gmail ingestion adapter
-// (ARCH-SPEC §2.1: offline access, scope gmail.readonly). The adapter exchanges
-// the offline RefreshToken for short-lived access tokens; the client
-// id/secret/redirect identify the OAuth app.
+// GmailConfig holds the OAuth2 + Pub/Sub settings for the SVC-01 Gmail ingestion
+// adapter (ARCH-SPEC §2.1: Gmail API v1, offline access, scope gmail.readonly,
+// Google Pub/Sub push → poll messages.get, event-driven + 5-min fallback poll,
+// watch() expires every 7 days — auto-renew). The adapter exchanges the offline
+// RefreshToken for short-lived access tokens; the client id/secret/redirect
+// identify the OAuth app.
 //
-// All four secret-bearing fields (ClientID, ClientSecret, RefreshToken) must
-// come from secrets, never committed YAML. Validation is opt-in: only SVC-01
-// (when the Gmail adapter is enabled) calls Validate().
+// All three secret-bearing fields (ClientID, ClientSecret, RefreshToken) and the
+// PushToken must come from secrets, never committed YAML. Validation is opt-in:
+// only SVC-01 (when the Gmail adapter is enabled) calls Validate().
+//
+// Delivery model. The spec's primary trigger is a Pub/Sub PUSH notification: a
+// watch() registration tells Gmail to publish a tiny {emailAddress, historyId}
+// notification to a Pub/Sub topic, whose push subscription POSTs it to svc-01's
+// /gmail/push endpoint; the adapter then fetches new messages via the Gmail
+// history API. A fallback poll loop (history.list every PollInterval) catches
+// anything missed while the webhook was unreachable. Either path feeds the SAME
+// ingestion core, so dedup/quota/UUIDv7 apply uniformly.
 type GmailConfig struct {
 	// Enabled toggles the Gmail adapter. When false the rest is ignored so
 	// that deployments running API-upload only are not forced to configure
@@ -911,9 +926,54 @@ type GmailConfig struct {
 	// Scopes the adapter requests. Defaults to gmail.readonly per ARCH-SPEC §2.1.
 	Scopes []string `koanf:"scopes"`
 
+	// User is the mailbox the adapter watches/polls. Gmail accepts "me" (the
+	// authenticated user) or an email address. Default "me".
+	User string `koanf:"user"`
+
+	// OrgID is the tenant the watched mailbox belongs to. A Pub/Sub push
+	// carries no API key, so the adapter binds ingested mail to this org (the
+	// org still comes from configuration, NOT the request body — G10). The
+	// quota/dedup/RLS path is identical to an API-key ingest.
+	OrgID int64 `koanf:"org_id"`
+
+	// WatchTopic is the FULLY-QUALIFIED Pub/Sub topic the watch() call targets,
+	// e.g. projects/my-project/topics/gmail-push. Required for push.
+	WatchTopic string `koanf:"watch_topic"`
+
+	// LabelIDs filters which Gmail labels watch() reacts to (default ["INBOX"]).
+	LabelIDs []string `koanf:"label_ids"`
+
+	// PushEnabled enables the /gmail/push webhook handler + watch() registration.
+	PushEnabled bool `koanf:"push_enabled"`
+
+	// PushToken is a shared secret appended as ?token=... to the push
+	// subscription endpoint URL; the handler rejects requests whose token does
+	// not match. This is the lightweight verification of a push message when an
+	// OIDC audience is not configured. Empty disables token verification (the
+	// runbook recommends setting it).
+	PushToken string `koanf:"push_token"`
+
+	// PushAudience, when set, is the expected `aud` claim of the OIDC bearer
+	// token Google signs the push request with (push subscriptions configured
+	// with a service-account identity). Empty disables OIDC verification and
+	// relies on PushToken instead.
+	PushAudience string `koanf:"push_audience"`
+
+	// PollEnabled enables the fallback history.list poll loop.
+	PollEnabled bool `koanf:"poll_enabled"`
+
 	// PollInterval is the fallback delta-poll cadence used when Pub/Sub push
 	// is unavailable (default 5m, matching the spec's 5-min fallback).
 	PollInterval time.Duration `koanf:"poll_interval"`
+
+	// HTTPTimeout bounds each Gmail API round-trip (default 30s).
+	HTTPTimeout time.Duration `koanf:"http_timeout"`
+
+	// APIBaseURL / TokenURL are overridable so the recorded-fixture tests can
+	// point the adapter at an httptest server. Empty falls back to the real
+	// Google endpoints.
+	APIBaseURL string `koanf:"api_base_url"`
+	TokenURL   string `koanf:"token_url"`
 }
 
 // Validate checks the Gmail OAuth fields. Only called when the adapter is
@@ -931,8 +991,20 @@ func (g GmailConfig) Validate() error {
 	if len(g.Scopes) == 0 {
 		return errors.New("gmail.scopes must contain at least one scope when the Gmail adapter is enabled")
 	}
+	if g.OrgID <= 0 {
+		return errors.New("gmail.org_id is required (the tenant the watched mailbox belongs to) when the Gmail adapter is enabled")
+	}
 	if g.PollInterval <= 0 {
 		return fmt.Errorf("gmail.poll_interval must be > 0, got %v", g.PollInterval)
+	}
+	if g.HTTPTimeout <= 0 {
+		return fmt.Errorf("gmail.http_timeout must be > 0, got %v", g.HTTPTimeout)
+	}
+	if !g.PushEnabled && !g.PollEnabled {
+		return errors.New("gmail: at least one of push_enabled or poll_enabled must be true when the adapter is enabled")
+	}
+	if g.PushEnabled && strings.TrimSpace(g.WatchTopic) == "" {
+		return errors.New("gmail.watch_topic is required when push is enabled (projects/<id>/topics/<name>)")
 	}
 	return nil
 }
