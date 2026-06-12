@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/stretchr/testify/assert"
 )
@@ -68,4 +69,18 @@ func TestTimestamptzOrNull(t *testing.T) {
 	assert.True(t, out.Valid)
 	assert.Equal(t, in.UTC(), out.Time, "non-zero stored in UTC")
 	assert.Equal(t, time.UTC, out.Time.Location())
+}
+
+func TestUUIDOrNull(t *testing.T) {
+	// Empty / malformed map to NULL so an absent logical id never aborts a write.
+	assert.Equal(t, pgtype.UUID{}, UUIDOrNull(""))
+	assert.False(t, UUIDOrNull("").Valid)
+	assert.False(t, UUIDOrNull("not-a-uuid").Valid, "unparseable maps to NULL, not an error")
+
+	const raw = "018f3a2b-7c1d-7e2a-9b4c-0123456789ab"
+	got := UUIDOrNull(raw)
+	assert.True(t, got.Valid)
+	u, err := uuid.Parse(raw)
+	assert.NoError(t, err)
+	assert.Equal(t, [16]byte(u), got.Bytes, "bytes round-trip the canonical UUID")
 }

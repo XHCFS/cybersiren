@@ -118,6 +118,36 @@ func (q *Queries) GetEmailIdentity(ctx context.Context, arg GetEmailIdentityPara
 	return i, err
 }
 
+const getEmailIdentityByEmailID = `-- name: GetEmailIdentityByEmailID :one
+SELECT internal_id, fetched_at
+FROM email_identities
+WHERE org_id = $1
+  AND email_id = $2
+`
+
+type GetEmailIdentityByEmailIDParams struct {
+	OrgID   int64       `db:"org_id" json:"org_id"`
+	EmailID pgtype.UUID `db:"email_id" json:"email_id"`
+}
+
+type GetEmailIdentityByEmailIDRow struct {
+	InternalID int64              `db:"internal_id" json:"internal_id"`
+	FetchedAt  pgtype.Timestamptz `db:"fetched_at" json:"fetched_at"`
+}
+
+// Resolves the logical UUIDv7 email_id (G5/G17) back to the canonical
+// (internal_id, fetched_at) partition key, so a caller holding only the opaque
+// email_id (e.g. the svc-01 demo UI polling a verdict) can read the partitioned
+// emails / verdict rows. email_id is stamped on the identity row by svc-02 at
+// registration (migration 035). Runs inside WithOrgTx; the RLS GUC scopes the
+// row. Returns no row for an unknown email_id or one registered before 035.
+func (q *Queries) GetEmailIdentityByEmailID(ctx context.Context, arg GetEmailIdentityByEmailIDParams) (GetEmailIdentityByEmailIDRow, error) {
+	row := q.db.QueryRow(ctx, getEmailIdentityByEmailID, arg.OrgID, arg.EmailID)
+	var i GetEmailIdentityByEmailIDRow
+	err := row.Scan(&i.InternalID, &i.FetchedAt)
+	return i, err
+}
+
 const insertEmail = `-- name: InsertEmail :one
 
 INSERT INTO emails (
@@ -273,8 +303,8 @@ func (q *Queries) InsertEmail(ctx context.Context, arg InsertEmailParams) (Inser
 }
 
 const registerEmailIdentity = `-- name: RegisterEmailIdentity :one
-INSERT INTO email_identities (org_id, message_id, internal_id, fetched_at)
-VALUES ($1, $2, $3, $4)
+INSERT INTO email_identities (org_id, message_id, internal_id, fetched_at, email_id)
+VALUES ($1, $2, $3, $4, $5)
 ON CONFLICT (org_id, message_id) DO NOTHING
 RETURNING internal_id
 `
@@ -284,18 +314,23 @@ type RegisterEmailIdentityParams struct {
 	MessageID  string             `db:"message_id" json:"message_id"`
 	InternalID int64              `db:"internal_id" json:"internal_id"`
 	FetchedAt  pgtype.Timestamptz `db:"fetched_at" json:"fetched_at"`
+	EmailID    pgtype.UUID        `db:"email_id" json:"email_id"`
 }
 
 // Claims (org_id, message_id) for this ingestion. ON CONFLICT DO NOTHING makes
 // the claim atomic: a returned internal_id means we won the claim (new message),
 // while no row means another ingestion already registered it (duplicate signal).
-// Runs inside WithOrgTx so the RLS GUC scopes the write.
+// email_id is the logical UUIDv7 (G5/G17), stamped here so the read side can map
+// it back to (internal_id, fetched_at); it is NULL when the email carries no
+// usable Message-ID (such emails are not registered). Runs inside WithOrgTx so
+// the RLS GUC scopes the write.
 func (q *Queries) RegisterEmailIdentity(ctx context.Context, arg RegisterEmailIdentityParams) (int64, error) {
 	row := q.db.QueryRow(ctx, registerEmailIdentity,
 		arg.OrgID,
 		arg.MessageID,
 		arg.InternalID,
 		arg.FetchedAt,
+		arg.EmailID,
 	)
 	var internal_id int64
 	err := row.Scan(&internal_id)

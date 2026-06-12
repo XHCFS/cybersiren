@@ -13,5 +13,8 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" \
 # Stage 2: final
 FROM alpine:3.19
 RUN apk --no-cache add ca-certificates tzdata
+WORKDIR /app
 COPY --from=builder /bin/service /bin/service
+# Demo UI (B4): served same-origin by svc-01 from ./static (relative to WORKDIR).
+COPY services/svc-01-ingestion/static/ ./static/
 ENTRYPOINT ["/bin/service"]

@@ -415,6 +415,7 @@ func buildPersist(
 	return repository.PersistParsedFull{
 		Email:       emailParams,
 		MessageID:   msgID,
+		EmailID:     raw.Meta.EmailID,
 		URLs:        urls,
 		Attachments: atts,
 		Recipients:  recips,
