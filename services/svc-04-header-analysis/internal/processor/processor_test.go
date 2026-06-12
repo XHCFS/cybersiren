@@ -2,7 +2,6 @@ package processor
 
 import (
 	"encoding/json"
-	"strconv"
 	"testing"
 	"time"
 
@@ -15,7 +14,7 @@ func TestDecodeMessage(t *testing.T) {
 	t.Parallel()
 
 	good := contractsk.AnalysisHeadersMessage{
-		EmailID:     7,
+		EmailID:     "e7",
 		FetchedAt:   time.Now().UTC(),
 		OrgID:       1,
 		SenderEmail: "a@b.com",
@@ -26,7 +25,7 @@ func TestDecodeMessage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
-	if parsed.EmailID != 7 || parsed.OrgID != 1 || parsed.SenderEmail != "a@b.com" {
+	if parsed.EmailID != "e7" || parsed.OrgID != 1 || parsed.SenderEmail != "a@b.com" {
 		t.Errorf("decoded mismatch: %+v", parsed)
 	}
 
@@ -37,12 +36,12 @@ func TestDecodeMessage(t *testing.T) {
 		t.Errorf("expected error on garbage")
 	}
 
-	bad := contractsk.AnalysisHeadersMessage{EmailID: 0, FetchedAt: time.Now().UTC()}
+	bad := contractsk.AnalysisHeadersMessage{EmailID: "", FetchedAt: time.Now().UTC()}
 	body, _ = json.Marshal(bad)
 	if _, err := decodeMessage(body); err == nil {
-		t.Errorf("expected error on email_id=0")
+		t.Errorf("expected error on empty email_id")
 	}
-	bad = contractsk.AnalysisHeadersMessage{EmailID: 7}
+	bad = contractsk.AnalysisHeadersMessage{EmailID: "e7"}
 	body, _ = json.Marshal(bad)
 	if _, err := decodeMessage(body); err == nil {
 		t.Errorf("expected error on missing fetched_at")
@@ -52,10 +51,10 @@ func TestDecodeMessage(t *testing.T) {
 func TestEncodeKey(t *testing.T) {
 	t.Parallel()
 
-	for _, id := range []int64{1, 99, 1234567890} {
+	for _, id := range []string{"e1", "e99", "01890000-0000-7000-8000-000000000001"} {
 		got := string(encodeKey(id))
-		if got != strconv.FormatInt(id, 10) {
-			t.Errorf("encodeKey(%d) = %q", id, got)
+		if got != id {
+			t.Errorf("encodeKey(%q) = %q", id, got)
 		}
 	}
 }
@@ -83,7 +82,7 @@ func TestScoreBucket(t *testing.T) {
 func TestBuildScoresHeader(t *testing.T) {
 	t.Parallel()
 
-	parsed := contractsk.AnalysisHeadersMessage{EmailID: 42, OrgID: 9}
+	parsed := contractsk.AnalysisHeadersMessage{EmailID: "e42", OrgID: 9}
 	signals := header.HeaderSignals{
 		Auth:       header.AuthSignals{SPF: header.AuthResultFail},
 		Reputation: header.ReputationSignals{IsFreeProvider: true},
@@ -98,7 +97,7 @@ func TestBuildScoresHeader(t *testing.T) {
 	}
 
 	out := buildScoresHeader(parsed, signals, er, 60, 12*time.Millisecond)
-	if out.EmailID != 42 || out.OrgID != 9 || out.Component != "header" {
+	if out.EmailID != "e42" || out.OrgID != 9 || out.Component != "header" {
 		t.Errorf("envelope wrong: %+v", out)
 	}
 	if out.Score != 60 || out.AuthSubScore != 50 {

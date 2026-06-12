@@ -26,11 +26,11 @@ type RateLimiter interface {
 // email), the email id is used as the bucket discriminator so per-email alerts
 // are still de-duplicated across redeliveries instead of collapsing every
 // non-campaign alert for the org into one shared bucket.
-func RateLimitKey(orgID int64, campaignID *int64, emailID int64) string {
+func RateLimitKey(orgID int64, campaignID *int64, emailID string) string {
 	if campaignID != nil {
 		return fmt.Sprintf("notif:%d:%d", orgID, *campaignID)
 	}
-	return fmt.Sprintf("notif:%d:email-%d", orgID, emailID)
+	return fmt.Sprintf("notif:%d:email-%s", orgID, emailID)
 }
 
 // ValkeyRateLimiter implements RateLimiter over valkey-go using a single

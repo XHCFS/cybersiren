@@ -107,14 +107,14 @@ func (a *Aggregator) Handle(ctx context.Context, msg kafkaconsumer.Message) erro
 			Int64("offset", msg.Offset).Msg("malformed payload; skipping")
 		return nil
 	}
-	if emailID == 0 {
+	if emailID == "" {
 		a.observeMessage(msg.Topic, "error")
 		span.SetStatus(codes.Error, "payload missing email_id")
 		a.log.Warn().Str("topic", msg.Topic).Msg("payload missing email_id; skipping")
 		return nil
 	}
 	span.SetAttributes(
-		attribute.Int64("email_id", emailID),
+		attribute.String("email_id", emailID),
 		attribute.Int64("org_id", orgID),
 	)
 
@@ -260,7 +260,8 @@ func (a *Aggregator) Handle(ctx context.Context, msg kafkaconsumer.Message) erro
 // eventually reap stale keys.
 func (a *Aggregator) publishAndCleanup(
 	ctx context.Context,
-	orgID, emailID int64,
+	orgID int64,
+	emailID string,
 	state map[string]string,
 	startedAt time.Time,
 	timeoutTriggered bool,
@@ -276,7 +277,7 @@ func (a *Aggregator) publishAndCleanup(
 	}
 
 	// PublishRetries = extra kafka attempts after the first ProduceSync.
-	key := []byte(strconv.FormatInt(emailID, 10))
+	key := []byte(emailID)
 	if err := a.publisher.Publish(ctx, key, body, a.cfg.PublishRetries); err != nil {
 		return fmt.Errorf("publish emails.scored: %w", err)
 	}
@@ -287,7 +288,7 @@ func (a *Aggregator) publishAndCleanup(
 		// Don't fail the handler — the bucket will TTL out. We just
 		// won't accept any further scores for this email_id, which is
 		// correct.
-		a.log.Debug().Err(err).Int64("email_id", emailID).Msg("aggregator del failed; relying on TTL")
+		a.log.Debug().Err(err).Str("email_id", emailID).Msg("aggregator del failed; relying on TTL")
 		a.bumpPublishError("del")
 	}
 

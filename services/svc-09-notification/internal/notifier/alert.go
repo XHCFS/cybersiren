@@ -11,7 +11,7 @@ import (
 // email body, a JSON webhook body).
 type Alert struct {
 	OrgID        int64     `json:"org_id"`
-	EmailID      int64     `json:"email_id"`
+	EmailID      string    `json:"email_id"`
 	InternalID   int64     `json:"internal_id"`
 	VerdictLabel string    `json:"verdict_label"`
 	RiskScore    int       `json:"risk_score"`

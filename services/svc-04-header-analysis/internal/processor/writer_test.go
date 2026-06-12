@@ -10,14 +10,15 @@ import (
 )
 
 // rule_hits.entity_id must be emails.internal_id (the DB BIGSERIAL svc-02
-// assigns), falling back to email_id only when svc-02 did not carry it.
-func TestRuleHitEntityID_PrefersInternalID(t *testing.T) {
+// assigns). email_id is a UUIDv7 string and can NOT substitute (LANDMINE B): a
+// missing internal_id yields 0, never the email_id.
+func TestRuleHitEntityID_UsesInternalIDOnly(t *testing.T) {
 	t.Parallel()
-	if got := ruleHitEntityID(contractsk.AnalysisHeadersMessage{EmailID: 999, InternalID: 15}); got != 15 {
+	if got := ruleHitEntityID(contractsk.AnalysisHeadersMessage{EmailID: "e999", InternalID: 15}); got != 15 {
 		t.Fatalf("ruleHitEntityID with internal_id=15 -> %d, want 15", got)
 	}
-	if got := ruleHitEntityID(contractsk.AnalysisHeadersMessage{EmailID: 999}); got != 999 {
-		t.Fatalf("ruleHitEntityID fallback -> %d, want 999 (email_id)", got)
+	if got := ruleHitEntityID(contractsk.AnalysisHeadersMessage{EmailID: "e999"}); got != 0 {
+		t.Fatalf("ruleHitEntityID with internal_id=0 -> %d, want 0 (no email_id fallback)", got)
 	}
 }
 

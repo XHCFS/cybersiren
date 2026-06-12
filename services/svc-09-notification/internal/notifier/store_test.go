@@ -14,11 +14,11 @@ import (
 func TestRateLimitKey(t *testing.T) {
 	t.Parallel()
 	camp := int64(99)
-	if got := RateLimitKey(7, &camp, 123); got != "notif:7:99" {
+	if got := RateLimitKey(7, &camp, "e123"); got != "notif:7:99" {
 		t.Errorf("with campaign: got %q, want notif:7:99", got)
 	}
-	if got := RateLimitKey(7, nil, 123); got != "notif:7:email-123" {
-		t.Errorf("no campaign: got %q, want notif:7:email-123", got)
+	if got := RateLimitKey(7, nil, "e123"); got != "notif:7:email-e123" {
+		t.Errorf("no campaign: got %q, want notif:7:email-e123", got)
 	}
 }
 

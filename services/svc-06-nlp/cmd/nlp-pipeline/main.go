@@ -13,7 +13,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"strconv"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -71,7 +70,7 @@ func handle(ctx context.Context, msg kafkaconsumer.Message, deps svckit.Deps) er
 		return fmt.Errorf("decode analysis.text: %w", err)
 	}
 
-	log := zerolog.Ctx(ctx).With().Int64("email_id", input.Meta.EmailID).Logger()
+	log := zerolog.Ctx(ctx).With().Str("email_id", input.Meta.EmailID).Logger()
 
 	predCtx, cancel := context.WithTimeout(ctx, predictTimeout)
 	resp, status, err := nlpClient.Predict(predCtx, nlp.PredictRequest{
@@ -117,7 +116,7 @@ func handle(ctx context.Context, msg kafkaconsumer.Message, deps svckit.Deps) er
 	if !ok {
 		return fmt.Errorf("svc-06: producer for %s not configured", contracts.TopicScoresNLP)
 	}
-	if err := prod.Publish(ctx, []byte(strconv.FormatInt(input.Meta.EmailID, 10)), body, 1); err != nil { // +1 kafka retry
+	if err := prod.Publish(ctx, []byte(input.Meta.EmailID), body, 1); err != nil { // +1 kafka retry
 		return fmt.Errorf("publish scores.nlp: %w", err)
 	}
 

@@ -141,12 +141,12 @@ func (e *Engine) Handle(ctx context.Context, msg kafkaconsumer.Message) error {
 	}
 
 	logCtx := e.log.With().
-		Int64("email_id", scored.Meta.EmailID).
+		Str("email_id", scored.Meta.EmailID).
 		Int64("org_id", scored.Meta.OrgID).
 		Logger()
 
 	span.SetAttributes(
-		attribute.Int64("email_id", scored.Meta.EmailID),
+		attribute.String("email_id", scored.Meta.EmailID),
 		attribute.Int64("org_id", scored.Meta.OrgID),
 	)
 
@@ -499,8 +499,8 @@ func decodeScored(b []byte) (contracts.EmailsScored, error) {
 	if err := json.Unmarshal(b, &out); err != nil {
 		return out, fmt.Errorf("unmarshal emails.scored: %w", err)
 	}
-	if out.Meta.EmailID <= 0 {
-		return out, fmt.Errorf("emails.scored: meta.email_id must be > 0, got %d", out.Meta.EmailID)
+	if out.Meta.EmailID == "" {
+		return out, errors.New("emails.scored: meta.email_id is required")
 	}
 	if out.Meta.OrgID <= 0 {
 		return out, fmt.Errorf("emails.scored: meta.org_id must be > 0, got %d", out.Meta.OrgID)
@@ -519,8 +519,8 @@ func decodeScored(b []byte) (contracts.EmailsScored, error) {
 	return out, nil
 }
 
-func encodeKey(emailID int64) []byte {
-	return []byte(strconv.FormatInt(emailID, 10))
+func encodeKey(emailID string) []byte {
+	return []byte(emailID)
 }
 
 // campaignNameFor builds a placeholder human-readable name for new

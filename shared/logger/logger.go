@@ -95,10 +95,11 @@ func WithOrgID(ctx context.Context, orgID int64) context.Context {
 	return l.With().Int64("org_id", orgID).Logger().WithContext(ctx)
 }
 
-// WithEmailID attaches an email_id field to the logger in ctx.
-func WithEmailID(ctx context.Context, emailID int64) context.Context {
+// WithEmailID attaches an email_id field to the logger in ctx. email_id is a
+// UUIDv7 string (#142).
+func WithEmailID(ctx context.Context, emailID string) context.Context {
 	l := loggerFromContext(ctx)
-	return l.With().Int64("email_id", emailID).Logger().WithContext(ctx)
+	return l.With().Str("email_id", emailID).Logger().WithContext(ctx)
 }
 
 // WithJobID attaches a job_id and job_type field to the logger in ctx.

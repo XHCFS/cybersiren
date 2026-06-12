@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"strconv"
 	"testing"
 	"time"
 
@@ -160,7 +159,7 @@ func decodePublished(t *testing.T, raw []byte) contractsk.ScoresAttachment {
 
 func TestDecodeMessage(t *testing.T) {
 	good := contractsk.AnalysisAttachments{
-		Meta:        contractsk.NewMetaWithFetched(7, 1, time.Now().UTC()),
+		Meta:        contractsk.NewMetaWithFetched("e7", 1, time.Now().UTC()),
 		Attachments: []contractsk.Attachment{{SHA256: "a", Filename: "x.pdf"}},
 	}
 	body, _ := json.Marshal(good)
@@ -168,7 +167,7 @@ func TestDecodeMessage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decode good: %v", err)
 	}
-	if parsed.Meta.EmailID != 7 || len(parsed.Attachments) != 1 {
+	if parsed.Meta.EmailID != "e7" || len(parsed.Attachments) != 1 {
 		t.Fatalf("decoded mismatch: %+v", parsed)
 	}
 	if _, err := decodeMessage(nil); err == nil {
@@ -177,15 +176,15 @@ func TestDecodeMessage(t *testing.T) {
 	if _, err := decodeMessage([]byte("nope")); err == nil {
 		t.Error("garbage should error")
 	}
-	zero := contractsk.AnalysisAttachments{Meta: contractsk.NewMeta(0, 1)}
+	zero := contractsk.AnalysisAttachments{Meta: contractsk.NewMeta("", 1)}
 	zb, _ := json.Marshal(zero)
 	if _, err := decodeMessage(zb); err == nil {
-		t.Error("email_id=0 should error")
+		t.Error("empty email_id should error")
 	}
 	// N1: a missing fetched_at must error — it keys the email_attachments write-back
 	// (email_fetched_at = NULL would match no row and silently drop the score).
 	noFetched := contractsk.AnalysisAttachments{
-		Meta:        contractsk.MessageMeta{EmailID: 7, OrgID: 1}, // FetchedAt zero
+		Meta:        contractsk.MessageMeta{EmailID: "e7", OrgID: 1}, // FetchedAt zero
 		Attachments: []contractsk.Attachment{{SHA256: "a", Filename: "x.pdf"}},
 	}
 	nfb, _ := json.Marshal(noFetched)
@@ -203,7 +202,7 @@ func TestHandle_EmptySHA256DangerousSkipsLibraryWrite(t *testing.T) {
 	// to attachment_library — a sha256='' row is platform-global and would merge
 	// every tenant's empty-hash attachments into one shared row.
 	m := contractsk.AnalysisAttachments{
-		Meta:        contractsk.NewMetaWithFetched(21, 1, time.Now().UTC()),
+		Meta:        contractsk.NewMetaWithFetched("e21", 1, time.Now().UTC()),
 		Attachments: []contractsk.Attachment{{SHA256: "", Filename: "invoice.pdf.exe"}},
 	}
 	if err := p.Handle(context.Background(), msgFor(m)); err != nil {
@@ -226,9 +225,9 @@ func TestHandle_EmptySHA256DangerousSkipsLibraryWrite(t *testing.T) {
 }
 
 func TestEncodeKey(t *testing.T) {
-	for _, id := range []int64{1, 99, 1234567890} {
-		if got := string(encodeKey(id)); got != strconv.FormatInt(id, 10) {
-			t.Errorf("encodeKey(%d)=%q", id, got)
+	for _, id := range []string{"e1", "e99", "01890000-0000-7000-8000-000000000001"} {
+		if got := string(encodeKey(id)); got != id {
+			t.Errorf("encodeKey(%q)=%q", id, got)
 		}
 	}
 }
@@ -256,7 +255,8 @@ func TestHandle_PerEmailMaxAndPersist(t *testing.T) {
 
 	fetchedAt := time.Now().UTC()
 	in := contractsk.AnalysisAttachments{
-		Meta: contractsk.NewMetaWithFetched(7, 1, fetchedAt),
+		Meta:       contractsk.NewMetaWithFetched("e7", 1, fetchedAt),
+		InternalID: 7, // the DB surrogate svc-02 forwards; the write-back keys on it
 		Attachments: []contractsk.Attachment{
 			{SHA256: "benignhash", Filename: "report.pdf", ContentType: "application/pdf", Entropy: 3.0},
 			{SHA256: "exehash", Filename: "invoice.pdf.exe", Entropy: 7.9}, // dangerous + double-ext + high-entropy = 25+35+20 = 80
@@ -303,7 +303,7 @@ func TestHandle_MaliciousHashFlagsLibraryAndScores90(t *testing.T) {
 	p := newTestProcessor(st, &fakeVT{enabled: false}, pub)
 
 	in := contractsk.AnalysisAttachments{
-		Meta:        contractsk.NewMetaWithFetched(5, 2, time.Now().UTC()),
+		Meta:        contractsk.NewMetaWithFetched("e5", 2, time.Now().UTC()),
 		Attachments: []contractsk.Attachment{{SHA256: "malhash", Filename: "clean.pdf", ContentType: "application/pdf"}},
 	}
 	if err := p.Handle(context.Background(), msgFor(in)); err != nil {
@@ -344,7 +344,7 @@ func TestHandle_VirusTotalMaliciousElevates(t *testing.T) {
 	p := newTestProcessor(st, v, pub)
 
 	in := contractsk.AnalysisAttachments{
-		Meta:        contractsk.NewMetaWithFetched(8, 3, time.Now().UTC()),
+		Meta:        contractsk.NewMetaWithFetched("e8", 3, time.Now().UTC()),
 		Attachments: []contractsk.Attachment{{SHA256: "vth", Filename: "doc.pdf", ContentType: "application/pdf"}},
 	}
 	if err := p.Handle(context.Background(), msgFor(in)); err != nil {
@@ -375,7 +375,7 @@ func TestHandle_VirusTotalCacheHitSkipsAPI(t *testing.T) {
 	p := newTestProcessor(st, v, pub)
 
 	in := contractsk.AnalysisAttachments{
-		Meta:        contractsk.NewMetaWithFetched(9, 4, time.Now().UTC()),
+		Meta:        contractsk.NewMetaWithFetched("e9", 4, time.Now().UTC()),
 		Attachments: []contractsk.Attachment{{SHA256: "ch", Filename: "doc.pdf", ContentType: "application/pdf"}},
 	}
 	if err := p.Handle(context.Background(), msgFor(in)); err != nil {
@@ -398,7 +398,7 @@ func TestHandle_NoVTKeyNeverErrorsNorCalls(t *testing.T) {
 	p := newTestProcessor(st, v, pub)
 
 	in := contractsk.AnalysisAttachments{
-		Meta:        contractsk.NewMetaWithFetched(1, 1, time.Now().UTC()),
+		Meta:        contractsk.NewMetaWithFetched("e1", 1, time.Now().UTC()),
 		Attachments: []contractsk.Attachment{{SHA256: "h", Filename: "doc.pdf", ContentType: "application/pdf"}},
 	}
 	if err := p.Handle(context.Background(), msgFor(in)); err != nil {
@@ -424,7 +424,7 @@ func TestHandle_HashLookupErrorNACKs(t *testing.T) {
 	p := newTestProcessorWithMetrics(st, &fakeVT{}, pub, m)
 
 	in := contractsk.AnalysisAttachments{
-		Meta:        contractsk.NewMetaWithFetched(2, 1, time.Now().UTC()),
+		Meta:        contractsk.NewMetaWithFetched("e2", 1, time.Now().UTC()),
 		Attachments: []contractsk.Attachment{{SHA256: "x", Filename: "invoice.pdf.exe", Entropy: 7.9}},
 	}
 	if err := p.Handle(context.Background(), msgFor(in)); err == nil {
@@ -463,7 +463,7 @@ func TestHandle_HeuristicDangerousRecordsRiskNotMalicious(t *testing.T) {
 	p := newTestProcessor(st, &fakeVT{enabled: false}, pub)
 
 	in := contractsk.AnalysisAttachments{
-		Meta: contractsk.NewMetaWithFetched(13, 1, time.Now().UTC()),
+		Meta: contractsk.NewMetaWithFetched("e13", 1, time.Now().UTC()),
 		// double-extension + dangerous .exe ⇒ strong heuristics, score 25+35 = 60.
 		Attachments: []contractsk.Attachment{{SHA256: "dh", Filename: "invoice.pdf.exe"}},
 	}
@@ -507,7 +507,7 @@ func TestHandle_WeakHeuristicDoesNotFlagLibrary(t *testing.T) {
 	p := newTestProcessor(st, &fakeVT{enabled: false}, pub)
 
 	in := contractsk.AnalysisAttachments{
-		Meta: contractsk.NewMetaWithFetched(14, 1, time.Now().UTC()),
+		Meta: contractsk.NewMetaWithFetched("e14", 1, time.Now().UTC()),
 		// extension_mismatch (.pdf declared image/png) + high entropy only.
 		Attachments: []contractsk.Attachment{{SHA256: "wh", Filename: "doc.pdf", ContentType: "image/png", Entropy: 7.9}},
 	}
@@ -536,7 +536,7 @@ func TestHandle_VirusTotal404NegativelyCaches(t *testing.T) {
 	p := newTestProcessor(st, v, pub)
 
 	in := contractsk.AnalysisAttachments{
-		Meta:        contractsk.NewMetaWithFetched(15, 1, time.Now().UTC()),
+		Meta:        contractsk.NewMetaWithFetched("e15", 1, time.Now().UTC()),
 		Attachments: []contractsk.Attachment{{SHA256: "nf", Filename: "doc.pdf", ContentType: "application/pdf"}},
 	}
 	if err := p.Handle(context.Background(), msgFor(in)); err != nil {
@@ -575,7 +575,7 @@ func TestHandle_VirusTotal429DoesNotCache(t *testing.T) {
 	p := newTestProcessor(st, v, pub)
 
 	in := contractsk.AnalysisAttachments{
-		Meta:        contractsk.NewMetaWithFetched(16, 1, time.Now().UTC()),
+		Meta:        contractsk.NewMetaWithFetched("e16", 1, time.Now().UTC()),
 		Attachments: []contractsk.Attachment{{SHA256: "rl", Filename: "doc.pdf", ContentType: "application/pdf"}},
 	}
 	if err := p.Handle(context.Background(), msgFor(in)); err != nil {
@@ -594,7 +594,8 @@ func TestHandle_ScoreUpdateErrorNACKs(t *testing.T) {
 	p := newTestProcessor(st, &fakeVT{enabled: false}, pub)
 
 	in := contractsk.AnalysisAttachments{
-		Meta:        contractsk.NewMetaWithFetched(3, 1, time.Now().UTC()),
+		Meta:        contractsk.NewMetaWithFetched("e3", 1, time.Now().UTC()),
+		InternalID:  3,
 		Attachments: []contractsk.Attachment{{SHA256: "h", Filename: "doc.pdf", ContentType: "application/pdf"}},
 	}
 	// A DB-write failure MUST NACK (non-nil error) and not publish.
@@ -622,7 +623,8 @@ func TestHandle_WritebackMissCountsMetric(t *testing.T) {
 	p := newTestProcessorWithMetrics(st, &fakeVT{enabled: false}, pub, m)
 
 	in := contractsk.AnalysisAttachments{
-		Meta:        contractsk.NewMetaWithFetched(12, 1, time.Now().UTC()),
+		Meta:        contractsk.NewMetaWithFetched("e12", 1, time.Now().UTC()),
+		InternalID:  12,
 		Attachments: []contractsk.Attachment{{SHA256: "h", Filename: "doc.pdf", ContentType: "application/pdf"}},
 	}
 	// A 0-row write-back is NOT a NACK: the scores.attachment payload must still flow.
@@ -650,7 +652,7 @@ func TestHandle_NoAttachmentsEmitsNeutral(t *testing.T) {
 	p := newTestProcessor(newFakeStore(), &fakeVT{}, pub)
 
 	in := contractsk.AnalysisAttachments{
-		Meta:        contractsk.NewMetaWithFetched(4, 1, time.Now().UTC()),
+		Meta:        contractsk.NewMetaWithFetched("e4", 1, time.Now().UTC()),
 		Attachments: nil,
 	}
 	if err := p.Handle(context.Background(), msgFor(in)); err != nil {
@@ -667,7 +669,7 @@ func TestHandle_PublishErrorNACKs(t *testing.T) {
 	p := newTestProcessor(newFakeStore(), &fakeVT{}, pub)
 
 	in := contractsk.AnalysisAttachments{
-		Meta:        contractsk.NewMetaWithFetched(6, 1, time.Now().UTC()),
+		Meta:        contractsk.NewMetaWithFetched("e6", 1, time.Now().UTC()),
 		Attachments: []contractsk.Attachment{{SHA256: "h", Filename: "x.pdf"}},
 	}
 	if err := p.Handle(context.Background(), msgFor(in)); err == nil {
@@ -675,24 +677,25 @@ func TestHandle_PublishErrorNACKs(t *testing.T) {
 	}
 }
 
-// TestInternalIDOf_PrefersInternalID locks the two-id key selection (G17): the
-// email_attachments write-back must key on emails.internal_id (the DB BIGSERIAL
-// svc-02 stamps onto analysis.attachments), falling back to the logical
-// Meta.EmailID only while svc-02 has not yet populated it. Mirrors svc-03's
-// url-pipeline prefer/fallback.
-func TestInternalIDOf_PrefersInternalID(t *testing.T) {
+// TestInternalIDOf_UsesInternalIDOnly locks the two-id key selection (G17,
+// LANDMINE B): the email_attachments write-back keys on emails.internal_id (the
+// DB BIGSERIAL svc-02 stamps onto analysis.attachments). The logical
+// Meta.EmailID is a UUIDv7 string and can NOT substitute, so a missing
+// internal_id yields 0 (the write-back keyed on a zero id is a no-op) — there is
+// no email_id fallback.
+func TestInternalIDOf_UsesInternalIDOnly(t *testing.T) {
 	withID := contractsk.AnalysisAttachments{
-		Meta:       contractsk.MessageMeta{EmailID: 1_700_000_000_000_000},
+		Meta:       contractsk.MessageMeta{EmailID: "0189-uuid"},
 		InternalID: 42,
 	}
 	if got := internalIDOf(withID); got != 42 {
-		t.Fatalf("internalIDOf with InternalID=42 = %d, want 42 (must prefer the surrogate)", got)
+		t.Fatalf("internalIDOf with InternalID=42 = %d, want 42 (the DB surrogate)", got)
 	}
 
-	fallback := contractsk.AnalysisAttachments{
-		Meta: contractsk.MessageMeta{EmailID: 99},
+	noInternal := contractsk.AnalysisAttachments{
+		Meta: contractsk.MessageMeta{EmailID: "0189-uuid"},
 	}
-	if got := internalIDOf(fallback); got != 99 {
-		t.Fatalf("internalIDOf with InternalID=0 = %d, want 99 (must fall back to email_id)", got)
+	if got := internalIDOf(noInternal); got != 0 {
+		t.Fatalf("internalIDOf with InternalID=0 = %d, want 0 (no email_id fallback)", got)
 	}
 }

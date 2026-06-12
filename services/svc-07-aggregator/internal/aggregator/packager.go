@@ -42,14 +42,15 @@ const (
 // plan declared fewer than 4 components (e.g. an email without
 // attachments).
 func packageState(
-	emailID, orgID int64,
+	emailID string,
+	orgID int64,
 	state map[string]string,
 	startedAt time.Time,
 	timeoutTriggered bool,
 ) (contracts.EmailsScored, error) {
 	planRaw, ok := state[fieldPlan]
 	if !ok {
-		return contracts.EmailsScored{}, fmt.Errorf("aggregator: package called without plan for email_id=%d", emailID)
+		return contracts.EmailsScored{}, fmt.Errorf("aggregator: package called without plan for email_id=%s", emailID)
 	}
 	var plan contracts.AnalysisPlan
 	if err := json.Unmarshal([]byte(planRaw), &plan); err != nil {
@@ -169,35 +170,40 @@ func internalIDPending(state map[string]string) bool {
 }
 
 // keyForOrgEmail returns the aggregation hash key scoped by tenant so two
-// orgs cannot clobber each other's buckets when email_id overlaps.
-func keyForOrgEmail(orgID, emailID int64) string {
-	return fmt.Sprintf("%s%d:%d", keyPrefix, orgID, emailID)
+// orgs cannot clobber each other's buckets when email_id overlaps. email_id is
+// a UUIDv7 string (#142), appended verbatim after the org segment.
+func keyForOrgEmail(orgID int64, emailID string) string {
+	return fmt.Sprintf("%s%d:%s", keyPrefix, orgID, emailID)
 }
 
 // publishLockKey is a short-TTL NX key for exclusive emails.scored emit.
-func publishLockKey(orgID, emailID int64) string {
-	return fmt.Sprintf("%spublock:%d:%d", keyPrefix, orgID, emailID)
+func publishLockKey(orgID int64, emailID string) string {
+	return fmt.Sprintf("%spublock:%d:%s", keyPrefix, orgID, emailID)
 }
 
 // parseAggregatorBucketKey parses aggregator:{org}:{email}. Returns ok=false for
-// lock keys (aggregator:publock:...) or malformed suffixes.
-func parseAggregatorBucketKey(key string) (orgID, emailID int64, ok bool) {
+// lock keys (aggregator:publock:...) or malformed keys.
+//
+// LANDMINE A: email_id is now a UUIDv7 string whose hyphens/hex would fail
+// strconv.ParseInt. We split on the LAST ":" so the org segment is the int64
+// prefix and everything after it is the raw email_id string (a UUID contains no
+// ":"); only the org segment is integer-parsed.
+func parseAggregatorBucketKey(key string) (orgID int64, emailID string, ok bool) {
 	if !strings.HasPrefix(key, keyPrefix) {
-		return 0, 0, false
+		return 0, "", false
 	}
 	rest := key[len(keyPrefix):]
 	if strings.HasPrefix(rest, "publock:") {
-		return 0, 0, false
+		return 0, "", false
 	}
 	colon := strings.LastIndexByte(rest, ':')
 	if colon <= 0 || colon >= len(rest)-1 {
-		return 0, 0, false
+		return 0, "", false
 	}
 	orgStr, emailStr := rest[:colon], rest[colon+1:]
 	o, err1 := strconv.ParseInt(orgStr, 10, 64)
-	em, err2 := strconv.ParseInt(emailStr, 10, 64)
-	if err1 != nil || err2 != nil || o <= 0 || em <= 0 {
-		return 0, 0, false
+	if err1 != nil || o <= 0 || emailStr == "" {
+		return 0, "", false
 	}
-	return o, em, true
+	return o, emailStr, true
 }
