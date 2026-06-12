@@ -309,7 +309,12 @@ func (g *gmailConnector) refreshAccess(ctx context.Context, refresh string) (str
 }
 
 func (g *gmailConnector) listInbox(ctx context.Context, access string) ([]string, error) {
-	u := gmailAPIBase + "/messages?labelIds=INBOX&q=" + url.QueryEscape("newer_than:1d") + "&maxResults=10"
+	// Scan INBOX *and* SPAM from the last day — phishing usually lands in spam,
+	// which is exactly what a phishing scanner should catch. includeSpamTrash=true
+	// is required for spam to be returned at all; the query keeps it to
+	// inbox+spam (no trash/sent).
+	u := gmailAPIBase + "/messages?includeSpamTrash=true&maxResults=15&q=" +
+		url.QueryEscape("newer_than:1d (in:inbox OR in:spam)")
 	var out struct {
 		Messages []struct {
 			ID string `json:"id"`

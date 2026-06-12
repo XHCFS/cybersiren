@@ -81,6 +81,9 @@ up() {
   # Point svc-03 at the fusion-sidecar via the fast in-process Go enricher so L2
   # ML URL scoring works and doesn't time out on un-resolvable demo domains.
   export CYBERSIREN_PHISHING__GEOIP_DIR=fusion_export/fusion_kit
+  # Persist the Gmail connection (gitignored token file) so you don't have to
+  # re-consent after `make demo-down && make demo-up`.
+  export GMAIL_TOKEN_FILE="${GMAIL_TOKEN_FILE:-demo/dashboard/.gmail-token}"
   ./scripts/dev/run_pipeline.sh start
   go build -o "$DEMO_BIN" ./demo/dashboard
   "$DEMO_BIN" >"$DEMO_LOG" 2>&1 &
