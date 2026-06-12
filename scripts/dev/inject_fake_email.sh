@@ -148,8 +148,11 @@ WEBHOOK_SINK="${WEBHOOK_SINK:-.smoke-logs/webhook-sink.jsonl}"
 # psql runs a query in the postgres container and prints the unaligned,
 # tuples-only result so callers can grep/compare it directly.
 pg_query() {
+  # `|| true` so a transient error (e.g. querying a table the demo-seed has not
+  # yet migrated, or a momentary connection blip) yields empty output instead of
+  # a non-zero exit that `set -e` would turn into a silent abort mid seed-wait.
   docker exec -e PGPASSWORD=postgres "$PG_CONTAINER" \
-    psql -U postgres -d cybersiren -tAc "$1" 2>/dev/null
+    psql -U postgres -d cybersiren -tAc "$1" 2>/dev/null || true
 }
 
 # inject posts one fixture to the authenticated /api/v1/scan endpoint, captures
@@ -263,14 +266,35 @@ EML_A_B64="$(printf '%s' "$EML_A" | base64 -w0)"
 # and 401, and (b) the first (cold) email cannot race the data seeds and silently
 # drop ti_ip_match (svc-04 Postgres TI fallback) or the svc-05 attachment
 # write-back.
+# First wait for the one-shot demo-seed container to FINISH applying migrations +
+# seeds — polling individual rows alone races its mid-migration state (a query on
+# a not-yet-created table aborts this script under `set -e`). Found by compose
+# service label so it is robust to the project name; skipped when there is no
+# demo-seed container (e.g. seeded out-of-band via `make db-setup`).
+seed_ctr="$(docker ps -aq --filter 'label=com.docker.compose.service=demo-seed' 2>/dev/null | head -1 || true)"
+if [[ -n "$seed_ctr" ]]; then
+  echo "==> Waiting for the demo-seed container to finish (migrations + seeds)"
+  ctr_deadline=$(( $(date +%s) + 180 ))
+  while :; do
+    state="$(docker inspect -f '{{.State.Status}}' "$seed_ctr" 2>/dev/null || echo unknown)"
+    if [[ "$state" == "exited" ]]; then
+      code="$(docker inspect -f '{{.State.ExitCode}}' "$seed_ctr" 2>/dev/null || echo 1)"
+      [[ "$code" == "0" ]] || { docker logs --tail 40 "$seed_ctr" 2>&1 || true; fail "demo-seed container exited non-zero (code=$code)"; }
+      break
+    fi
+    [[ $(date +%s) -ge $ctr_deadline ]] && fail "demo-seed container did not finish within 180s (state=$state)"
+    sleep 1
+  done
+fi
+
 echo "==> Waiting for demo seeds (API key + TI ip + attachment hash) to commit"
-seed_deadline=$(( $(date +%s) + 60 ))
+seed_deadline=$(( $(date +%s) + 120 ))
 while :; do
   key_ready="$(pg_query "SELECT 1 FROM api_keys WHERE org_id=1 AND key_prefix='cs_demokey0' AND revoked_at IS NULL LIMIT 1;")"
   ti_ready="$(pg_query "SELECT 1 FROM ti_indicators WHERE indicator_type::text='ip' AND indicator_value='185.220.101.42' AND is_active=TRUE LIMIT 1;")"
   att_ready="$(pg_query "SELECT 1 FROM attachment_library WHERE sha256='${SEEDED_ATTACHMENT_SHA256}' AND is_malicious LIMIT 1;")"
   [[ "$key_ready" == "1" && "$ti_ready" == "1" && "$att_ready" == "1" ]] && { echo "  seeds ready"; break; }
-  [[ $(date +%s) -ge $seed_deadline ]] && fail "demo seeds not committed within 60s (api_key=${key_ready:-0} ti_ip=${ti_ready:-0} attachment=${att_ready:-0})"
+  [[ $(date +%s) -ge $seed_deadline ]] && fail "demo seeds not committed within 120s (api_key=${key_ready:-0} ti_ip=${ti_ready:-0} attachment=${att_ready:-0})"
   sleep 0.5
 done
 
