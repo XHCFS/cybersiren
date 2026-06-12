@@ -63,7 +63,11 @@ up() {
   wait_healthy cybersiren-postgres 90
 
   step "[4/6] Starting the L2 URL fusion-sidecar (built on first run)"
-  $DC --profile svc-03 up -d fusion-sidecar
+  # Activate the infra profiles alongside svc-03 so the svc-03 profile's
+  # depends_on chains resolve (demo-seed->postgres, svc-03->valkey/kafka),
+  # otherwise compose rejects the project. Naming the service starts ONLY
+  # fusion-sidecar — the native svc-03 from run_pipeline is untouched.
+  $DC --profile postgres --profile valkey --profile kafka --profile svc-03 up -d fusion-sidecar
   for _ in $(seq 1 40); do curl -fsS http://localhost:8765/health >/dev/null 2>&1 && break; sleep 2; done
 
   step "[5/6] Migrating + seeding the database + TI cache"
