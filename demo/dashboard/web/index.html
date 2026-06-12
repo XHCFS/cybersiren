@@ -235,7 +235,7 @@ async function loadFeed(){
     if(!scans.length){ feed.innerHTML='<div class="empty">No scans yet — try a sample or connect Gmail.</div>'; return; }
     feed.innerHTML = scans.map(s=>{
       const chipCls = s.status==='scored' ? (s.label||'unknown') : s.status;
-      const chipTxt = s.status==='scored' ? (s.label+' · '+ (s.risk_score!=null?s.risk_score:'?')) : s.status;
+      const chipTxt = s.status==='scored' ? (bandName(s.label)+' · '+ (s.risk_score!=null?s.risk_score:'?')) : s.status;
       const ic = s.source==='gmail' ? '✉️' : '📄';
       return '<div class="scan'+(active===s.email_id?' active':'')+'" data-id="'+esc(s.email_id)+'">'
         +'<div class="ic">'+ic+'</div><div class="meta"><div class="subj">'+esc(s.subject||'(no subject)')+'</div>'
@@ -288,6 +288,18 @@ function meter(score){ const s=sev(score); const c = s.cls==='high'?'var(--rose)
 function modHead(title,icon,score){ return '<h3>'+icon+' '+title+'<span class="score">'+(score==null?'—':score+'<span class="muted">/100</span>')+'</span></h3>'+meter(score); }
 function kv(k,v){ return '<div class="kv"><span class="k">'+k+'</span><span class="v">'+v+'</span></div>'; }
 
+// The pipeline label is a SEVERITY BAND (benign≤25 / suspicious≤50 / phishing≤75
+// / malware≤100), not a threat type — "malware" just means top band. Show
+// severity wording so it doesn't read as "this email contains malware".
+function bandName(l){ return ({benign:'Clean', suspicious:'Suspicious', phishing:'High risk', malware:'Critical'})[l] || (l||'unknown'); }
+// topDriver names the highest-scoring module so the verdict says WHAT drove it.
+function topDriver(m){
+  if(!m) return '';
+  const c=[['URLs',m.url&&m.url.score],['Header',m.header&&m.header.score],['Language',m.nlp&&m.nlp.score],['Attachment',m.attachment&&m.attachment.score]];
+  let best=null; c.forEach(x=>{ if(x[1]!=null && (best==null||x[1]>best[1])) best=x; });
+  return best && best[1]>0 ? ('driven by '+best[0]+' ('+best[1]+')') : '';
+}
+
 function renderDetail(v){
   const d=$('detail');
   if(v.status==='pending' || (!v.verdict && !v.modules.url && !v.modules.header && !v.modules.nlp && !v.modules.attachment)){
@@ -300,8 +312,8 @@ function renderDetail(v){
   const gc = s.cls==='high'?'var(--rose)':s.cls==='med'?'var(--amber)':'var(--green)';
   html+='<div class="hero '+s.cls+'">'
     + '<div class="gauge '+s.gc+'" style="--p:'+(score==null?0:score)+'; --gc:'+gc+'"><b>'+(score==null?'…':score)+'</b></div>'
-    + '<div><div class="label">'+esc(ver?ver.label:'scoring…')+'</div>'
-    + '<div class="sub">'+(ver?('confidence '+pct(ver.confidence)+' · '+esc(ver.source||'')+(ver.model_version?(' · '+esc(ver.model_version)):'')):'final decision pending')+'</div></div>';
+    + '<div><div class="label">'+(ver?esc(bandName(ver.label)):'scoring…')+'</div>'
+    + '<div class="sub">'+(ver?((topDriver(v.modules)?topDriver(v.modules)+' · ':'')+'confidence '+pct(ver.confidence)+' · '+esc(ver.source||'')+(ver.model_version?(' · '+esc(ver.model_version)):'')):'final decision pending')+'</div></div>';
   // pipeline composites
   const m=v.modules;
   const comp=[['URL',m.url&&m.url.score],['Header',m.header&&m.header.score],['NLP',m.nlp&&m.nlp.score],['Attach',m.attachment&&m.attachment.score]];

@@ -140,8 +140,27 @@ func main() {
 	}
 }
 
+// uiFS returns the filesystem the dashboard serves its HTML/JS from. By
+// default it is the copy embedded into the binary at build time. Set DEMO_DEV=1
+// to serve demo/dashboard/web straight from disk instead, so HTML/JS edits show
+// up on a plain browser refresh with no rebuild or restart. Falls back to the
+// embedded assets if the directory can't be found (e.g. the process was not
+// started from the repo root).
+func uiFS(log zerolog.Logger) fs.FS {
+	if os.Getenv("DEMO_DEV") != "" {
+		const dir = "demo/dashboard/web"
+		if info, err := os.Stat(dir); err == nil && info.IsDir() {
+			log.Info().Str("dir", dir).Msg("DEMO_DEV: serving UI from disk (edit + refresh, no rebuild)")
+			return os.DirFS(dir)
+		}
+		log.Warn().Msg("DEMO_DEV set but demo/dashboard/web not found from CWD; using embedded assets")
+	}
+	sub, _ := fs.Sub(webFS, "web")
+	return sub
+}
+
 func registerRoutes(mux *http.ServeMux, cfg config, st *store, gm *gmailConnector, log zerolog.Logger) {
-	ui, _ := fs.Sub(webFS, "web")
+	ui := uiFS(log)
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
 			http.NotFound(w, r)

@@ -462,6 +462,12 @@ demo-up: check-docker check-compose-env check-nlp-model
 demo-down:
 	@./demo/run-demo.sh down
 
+## demo-dash: Rebuild + restart ONLY the dashboard (infra + pipeline keep running).
+##            Use after editing demo/dashboard. Tip: DEMO_DEV=1 make demo-dash
+##            serves web/ from disk so later UI edits need only a browser refresh.
+demo-dash:
+	@./demo/run-demo.sh dash
+
 ## e2e-svc-03: End-to-end test of svc-03 /scan with a stubbed L2 sidecar
 ##            and injected TI fixture. Exercises guard short-circuits, L2
 ##            escalation, and the TI re-invitation path. Postgres must be

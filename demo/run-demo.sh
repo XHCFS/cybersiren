@@ -107,6 +107,9 @@ down() {
     kill "$(cat "$DEMO_PID")" 2>/dev/null || true
     rm -f "$DEMO_PID"
   fi
+  # Safety net: kill any orphaned dashboard the pidfile lost track of (e.g. from
+  # a double `up`, or a manual `go run`), so `down` always frees :8090.
+  pkill -f "$DEMO_BIN" 2>/dev/null || true
 
   step "Stopping the native pipeline"
   ./scripts/dev/run_pipeline.sh stop || true
@@ -117,15 +120,40 @@ down() {
   printf '\n  ✅ Stopped.\n\n'
 }
 
+# dash rebuilds + restarts ONLY the dashboard, leaving infra + the native
+# pipeline running. Use after editing demo/dashboard (its web/ assets are
+# go:embed'd, so a rebuild is required to pick them up — unless you run with
+# DEMO_DEV=1, which serves web/ from disk and needs only a browser refresh).
+dash() {
+  mkdir -p "$LOGDIR/bin"
+  step "Restarting ONLY the demo dashboard (infra + pipeline untouched)"
+  if [ -f "$DEMO_PID" ]; then
+    kill "$(cat "$DEMO_PID")" 2>/dev/null || true
+    rm -f "$DEMO_PID"
+  fi
+  pkill -f "$DEMO_BIN" 2>/dev/null || true
+  # Match the dashboard env `up` sets (the binary loads demo/dashboard/.env for
+  # the rest, e.g. Gmail creds).
+  export GMAIL_TOKEN_FILE="${GMAIL_TOKEN_FILE:-demo/dashboard/.gmail-token}"
+  go build -o "$DEMO_BIN" ./demo/dashboard
+  "$DEMO_BIN" >"$DEMO_LOG" 2>&1 &
+  echo $! >"$DEMO_PID"
+  sleep 1
+  printf '\n\033[1;32m  ✅ Dashboard restarted  →  http://localhost:8090\033[0m\n'
+  [ -n "${DEMO_DEV:-}" ] && printf '     DEMO_DEV on: edit web/ + refresh, no rebuild needed\n'
+  printf '     log: %s\n\n' "$DEMO_LOG"
+}
+
 case "${1:-up}" in
 up) up ;;
 down) down ;;
+dash) dash ;;
 restart)
   down
   up
   ;;
 *)
-  echo "usage: $0 {up|down|restart}" >&2
+  echo "usage: $0 {up|down|dash|restart}" >&2
   exit 1
   ;;
 esac
