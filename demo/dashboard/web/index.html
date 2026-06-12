@@ -48,6 +48,10 @@
   .btn.g{background:#fff; color:#1f2937; border-color:#fff; font-weight:600}
   .btn.ghost{background:transparent}
   .btn[disabled]{opacity:.5; cursor:not-allowed}
+  .samples{display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin-top:11px}
+  .chipbtn{font-family:inherit; font-size:12px; padding:5px 10px; border-radius:9px; cursor:pointer;
+    background:#0c1626; border:1px solid var(--line); color:var(--text)}
+  .chipbtn:hover{border-color:var(--teal)}
 
   .grid{display:grid; grid-template-columns: 380px 1fr; gap:20px; align-items:start}
   @media(max-width:900px){ .grid{grid-template-columns:1fr} }
@@ -162,7 +166,14 @@
         <div class="row" style="margin-top:10px">
           <button class="btn primary" id="scan-btn">Scan email</button>
           <label class="btn ghost filebtn">Upload .eml<input type="file" id="emlfile" accept=".eml,message/rfc822,text/plain"/></label>
-          <button class="btn ghost" id="sample-btn">Load sample phish</button>
+        </div>
+        <div class="samples">
+          <span class="muted small">Load a test case:</span>
+          <button class="chipbtn" data-sample="benign">✓ Benign</button>
+          <button class="chipbtn" data-sample="spam">✉ Spam</button>
+          <button class="chipbtn" data-sample="phish_ml">⚠ Phishing · ML</button>
+          <button class="chipbtn" data-sample="phish_typo">⚠ Phishing · typosquat</button>
+          <button class="chipbtn" data-sample="malware">☢ Malware · attachment</button>
         </div>
         <div id="up-alert" class="small" style="color:var(--rose); margin-top:9px; display:none"></div>
       </div>
@@ -235,11 +246,15 @@ async function loadFeed(){
 }
 
 /* ---------- submit ---------- */
-const SAMPLE = ["From: \"PayPal Security\" <service@paypa1-secure.com>","To: you@example.com","Subject: Urgent: your account has been limited","Content-Type: text/html; charset=utf-8","",
-  "<p>Dear customer, we detected unusual activity. <b>Your account is limited.</b></p>",
-  "<p><a href=\"http://paypa1-secure.com/verify?id=88213\">Verify your identity now</a> within 24 hours or it will be suspended.</p>",
-  "<p>Thank you, The PayPal Team</p>"].join("\r\n");
-$('sample-btn').onclick=()=>{ $('eml').value=SAMPLE; };
+const eml=(...l)=>l.join("\r\n");
+const SAMPLES={
+  benign: eml('From: "Sarah Chen" <sarah.chen@acme-corp.com>','To: you@example.com','Subject: Re: Project sync notes','Content-Type: text/plain; charset=utf-8','','Hi, thanks for the call earlier. Notes are in the shared doc:','https://docs.google.com/document/d/1a2b3c. Does Thursday 2pm work for the follow-up? Best, Sarah'),
+  spam: eml('From: "Prize Team" <winner@global-rewards.example>','To: you@example.com','Subject: Congratulations you have won','Content-Type: text/plain; charset=utf-8','','Congratulations! You have been selected to receive a special reward.','Reply to claim your prize. Limited-time offer, unsubscribe anytime.'),
+  phish_ml: eml('From: "Account Security" <no-reply@secure-portal-id.tk>','To: you@example.com','Subject: Action required: confirm your account','Content-Type: text/html; charset=utf-8','','<p>Unusual sign-in detected. <a href="http://secure-portal-id.tk/login?session=zz9">Verify your account</a> within 24 hours or it will be suspended. Enter your username and password to confirm your identity.</p>'),
+  phish_typo: eml('From: "PayPal" <service@paypa1-secure.com>','To: you@example.com','Subject: Your account has been limited','Content-Type: text/html; charset=utf-8','','<p>Dear customer, your account is limited. <a href="http://paypa1-secure.com/verify?id=88213">Verify your identity</a> within 24 hours.</p>'),
+  malware: eml('From: "Invoicing" <billing@paypa1-secure.com>','To: you@example.com','Subject: Overdue invoice - immediate payment required','MIME-Version: 1.0','Content-Type: multipart/mixed; boundary="b1"','','--b1','Content-Type: text/html; charset=utf-8','','<p>Your invoice is overdue. <a href="http://paypa1-secure.com/pay">Pay now</a>. Open the attached file to review.</p>','--b1','Content-Type: application/octet-stream; name="invoice.pdf.exe"','Content-Transfer-Encoding: base64','Content-Disposition: attachment; filename="invoice.pdf.exe"','','02Ss3iWHHKpDqgGcPlgS0mceNtffu5yo6x1s0T7C/LqtWVI8aLTvBg4jbXoHJhRp20Um5JXbSU+icjR4EFQHUOcyzi4QJUnK8T3mNg0wqQ4AN9EBD89iEqsXHTtvXmHgKX5ET8ugxVwLtiWLeokEF1q3U1fuLoZtk9FV3u99pxF9oooGq3oErL0vVpGSiJ1tY9O2R2GTi2dnZi84g06Hqctnu2H3+8YcL+sHNfVah0HR1pTVG7F2NcwYbydo4dLqcSdVrVVFJoMBpsYh+qVbZXXl/NQyvmgtt8gJ2uERjNqtPqxAjTk1+oFoEKAXUOi/YYvPCNRewUuasewRG+Dksq+0D/23swjOyxq+P0H+5di4T4I14YbHMGMJFMjTyDDpgSNEPVjyYqABhTZgahamMxRfuxGIvfNKfh8+0myjfhJplPgkw7VJZddZQ9Rfz5p53NB74EZL6bSUzeFp3YAwVptxm815e91trcIfu2DFODhaknJK+yPKSLP/apvqi2PzEVCV06+wjWGrUHpU1ZK3T+2nCDn5PbvQVHNlr1gcYkJSFBc+YlVKT07h6oieq5jdvH4GrrlZvJDT/cKEJWTYST03PWFcxqHropgGWfTcua9fanyPf6mcsmZgSdD1jdlXH2wfjZx1xbk8zbdN3KKPyjjbdtwHspv0mZeC9eDfd/xeebk74KcFnSptP3vrhH+0YytLb7FXOC2+ryBW0I1s+BDBFINCBRQl5vaTNjrFeD8yGl90OndKyZvsqlJw8YPNOOppAjNRCL9NWUE3HLwfIm0xKw3IA8VM','--b1--'),
+};
+document.querySelectorAll('[data-sample]').forEach(b=>b.onclick=()=>{ $('eml').value=SAMPLES[b.dataset.sample]; submitScan(); });
 $('emlfile').onchange=(e)=>{ const f=e.target.files[0]; if(!f) return; const r=new FileReader(); r.onload=()=>$('eml').value=r.result; r.readAsText(f); };
 $('scan-btn').onclick=submitScan;
 async function submitScan(){

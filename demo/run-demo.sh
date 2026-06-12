@@ -47,13 +47,14 @@ wait_healthy() {
 up() {
   mkdir -p "$LOGDIR/bin"
 
-  step "[1/5] Checking the NLP model is present"
+  step "[1/6] Checking ML models (NLP + URL fusion) are present"
   make check-nlp-model
+  make check-fusion-models
 
-  step "[2/5] Resetting volumes for a clean database"
+  step "[2/6] Resetting volumes for a clean database"
   make down-v >/dev/null 2>&1 || true
 
-  step "[3/5] Starting infra + NLP sidecar (~30s)"
+  step "[3/6] Starting infra + NLP sidecar (~30s)"
   # No `--wait`: the one-shot redpanda-init/kafka-init containers exit(0), and
   # `up --wait` treats that as a failure (the reason `make smoke` drops it too).
   # We wait for postgres ourselves (db-setup needs it); run_pipeline's preflight
@@ -61,10 +62,17 @@ up() {
   $DC --profile postgres --profile valkey --profile kafka --profile nlp-inference up -d
   wait_healthy cybersiren-postgres 90
 
-  step "[4/5] Migrating + seeding the database"
+  step "[4/6] Starting the L2 URL fusion-sidecar (built on first run)"
+  $DC --profile svc-03 up -d fusion-sidecar
+  for _ in $(seq 1 40); do curl -fsS http://localhost:8765/health >/dev/null 2>&1 && break; sleep 2; done
+
+  step "[5/6] Migrating + seeding the database"
   make db-setup
 
-  step "[5/5] Starting the native pipeline + demo dashboard"
+  step "[6/6] Starting the native pipeline + demo dashboard"
+  # Point svc-03 at the fusion-sidecar via the fast in-process Go enricher so L2
+  # ML URL scoring works and doesn't time out on un-resolvable demo domains.
+  export CYBERSIREN_PHISHING__GEOIP_DIR=fusion_export/fusion_kit
   ./scripts/dev/run_pipeline.sh start
   go build -o "$DEMO_BIN" ./demo/dashboard
   "$DEMO_BIN" >"$DEMO_LOG" 2>&1 &
