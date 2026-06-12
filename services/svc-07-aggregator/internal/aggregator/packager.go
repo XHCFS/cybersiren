@@ -136,6 +136,38 @@ func completionStatus(state map[string]string) (complete, hasPlan bool) {
 	return true, true
 }
 
+// internalIDPending reports whether a message-driven publish must briefly wait
+// for the DB internal_id to be merged before emitting emails.scored.
+//
+// scores.header forwards svc-02's BIGSERIAL internal_id; its handler writes the
+// scores.header field (HSET) and then merges __partition_internal_id (HSETNX) as
+// two separate Valkey ops. A concurrent handler for another component can read a
+// state snapshot in that window — scores.header field present (so the bucket
+// looks complete) but __partition_internal_id not yet visible — and would
+// publish with the email_id fallback, mis-keying the verdict off the parser row.
+//
+// We wait only when scores.header is present AND carried a non-zero internal_id
+// but the partition field is not yet set: the merge is just lagging and the
+// scores.header handler (or a #190 redelivery if it errored) will complete it.
+// A scores.header that carried internal_id==0 (degraded upstream) is "never
+// coming", so we do NOT wait — the email_id fallback stands. The globally-last
+// completing handler always observes the merged id, so this never deadlocks; the
+// timeout sweeper is the backstop regardless.
+func internalIDPending(state map[string]string) bool {
+	if state[fieldPartitionInternalID] != "" {
+		return false
+	}
+	headerRaw, ok := state[contracts.TopicScoresHeader]
+	if !ok {
+		return false
+	}
+	var h contracts.ScoresHeaderMessage
+	if err := json.Unmarshal([]byte(headerRaw), &h); err != nil {
+		return false
+	}
+	return h.InternalID != 0
+}
+
 // keyForOrgEmail returns the aggregation hash key scoped by tenant so two
 // orgs cannot clobber each other's buckets when email_id overlaps.
 func keyForOrgEmail(orgID, emailID int64) string {
