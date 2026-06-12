@@ -322,13 +322,21 @@ function urlCard(u){
   h+=kv('URLs found', u.url_count)+kv('TI-blocked (L1)', u.ti_blocked)+kv('ML-scored (L2)', u.ml_scored);
   (u.links||[]).slice(0,4).forEach(l=>{
     h+='<div class="link">'+esc(l.url);
+    // per-URL overall outcome (svc-03's score + label for this link)
+    const head=[];
+    if(l.score!=null) head.push('risk '+l.score);
+    if(l.label) head.push(esc(l.label));
+    if(head.length) h+='<div class="muted small" style="margin-top:3px">'+head.join(' · ')+'</div>';
     h+='<div class="l1l2">';
+    // L1 — threat-intel feed + heuristic guard
     h+= l.ti_matched ? '<span class="badge bad">L1 · TI'+(l.ti_source?(' '+esc(l.ti_source)):'')+'</span>' : '<span class="badge ok">L1 · no TI hit</span>';
-    if(l.guard_hit) h+='<span class="badge warn">guard: '+esc(l.guard_hit)+'</span>';
+    if(l.guard_hit) h+='<span class="badge warn">L1 · guard '+esc(l.guard_hit)+'</span>';
     if(l.is_shortened) h+='<span class="badge warn">shortened</span>';
     if(l.domain_age_days!=null) h+='<span class="badge">age '+l.domain_age_days+'d</span>';
+    // L2 — ML fusion sidecar (only when it actually scored this URL)
     if(l.ml_verdict) h+='<span class="badge '+(l.ml_verdict==='phishing'?'bad':'ok')+'">L2 · '+esc(l.ml_verdict)+(l.ml_deploy_p!=null?(' '+Math.round(l.ml_deploy_p*100)+'%'):'')+'</span>';
-    else if(l.ml_score!=null) h+='<span class="badge">L2 · '+l.ml_score+'</span>';
+    else if(l.ml_score!=null) h+='<span class="badge">L2 · ML '+l.ml_score+'</span>';
+    else h+='<span class="badge">L2 · not scored</span>';
     h+='</div></div>';
   });
   return h+'</div>';

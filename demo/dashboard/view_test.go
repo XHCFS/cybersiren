@@ -65,6 +65,15 @@ func TestViewOf_LegacyEnvelopeDetail(t *testing.T) {
 		t.Fatalf("want 1 link, got %d", len(u.Links))
 	}
 	l := u.Links[0]
+	if l.Score == nil || *l.Score != 100 {
+		t.Errorf("per-URL overall score = %v, want 100", l.Score)
+	}
+	if l.MLScore != nil {
+		t.Errorf("ml_score must stay nil for the legacy envelope (100 is the overall score, not an L2 score), got %v", l.MLScore)
+	}
+	if l.Label != "phishing" {
+		t.Errorf("per-URL label = %q, want phishing", l.Label)
+	}
 	if !l.TIMatched {
 		t.Error("L1: ti_matched should be true")
 	}

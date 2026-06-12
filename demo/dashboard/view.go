@@ -50,18 +50,22 @@ type urlView struct {
 	Links     []linkView `json:"links,omitempty"`
 }
 
-// linkView surfaces the L1 (TI/heuristic) vs L2 (ML fusion) signals per URL.
+// linkView surfaces the per-URL risk plus the L1 (TI/heuristic) and L2 (ML fusion)
+// signals. Score/Label are the URL's overall outcome; the ML* fields are L2-only
+// and stay nil when the fusion sidecar did not score this URL.
 type linkView struct {
 	URL           string   `json:"url"`
 	Domain        string   `json:"domain,omitempty"`
+	Score         *int     `json:"score,omitempty"`     // per-URL overall risk [0,100]
+	Label         string   `json:"label,omitempty"`     // phishing | legitimate | ...
 	TIMatched     bool     `json:"ti_matched"`          // L1
-	TISource      *string  `json:"ti_source,omitempty"` // L1
-	GuardHit      *string  `json:"guard_hit,omitempty"` // L1
+	TISource      *string  `json:"ti_source,omitempty"` // L1 (threat type / feed)
+	GuardHit      *string  `json:"guard_hit,omitempty"` // L1 (typosquat / brand guard)
 	DomainAgeDays *int     `json:"domain_age_days,omitempty"`
 	IsShortened   bool     `json:"is_shortened"`
-	MLVerdict     *string  `json:"ml_verdict,omitempty"`  // L2
+	MLVerdict     *string  `json:"ml_verdict,omitempty"`  // L2 (only if fusion ran)
 	MLDeployP     *float64 `json:"ml_deploy_p,omitempty"` // L2
-	MLScore       *int     `json:"ml_score,omitempty"`    // L2
+	MLScore       *int     `json:"ml_score,omitempty"`    // L2 (typed contract only)
 }
 
 type headerView struct {
@@ -219,12 +223,13 @@ func urlViewOf(score *int, raw json.RawMessage) *urlView {
 		s := p.Score
 		uv.Links = append(uv.Links, linkView{
 			URL:       p.URL,
+			Score:     &s,
+			Label:     p.Label,
 			TIMatched: p.TIMatch,
 			TISource:  optStr(p.TIThreatType),
 			GuardHit:  optStr(p.GuardHit),
 			MLVerdict: optStr(p.MLVerdict),
 			MLDeployP: optF(p.MLDeployP),
-			MLScore:   &s,
 		})
 	}
 	return uv
