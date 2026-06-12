@@ -352,9 +352,12 @@ function authBadge(k,val){ const v=(val||'').toLowerCase(); const cls = v==='pas
 function nlpCard(n){
   if(!n) return '<div class="mod"><h3>🧠 NLP<span class="score muted">n/a</span></h3></div>';
   let h='<div class="mod">'+modHead('NLP / content','🧠',n.score);
-  if(n.intent) h+=kv('Intent', esc(n.intent)+' ('+pct(n.intent_confidence)+')');
-  h+=kv('Urgency', pct(n.urgency))+kv('Impersonation', pct(n.impersonation))+kv('Deception', pct(n.deception));
-  if(n.impersonated_brand) h+=kv('Impersonated brand', esc(n.impersonated_brand));
+  if(n.classification) h+=kv('Classification', esc(n.classification));
+  if(n.intent && n.intent!==n.classification) h+=kv('Intent', esc(n.intent)+(n.intent_confidence?(' ('+pct(n.intent_confidence)+')'):''));
+  else if(n.intent_confidence) h+=kv('Confidence', pct(n.intent_confidence));
+  h+=kv('Urgency', pct(n.urgency));
+  if(n.has_facets){ h+=kv('Impersonation', pct(n.impersonation))+kv('Deception', pct(n.deception)); if(n.impersonated_brand) h+=kv('Impersonated brand', esc(n.impersonated_brand)); }
+  if(n.obfuscation) h+='<div class="pills"><span class="badge warn">obfuscation detected</span></div>';
   return h+'</div>';
 }
 function attachCard(a){

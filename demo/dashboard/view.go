@@ -1,6 +1,8 @@
 package main
 
 import (
+	"encoding/json"
+	"strings"
 	"time"
 
 	contracts "github.com/saif/cybersiren/shared/contracts/kafka"
@@ -80,9 +82,12 @@ type headerView struct {
 
 type nlpView struct {
 	Score             *int    `json:"score"`
+	Classification    string  `json:"classification,omitempty"`
 	Intent            string  `json:"intent,omitempty"`
 	IntentConfidence  float64 `json:"intent_confidence"`
 	Urgency           float64 `json:"urgency"`
+	Obfuscation       bool    `json:"obfuscation"`
+	HasFacets         bool    `json:"has_facets"` // typed impersonation/deception available
 	Impersonation     float64 `json:"impersonation"`
 	ImpersonatedBrand *string `json:"impersonated_brand,omitempty"`
 	Deception         float64 `json:"deception"`
@@ -144,33 +149,99 @@ func viewOf(sc *scan) scanView {
 			Timeout:   es.TimeoutTriggered,
 			LatencyMS: es.AggregationLatencyMS,
 		}
-		v.Modules.URL = urlViewOf(es.URLScore, sc.URL)
+		v.Modules.URL = urlViewOf(es.URLScore, es.ComponentDetails.URL)
 		v.Modules.Header = headerViewOf(es.HeaderScore, sc.Header)
-		v.Modules.NLP = nlpViewOf(es.NLPScore, sc.NLP)
+		v.Modules.NLP = nlpViewOf(es.NLPScore, es.ComponentDetails.NLP)
 		v.Modules.Attachment = attachViewOf(es.AttachmentScore, sc.Attach)
 	}
 	return v
 }
 
-func urlViewOf(score *int, s *contracts.ScoresURL) *urlView {
-	if score == nil && s == nil {
+// legacyURL is one per_url record inside svc-03's legacy ScoreEnvelope.details
+// (the L1 TI signals + L2 ML fields the typed ScoresURL has not adopted yet).
+type legacyURL struct {
+	URL          string  `json:"url"`
+	Score        int     `json:"score"`
+	Probability  float64 `json:"probability"`
+	TIMatch      bool    `json:"ti_match"`
+	TIThreatType string  `json:"ti_threat_type"`
+	GuardHit     string  `json:"guard_hit"`
+	MLDeployP    float64 `json:"ml_deploy_p"`
+	MLVerdict    string  `json:"ml_verdict"`
+	Label        string  `json:"label"`
+}
+
+// urlViewOf decodes the URL component, supporting BOTH the typed ScoresURL (when
+// svc-03 migrates) and today's legacy ScoreEnvelope (per-URL detail under
+// details.per_url). The composite score comes from emails.scored.url_score.
+func urlViewOf(score *int, raw json.RawMessage) *urlView {
+	if score == nil && len(raw) == 0 {
 		return nil
 	}
 	uv := &urlView{Score: score}
-	if s != nil {
-		uv.URLCount = s.URLCount
-		uv.TIBlocked = s.TIBlockedCount
-		uv.MLScored = s.MLScoredCount
-		uv.Riskiest = s.RiskiestURL
-		for _, d := range s.URLDetails {
+	if len(raw) == 0 || string(raw) == "null" {
+		return uv
+	}
+	var d struct {
+		URLCount   int                   `json:"url_count"`
+		TIBlocked  int                   `json:"ti_blocked_count"`
+		MLScored   int                   `json:"ml_scored_count"`
+		Riskiest   string                `json:"riskiest_url"`
+		URLDetails []contracts.URLDetail `json:"url_details"`
+		Details    struct {
+			URLsTotal int         `json:"urls_total"`
+			PerURL    []legacyURL `json:"per_url"`
+		} `json:"details"`
+	}
+	_ = json.Unmarshal(raw, &d)
+
+	if len(d.URLDetails) > 0 { // typed ScoresURL
+		uv.URLCount, uv.TIBlocked, uv.MLScored, uv.Riskiest = d.URLCount, d.TIBlocked, d.MLScored, d.Riskiest
+		for _, l := range d.URLDetails {
 			uv.Links = append(uv.Links, linkView{
-				URL: d.URL, Domain: d.Domain, TIMatched: d.TIMatched, TISource: d.TISource,
-				GuardHit: d.GuardHit, DomainAgeDays: d.DomainAgeDays, IsShortened: d.IsShortened,
-				MLVerdict: d.MLVerdict, MLDeployP: d.MLDeployP, MLScore: d.MLScore,
+				URL: l.URL, Domain: l.Domain, TIMatched: l.TIMatched, TISource: l.TISource,
+				GuardHit: l.GuardHit, DomainAgeDays: l.DomainAgeDays, IsShortened: l.IsShortened,
+				MLVerdict: l.MLVerdict, MLDeployP: l.MLDeployP, MLScore: l.MLScore,
 			})
 		}
+		return uv
+	}
+
+	// legacy ScoreEnvelope.details (svc-03 today)
+	uv.URLCount = d.Details.URLsTotal
+	for _, p := range d.Details.PerURL {
+		if p.TIMatch {
+			uv.TIBlocked++
+		}
+		if p.MLVerdict != "" {
+			uv.MLScored++
+		}
+		s := p.Score
+		uv.Links = append(uv.Links, linkView{
+			URL:       p.URL,
+			TIMatched: p.TIMatch,
+			TISource:  optStr(p.TIThreatType),
+			GuardHit:  optStr(p.GuardHit),
+			MLVerdict: optStr(p.MLVerdict),
+			MLDeployP: optF(p.MLDeployP),
+			MLScore:   &s,
+		})
 	}
 	return uv
+}
+
+func optStr(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
+}
+
+func optF(f float64) *float64 {
+	if f == 0 {
+		return nil
+	}
+	return &f
 }
 
 func headerViewOf(score *int, h *contracts.ScoresHeaderMessage) *headerView {
@@ -196,21 +267,62 @@ func headerViewOf(score *int, h *contracts.ScoresHeaderMessage) *headerView {
 	return hv
 }
 
-func nlpViewOf(score *int, n *contracts.ScoresNLP) *nlpView {
-	if score == nil && n == nil {
+// nlpViewOf decodes the NLP component, supporting BOTH the typed ScoresNLP
+// (facets, when svc-06 migrates) and today's legacy ScoreEnvelope (classification
+// / intent_labels / urgency under details). Composite from emails.scored.nlp_score.
+func nlpViewOf(score *int, raw json.RawMessage) *nlpView {
+	if score == nil && len(raw) == 0 {
 		return nil
 	}
 	nv := &nlpView{Score: score}
-	if n != nil {
-		f := n.Facets
-		nv.Intent = f.IntentLabel
-		nv.IntentConfidence = f.IntentConfidence
-		nv.Urgency = f.UrgencyScore
-		nv.Impersonation = f.ImpersonationScore
-		nv.ImpersonatedBrand = f.ImpersonatedBrand
-		nv.Deception = f.DeceptionScore
+	if len(raw) == 0 || string(raw) == "null" {
+		return nv
 	}
+	var d struct {
+		Facets  contracts.NLPFacets `json:"facets"`
+		Details struct {
+			Classification string          `json:"classification"`
+			Confidence     float64         `json:"confidence"`
+			IntentLabels   json.RawMessage `json:"intent_labels"`
+			UrgencyScore   float64         `json:"urgency_score"`
+			Obfuscation    bool            `json:"obfuscation_detected"`
+		} `json:"details"`
+	}
+	_ = json.Unmarshal(raw, &d)
+
+	f := d.Facets
+	if f.IntentLabel != "" || f.UrgencyScore > 0 || f.ImpersonationScore > 0 || f.DeceptionScore > 0 {
+		// typed ScoresNLP facets
+		nv.HasFacets = true
+		nv.Intent, nv.IntentConfidence = f.IntentLabel, f.IntentConfidence
+		nv.Urgency, nv.Impersonation, nv.Deception = f.UrgencyScore, f.ImpersonationScore, f.DeceptionScore
+		nv.ImpersonatedBrand = f.ImpersonatedBrand
+		return nv
+	}
+
+	// legacy ScoreEnvelope.details (svc-06 today)
+	nv.Classification = d.Details.Classification
+	nv.Intent = intentString(d.Details.IntentLabels, d.Details.Classification)
+	nv.IntentConfidence = d.Details.Confidence
+	nv.Urgency = d.Details.UrgencyScore
+	nv.Obfuscation = d.Details.Obfuscation
 	return nv
+}
+
+// intentString renders the legacy intent_labels (which may be a JSON array, a
+// string, or an object) into a short label, falling back to the classification.
+func intentString(raw json.RawMessage, fallback string) string {
+	if len(raw) > 0 {
+		var arr []string
+		if json.Unmarshal(raw, &arr) == nil && len(arr) > 0 {
+			return strings.Join(arr, ", ")
+		}
+		var s string
+		if json.Unmarshal(raw, &s) == nil && s != "" {
+			return s
+		}
+	}
+	return fallback
 }
 
 func attachViewOf(score *int, a *contracts.ScoresAttachment) *attachView {

@@ -20,11 +20,11 @@ type scan struct {
 	SubmittedAt time.Time
 
 	Scored   *contracts.EmailsScored
-	URL      *contracts.ScoresURL
-	Header   *contracts.ScoresHeaderMessage
-	NLP      *contracts.ScoresNLP
-	Attach   *contracts.ScoresAttachment
+	Header   *contracts.ScoresHeaderMessage // svc-04 emits the typed contract
+	Attach   *contracts.ScoresAttachment    // svc-05 emits the typed contract
 	ScoredAt time.Time
+	// URL (svc-03) and NLP (svc-06) still emit the legacy ScoreEnvelope, so their
+	// detail is decoded flexibly from es.ComponentDetails in view.go, not here.
 
 	Verdict   *contracts.EmailsVerdict
 	VerdictAt time.Time
@@ -80,9 +80,7 @@ func (s *store) applyScored(es *contracts.EmailsScored) {
 	sc := s.getOrCreate(es.Meta.EmailID)
 	sc.Scored = es
 	sc.ScoredAt = time.Now().UTC()
-	sc.URL = decodeInto[contracts.ScoresURL](es.ComponentDetails.URL)
 	sc.Header = decodeInto[contracts.ScoresHeaderMessage](es.ComponentDetails.Header)
-	sc.NLP = decodeInto[contracts.ScoresNLP](es.ComponentDetails.NLP)
 	sc.Attach = decodeInto[contracts.ScoresAttachment](es.ComponentDetails.Attachment)
 	s.evictLocked()
 }
