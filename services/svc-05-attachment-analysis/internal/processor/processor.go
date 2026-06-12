@@ -10,7 +10,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strconv"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -115,13 +114,13 @@ func (p *Processor) Handle(ctx context.Context, msg sharedconsumer.Message) erro
 	orgID := parsed.Meta.OrgID
 	internalID := internalIDOf(parsed)
 	span.SetAttributes(
-		attribute.Int64("email_id", emailID),
+		attribute.String("email_id", emailID),
 		attribute.Int64("org_id", orgID),
 		attribute.Int("attachment_count", len(parsed.Attachments)),
 	)
 
 	logCtx := p.log.With().
-		Int64("email_id", emailID).
+		Str("email_id", emailID).
 		Int64("org_id", orgID).
 		Logger()
 	if sc := msg.SpanContext; sc.IsValid() {
@@ -466,8 +465,8 @@ func decodeMessage(body []byte) (contractsk.AnalysisAttachments, error) {
 	if err := json.Unmarshal(body, &out); err != nil {
 		return out, fmt.Errorf("unmarshal analysis.attachments: %w", err)
 	}
-	if out.Meta.EmailID <= 0 {
-		return out, fmt.Errorf("analysis.attachments email_id must be > 0, got %d", out.Meta.EmailID)
+	if out.Meta.EmailID == "" {
+		return out, errors.New("analysis.attachments email_id is required")
 	}
 	if out.Meta.FetchedAt.IsZero() {
 		// fetched_at keys the email_attachments write-back (email_fetched_at = $2).
@@ -483,19 +482,16 @@ func decodeMessage(body []byte) (contractsk.AnalysisAttachments, error) {
 // internalIDOf returns the DB surrogate id used to address email_attachments
 // rows. Two-id model (G17): the parser writes email_attachments.email_id =
 // emails.internal_id (the DB BIGSERIAL), which is distinct from the logical
-// Meta.EmailID. SVC-02 stamps that internal_id on analysis.attachments, so we
-// prefer it; we fall back to Meta.EmailID only while SVC-02 has not yet
-// populated it (mirrors SVC-03's url-pipeline/main.go pattern). We do NOT
-// re-derive internal_id via a DB lookup.
+// Meta.EmailID. SVC-02 stamps that internal_id on analysis.attachments. The
+// logical Meta.EmailID is a UUIDv7 string and can NOT substitute, so a missing
+// internal_id yields 0 (the per-attachment write-back keyed on a zero id is a
+// no-op). We do NOT re-derive internal_id via a DB lookup.
 func internalIDOf(parsed contractsk.AnalysisAttachments) int64 {
-	if parsed.InternalID != 0 {
-		return parsed.InternalID
-	}
-	return parsed.Meta.EmailID
+	return parsed.InternalID
 }
 
-func encodeKey(emailID int64) []byte {
-	return []byte(strconv.FormatInt(emailID, 10))
+func encodeKey(emailID string) []byte {
+	return []byte(emailID)
 }
 
 func strPtr(s string) *string { return &s }

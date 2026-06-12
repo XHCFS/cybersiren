@@ -5,6 +5,8 @@ import (
 	"fmt"
 
 	valkeygo "github.com/valkey-io/valkey-go"
+
+	sharedvalkey "github.com/saif/cybersiren/shared/valkey"
 )
 
 // RateLimitTTLSeconds is the per-(org, campaign) alert window, per ARCH-SPEC §3
@@ -26,11 +28,11 @@ type RateLimiter interface {
 // email), the email id is used as the bucket discriminator so per-email alerts
 // are still de-duplicated across redeliveries instead of collapsing every
 // non-campaign alert for the org into one shared bucket.
-func RateLimitKey(orgID int64, campaignID *int64, emailID int64) string {
+func RateLimitKey(orgID int64, campaignID *int64, emailID string) string {
 	if campaignID != nil {
 		return fmt.Sprintf("notif:%d:%d", orgID, *campaignID)
 	}
-	return fmt.Sprintf("notif:%d:email-%d", orgID, emailID)
+	return fmt.Sprintf("notif:%d:email-%s", orgID, emailID)
 }
 
 // ValkeyRateLimiter implements RateLimiter over valkey-go using a single
@@ -59,15 +61,13 @@ func (r *ValkeyRateLimiter) Allow(ctx context.Context, key string) (bool, error)
 	// Atomic claim: SET key "1" NX EX ttl. The first writer in the window gets
 	// OK (allow) and the TTL is armed in the same command; subsequent writers
 	// get a nil reply (block). There is no INCR-then-EXPIRE gap in which a key
-	// could be left without a TTL.
-	_, err := r.client.Do(ctx,
-		r.client.B().Set().Key(key).Value("1").Nx().ExSeconds(int64(r.ttl)).Build(),
-	).ToString()
+	// could be left without a TTL. The shared primitive folds the IsValkeyNil
+	// reply into allowed=false/err=nil (block); any other error is surfaced for
+	// our own wrapping so the notifier's degrade-to-allow-on-error policy and
+	// error text stay unchanged.
+	allowed, err := sharedvalkey.Claim(ctx, r.client, key, int64(r.ttl))
 	if err != nil {
-		if valkeygo.IsValkeyNil(err) {
-			return false, nil
-		}
 		return false, fmt.Errorf("set %s: %w", key, err)
 	}
-	return true, nil
+	return allowed, nil
 }

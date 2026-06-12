@@ -1,0 +1,159 @@
+#!/usr/bin/env bash
+#
+# run-demo.sh — one-command bring-up / tear-down of the FULL CyberSiren pipeline
+# plus the standalone demo dashboard (http://localhost:8090).
+#
+#   ./demo/run-demo.sh up        # (or: make demo-up)    bring everything up
+#   ./demo/run-demo.sh down      # (or: make demo-down)  stop everything
+#   ./demo/run-demo.sh restart
+#
+# `up` resets the DB volume each time so it never trips the "type already exists"
+# migration error, brings up infra + the NLP sidecar, seeds the demo API key,
+# starts the native pipeline (svc-01..09), then launches the dashboard.
+#
+# Throwaway demo tooling: to remove the demo entirely, delete demo/, the
+# demo-dashboard block in deploy/compose/docker-compose.yml, and the demo-up /
+# demo-down targets in the Makefile.
+#
+# Optional Gmail "Sign in with Google": export GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET
+# before `up` (see demo/dashboard/README.md). They are inherited by the dashboard.
+#
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
+DC="docker compose -f deploy/compose/docker-compose.yml --env-file deploy/compose/.env"
+LOGDIR=".smoke-logs"
+DEMO_BIN="$LOGDIR/bin/demo-dashboard"
+DEMO_LOG="$LOGDIR/demo-dashboard.log"
+DEMO_PID="$LOGDIR/demo-dashboard.pid"
+
+step() { printf '\n\033[1;36m==> %s\033[0m\n' "$*"; }
+
+# wait_healthy blocks until a container reports healthy (or running, if it has no
+# healthcheck), up to N seconds.
+wait_healthy() {
+  local name="$1" tries="${2:-90}" st
+  for ((i = 0; i < tries; i++)); do
+    st=$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$name" 2>/dev/null || echo "")
+    case "$st" in healthy | running) return 0 ;; esac
+    sleep 1
+  done
+  echo "timed out waiting for $name to be healthy (status: ${st:-unknown})" >&2
+  return 1
+}
+
+up() {
+  mkdir -p "$LOGDIR/bin"
+
+  step "[1/6] Checking ML models (NLP + URL fusion) are present"
+  make check-nlp-model
+  make check-fusion-models
+
+  step "[2/6] Resetting volumes for a clean database"
+  make down-v >/dev/null 2>&1 || true
+
+  step "[3/6] Starting infra + NLP sidecar (~30s)"
+  # No `--wait`: the one-shot redpanda-init/kafka-init containers exit(0), and
+  # `up --wait` treats that as a failure (the reason `make smoke` drops it too).
+  # We wait for postgres ourselves (db-setup needs it); run_pipeline's preflight
+  # blocks on broker/NLP/DB readiness for the rest.
+  $DC --profile postgres --profile valkey --profile kafka --profile nlp-inference up -d
+  wait_healthy cybersiren-postgres 90
+
+  step "[4/6] Starting the L2 URL fusion-sidecar (built on first run)"
+  # Activate the infra profiles alongside svc-03 so the svc-03 profile's
+  # depends_on chains resolve (demo-seed->postgres, svc-03->valkey/kafka),
+  # otherwise compose rejects the project. Naming the service starts ONLY
+  # fusion-sidecar — the native svc-03 from run_pipeline is untouched.
+  $DC --profile postgres --profile valkey --profile kafka --profile svc-03 up -d fusion-sidecar
+  for _ in $(seq 1 40); do curl -fsS http://localhost:8765/health >/dev/null 2>&1 && break; sleep 2; done
+
+  step "[5/6] Migrating + seeding the database + TI cache"
+  make db-setup
+  # Seed one known-bad domain into the Valkey TI cache so the "TI blocklist"
+  # sample matches (the svc-11 feed-sync service is not run in the demo).
+  docker exec cybersiren-valkey valkey-cli HSET 'ti_domain:{malware-c2-delivery.test}' \
+    ti_indicator_id 990001 risk_score 95 threat_type malware_c2 >/dev/null 2>&1 || true
+
+  step "[6/6] Starting the native pipeline + demo dashboard"
+  # Point svc-03 at the fusion-sidecar via the fast in-process Go enricher so L2
+  # ML URL scoring works and doesn't time out on un-resolvable demo domains.
+  export CYBERSIREN_PHISHING__GEOIP_DIR=fusion_export/fusion_kit
+  # Persist the Gmail connection (gitignored token file) so you don't have to
+  # re-consent after `make demo-down && make demo-up`.
+  export GMAIL_TOKEN_FILE="${GMAIL_TOKEN_FILE:-demo/dashboard/.gmail-token}"
+  ./scripts/dev/run_pipeline.sh start
+  go build -o "$DEMO_BIN" ./demo/dashboard
+  "$DEMO_BIN" >"$DEMO_LOG" 2>&1 &
+  echo $! >"$DEMO_PID"
+  sleep 2
+
+  printf '\n\033[1;32m  ✅ Demo ready  →  http://localhost:8090\033[0m\n'
+  # Ask the running demo itself (it loads demo/dashboard/.env; the shell env alone
+  # would miss creds set only in that file).
+  if curl -fsS "http://localhost${DEMO_ADDR:-:8090}/api/gmail/status" 2>/dev/null | grep -q '"configured":true'; then
+    printf '     Gmail sign-in: ENABLED\n'
+  else
+    printf '     Gmail sign-in: OFF (set GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET in demo/dashboard/.env)\n'
+  fi
+  printf '     Dashboard log: %s\n     Stop everything:  make demo-down\n\n' "$DEMO_LOG"
+}
+
+down() {
+  step "Stopping the demo dashboard"
+  if [ -f "$DEMO_PID" ]; then
+    kill "$(cat "$DEMO_PID")" 2>/dev/null || true
+    rm -f "$DEMO_PID"
+  fi
+  # Safety net: kill any orphaned dashboard the pidfile lost track of (e.g. from
+  # a double `up`, or a manual `go run`), so `down` always frees :8090.
+  pkill -f "$DEMO_BIN" 2>/dev/null || true
+
+  step "Stopping the native pipeline"
+  ./scripts/dev/run_pipeline.sh stop || true
+
+  step "Stopping infra"
+  $DC down --remove-orphans || true
+
+  printf '\n  ✅ Stopped.\n\n'
+}
+
+# dash rebuilds + restarts ONLY the dashboard, leaving infra + the native
+# pipeline running. Use after editing demo/dashboard (its web/ assets are
+# go:embed'd, so a rebuild is required to pick them up — unless you run with
+# DEMO_DEV=1, which serves web/ from disk and needs only a browser refresh).
+dash() {
+  mkdir -p "$LOGDIR/bin"
+  step "Restarting ONLY the demo dashboard (infra + pipeline untouched)"
+  if [ -f "$DEMO_PID" ]; then
+    kill "$(cat "$DEMO_PID")" 2>/dev/null || true
+    rm -f "$DEMO_PID"
+  fi
+  pkill -f "$DEMO_BIN" 2>/dev/null || true
+  # Match the dashboard env `up` sets (the binary loads demo/dashboard/.env for
+  # the rest, e.g. Gmail creds).
+  export GMAIL_TOKEN_FILE="${GMAIL_TOKEN_FILE:-demo/dashboard/.gmail-token}"
+  go build -o "$DEMO_BIN" ./demo/dashboard
+  "$DEMO_BIN" >"$DEMO_LOG" 2>&1 &
+  echo $! >"$DEMO_PID"
+  sleep 1
+  printf '\n\033[1;32m  ✅ Dashboard restarted  →  http://localhost:8090\033[0m\n'
+  [ -n "${DEMO_DEV:-}" ] && printf '     DEMO_DEV on: edit web/ + refresh, no rebuild needed\n'
+  printf '     log: %s\n\n' "$DEMO_LOG"
+}
+
+case "${1:-up}" in
+up) up ;;
+down) down ;;
+dash) dash ;;
+restart)
+  down
+  up
+  ;;
+*)
+  echo "usage: $0 {up|down|dash|restart}" >&2
+  exit 1
+  ;;
+esac

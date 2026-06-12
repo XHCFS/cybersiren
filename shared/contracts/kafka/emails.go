@@ -2,6 +2,7 @@ package kafka
 
 import (
 	"encoding/json"
+	"fmt"
 	"time"
 )
 
@@ -90,11 +91,19 @@ type EmailsScored struct {
 	ComponentDetails ComponentDetails `json:"component_details"`
 }
 
-// Validate enforces the documented [0, 100] range on every component score.
-// The *Score fields are nullable (nil = component absent / aggregation timed
-// out before it arrived); nil pointers pass. The latency/internal_id/fetched_at
-// fields are not score-bounded.
+// Validate enforces the documented [0, 100] range on every component score
+// and guards the addressing key. The *Score fields are nullable (nil =
+// component absent / aggregation timed out before it arrived); nil pointers
+// pass. InternalID is the DB BIGSERIAL surrogate (internal_id, fetched_at) PK
+// SVC-08 writes against; email_id is a UUIDv7 string and can NOT substitute
+// for it (LANDMINE B), so an internal_id of 0 means "unresolved" and the
+// message cannot be addressed to a verdict row — reject it rather than ship a
+// poison record SVC-08 would silently drop. The latency/fetched_at fields are
+// not score-bounded.
 func (e EmailsScored) Validate() error {
+	if e.InternalID <= 0 {
+		return fmt.Errorf("emails.scored: internal_id must be > 0, got %d", e.InternalID)
+	}
 	if err := validatePtrScore("url", e.URLScore); err != nil {
 		return err
 	}

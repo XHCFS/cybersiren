@@ -1,0 +1,9 @@
+# Local Gmail refresh token persisted by the demo (never commit OAuth tokens).
+.gmail-token
+
+# Local secrets for the demo (Google OAuth client id/secret). Never commit.
+.env
+
+# Persisted scan feed/breakdowns (so scans survive a restart). Local-only.
+.scans.json
+.scans.json.tmp

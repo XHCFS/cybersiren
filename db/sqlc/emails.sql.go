@@ -109,8 +109,11 @@ type GetEmailIdentityRow struct {
 }
 
 // Looks up the canonical (internal_id, fetched_at) for an (org_id, message_id)
-// pair in the cross-partition dedup registry. Runs inside WithOrgTx; the RLS
-// GUC scopes the row. Returns no row when the message was never registered.
+// pair in the cross-partition dedup registry. email_identities has NO RLS
+// policy, so org-scoping here is enforced solely by the explicit
+// `WHERE org_id = $1` predicate — NOT by the RLS GUC. A future variant that
+// drops that predicate trusting RLS would leak rows across tenants. Returns no
+// row when the message was never registered.
 func (q *Queries) GetEmailIdentity(ctx context.Context, arg GetEmailIdentityParams) (GetEmailIdentityRow, error) {
 	row := q.db.QueryRow(ctx, getEmailIdentity, arg.OrgID, arg.MessageID)
 	var i GetEmailIdentityRow
@@ -273,8 +276,8 @@ func (q *Queries) InsertEmail(ctx context.Context, arg InsertEmailParams) (Inser
 }
 
 const registerEmailIdentity = `-- name: RegisterEmailIdentity :one
-INSERT INTO email_identities (org_id, message_id, internal_id, fetched_at)
-VALUES ($1, $2, $3, $4)
+INSERT INTO email_identities (org_id, message_id, internal_id, fetched_at, email_id)
+VALUES ($1, $2, $3, $4, $5)
 ON CONFLICT (org_id, message_id) DO NOTHING
 RETURNING internal_id
 `
@@ -284,18 +287,24 @@ type RegisterEmailIdentityParams struct {
 	MessageID  string             `db:"message_id" json:"message_id"`
 	InternalID int64              `db:"internal_id" json:"internal_id"`
 	FetchedAt  pgtype.Timestamptz `db:"fetched_at" json:"fetched_at"`
+	EmailID    pgtype.UUID        `db:"email_id" json:"email_id"`
 }
 
 // Claims (org_id, message_id) for this ingestion. ON CONFLICT DO NOTHING makes
 // the claim atomic: a returned internal_id means we won the claim (new message),
 // while no row means another ingestion already registered it (duplicate signal).
-// Runs inside WithOrgTx so the RLS GUC scopes the write.
+// email_id is the logical UUIDv7 (G5/G17), stamped here so the read side can map
+// it back to (internal_id, fetched_at); it is NULL when the email carries no
+// usable Message-ID (such emails are not registered). email_identities has NO
+// RLS policy: the write is scoped to the caller's tenant by the explicit org_id
+// value in the VALUES list, NOT by the RLS GUC.
 func (q *Queries) RegisterEmailIdentity(ctx context.Context, arg RegisterEmailIdentityParams) (int64, error) {
 	row := q.db.QueryRow(ctx, registerEmailIdentity,
 		arg.OrgID,
 		arg.MessageID,
 		arg.InternalID,
 		arg.FetchedAt,
+		arg.EmailID,
 	)
 	var internal_id int64
 	err := row.Scan(&internal_id)

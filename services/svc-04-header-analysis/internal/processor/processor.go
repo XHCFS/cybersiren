@@ -105,12 +105,12 @@ func (p *Processor) Handle(ctx context.Context, msg sharedconsumer.Message) erro
 	}
 
 	span.SetAttributes(
-		attribute.Int64("email_id", parsed.EmailID),
+		attribute.String("email_id", parsed.EmailID),
 		attribute.Int64("org_id", parsed.OrgID),
 	)
 
 	logCtx := p.log.With().
-		Int64("email_id", parsed.EmailID).
+		Str("email_id", parsed.EmailID).
 		Int64("org_id", parsed.OrgID).
 		Logger()
 	if sc := msg.SpanContext; sc.IsValid() {
@@ -226,8 +226,8 @@ func decodeMessage(body []byte) (contractsk.AnalysisHeadersMessage, error) {
 	if err := json.Unmarshal(body, &out); err != nil {
 		return out, fmt.Errorf("unmarshal analysis.headers: %w", err)
 	}
-	if out.EmailID <= 0 {
-		return out, fmt.Errorf("analysis.headers email_id must be > 0, got %d", out.EmailID)
+	if out.EmailID == "" {
+		return out, errors.New("analysis.headers email_id is required")
 	}
 	if out.FetchedAt.IsZero() {
 		return out, errors.New("analysis.headers fetched_at is required")
@@ -235,19 +235,17 @@ func decodeMessage(body []byte) (contractsk.AnalysisHeadersMessage, error) {
 	return out, nil
 }
 
-func encodeKey(emailID int64) []byte {
-	return []byte(strconv.FormatInt(emailID, 10))
+func encodeKey(emailID string) []byte {
+	return []byte(emailID)
 }
 
 // ruleHitEntityID is the emails.internal_id that rule_hits rows reference
-// (ARCH-SPEC §14 step 3b). It prefers the DB-assigned internal_id svc-02 carries
-// on analysis.headers; it falls back to email_id only when that id is absent
-// (interim — there is no internal_id == email_id invariant).
+// (ARCH-SPEC §14 step 3b). It is the DB-assigned internal_id svc-02 carries on
+// analysis.headers. email_id is a UUIDv7 string and can NOT substitute, so a
+// missing internal_id yields 0 (the rule_hits write keyed on a zero entity id
+// is skipped) — there is no internal_id == email_id equivalence.
 func ruleHitEntityID(parsed contractsk.AnalysisHeadersMessage) int64 {
-	if parsed.InternalID != 0 {
-		return parsed.InternalID
-	}
-	return parsed.EmailID
+	return parsed.InternalID
 }
 
 func buildScoresHeader(

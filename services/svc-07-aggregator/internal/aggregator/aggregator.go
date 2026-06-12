@@ -107,14 +107,14 @@ func (a *Aggregator) Handle(ctx context.Context, msg kafkaconsumer.Message) erro
 			Int64("offset", msg.Offset).Msg("malformed payload; skipping")
 		return nil
 	}
-	if emailID == 0 {
+	if emailID == "" {
 		a.observeMessage(msg.Topic, "error")
 		span.SetStatus(codes.Error, "payload missing email_id")
 		a.log.Warn().Str("topic", msg.Topic).Msg("payload missing email_id; skipping")
 		return nil
 	}
 	span.SetAttributes(
-		attribute.Int64("email_id", emailID),
+		attribute.String("email_id", emailID),
 		attribute.Int64("org_id", orgID),
 	)
 
@@ -189,9 +189,10 @@ func (a *Aggregator) Handle(ctx context.Context, msg kafkaconsumer.Message) erro
 	}
 	// The bucket is complete, but a concurrent scores.header handler may not
 	// have merged __partition_internal_id yet (HSET field then HSETNX id are
-	// two ops). Publishing now would fall back to email_id and mis-key the
-	// verdict. Wait for the id to land — a later arrival or the scores.header
-	// handler itself re-triggers; the timeout sweeper is the backstop.
+	// two ops). Publishing now would resolve internal_id=0 (there is NO email_id
+	// fallback — LANDMINE B), yielding an unaddressable verdict the producer
+	// would have to drop. Wait for the id to land — a later arrival or the
+	// scores.header handler itself re-triggers; the timeout sweeper is the backstop.
 	if internalIDPending(state) {
 		a.observeMessage(msg.Topic, "wait")
 		span.SetAttributes(attribute.String("aggregator.status", "wait_internal_id"))
@@ -260,7 +261,8 @@ func (a *Aggregator) Handle(ctx context.Context, msg kafkaconsumer.Message) erro
 // eventually reap stale keys.
 func (a *Aggregator) publishAndCleanup(
 	ctx context.Context,
-	orgID, emailID int64,
+	orgID int64,
+	emailID string,
 	state map[string]string,
 	startedAt time.Time,
 	timeoutTriggered bool,
@@ -270,13 +272,35 @@ func (a *Aggregator) publishAndCleanup(
 		return fmt.Errorf("package state: %w", err)
 	}
 
+	// Defense-in-depth: a resolved internal_id of 0 (no scores.header forwarded
+	// svc-02's BIGSERIAL id) means the message cannot be addressed to a DB verdict
+	// row — there is NO email_id fallback (LANDMINE B), and svc-08 would silently
+	// discard it (decodeScored rejects internal_id<=0 and commits the offset). So
+	// we make the drop loud here and SKIP the emit rather than ship a poison
+	// record. EmailsScored.Validate also guards InternalID>0 plus score ranges.
+	// This is an observable skip, not a NACK: looping forever cannot conjure an
+	// id that upstream never produced. We still tear down the bucket+lock so the
+	// dead email_id does not linger and re-fire.
+	if vErr := out.Validate(); vErr != nil {
+		a.log.Error().Err(vErr).
+			Str("email_id", emailID).Int64("org_id", orgID).Int64("internal_id", out.InternalID).
+			Msg("cannot emit emails.scored: internal_id unresolved — dropping; verdict cannot be addressed")
+		a.bumpPublishError("internal_id_unresolved")
+		_ = a.store.Del(ctx, publishLockKey(orgID, emailID))
+		if err := a.store.Del(ctx, keyForOrgEmail(orgID, emailID)); err != nil {
+			a.log.Debug().Err(err).Str("email_id", emailID).Msg("aggregator del failed; relying on TTL")
+			a.bumpPublishError("del")
+		}
+		return nil
+	}
+
 	body, err := marshalEmailsScored(out)
 	if err != nil {
 		return fmt.Errorf("marshal emails.scored: %w", err)
 	}
 
 	// PublishRetries = extra kafka attempts after the first ProduceSync.
-	key := []byte(strconv.FormatInt(emailID, 10))
+	key := []byte(emailID)
 	if err := a.publisher.Publish(ctx, key, body, a.cfg.PublishRetries); err != nil {
 		return fmt.Errorf("publish emails.scored: %w", err)
 	}
@@ -287,7 +311,7 @@ func (a *Aggregator) publishAndCleanup(
 		// Don't fail the handler — the bucket will TTL out. We just
 		// won't accept any further scores for this email_id, which is
 		// correct.
-		a.log.Debug().Err(err).Int64("email_id", emailID).Msg("aggregator del failed; relying on TTL")
+		a.log.Debug().Err(err).Str("email_id", emailID).Msg("aggregator del failed; relying on TTL")
 		a.bumpPublishError("del")
 	}
 

@@ -25,14 +25,14 @@ import (
 // upstream uses ScoreEnvelope (nested Meta envelope).
 type flexShape struct {
 	Meta    *contracts.MessageMeta `json:"meta,omitempty"`
-	EmailID int64                  `json:"email_id,omitempty"`
+	EmailID string                 `json:"email_id,omitempty"`
 	OrgID   int64                  `json:"org_id,omitempty"`
 }
 
 // IDs returns (email_id, org_id) regardless of which envelope shape was
 // on the wire. Returns zero values if neither shape contains them.
-func (f flexShape) IDs() (int64, int64) {
-	if f.Meta != nil && f.Meta.EmailID != 0 {
+func (f flexShape) IDs() (string, int64) {
+	if f.Meta != nil && f.Meta.EmailID != "" {
 		return f.Meta.EmailID, f.Meta.OrgID
 	}
 	return f.EmailID, f.OrgID
@@ -40,11 +40,11 @@ func (f flexShape) IDs() (int64, int64) {
 
 // extractIDs runs flexShape over the raw kafka payload. Returns an error
 // only when JSON is malformed; an unknown shape (no IDs found) is signalled
-// via emailID == 0.
-func extractIDs(raw []byte) (emailID, orgID int64, err error) {
+// via emailID == "".
+func extractIDs(raw []byte) (emailID string, orgID int64, err error) {
 	var f flexShape
 	if err := json.Unmarshal(raw, &f); err != nil {
-		return 0, 0, fmt.Errorf("decode meta: %w", err)
+		return "", 0, fmt.Errorf("decode meta: %w", err)
 	}
 	emailID, orgID = f.IDs()
 	return emailID, orgID, nil
@@ -56,7 +56,7 @@ func extractIDs(raw []byte) (emailID, orgID int64, err error) {
 func decodeScoreInt(topic string, raw []byte) int {
 	if topic == contracts.TopicScoresHeader {
 		var hd contracts.ScoresHeaderMessage
-		if err := json.Unmarshal(raw, &hd); err == nil && hd.EmailID != 0 {
+		if err := json.Unmarshal(raw, &hd); err == nil && hd.EmailID != "" {
 			return clampScore(hd.Score)
 		}
 	}

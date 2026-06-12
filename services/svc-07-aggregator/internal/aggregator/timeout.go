@@ -113,7 +113,7 @@ func (s *Sweeper) processKey(ctx context.Context, key string, threshold time.Tim
 	orgID, _ := strconv.ParseInt(state[fieldOrgID], 10, 64)
 	if orgID != 0 && orgID != orgIDKey {
 		a.log.Warn().
-			Int64("email_id", emailID).
+			Str("email_id", emailID).
 			Int64("key_org", orgIDKey).
 			Int64("state_org", orgID).
 			Msg("sweeper: org_id mismatch between key and hash; using key org")
@@ -125,13 +125,13 @@ func (s *Sweeper) processKey(ctx context.Context, key string, threshold time.Tim
 	// the bucket TTL out — a "no plan" bucket is a parser bug, not a
 	// pipeline timeout.
 	if _, ok := state[fieldPlan]; !ok {
-		a.log.Warn().Int64("email_id", emailID).Msg("sweeper: bucket aged out without plan; dropping")
+		a.log.Warn().Str("email_id", emailID).Msg("sweeper: bucket aged out without plan; dropping")
 		_ = a.store.Del(ctx, lockKey)
 		return
 	}
 
 	if err := a.publishAndCleanup(ctx, orgID, emailID, state, startedAt, true /*timeout*/); err != nil {
-		a.log.Warn().Err(err).Int64("email_id", emailID).Msg("sweeper publish failed; releasing lock for retry")
+		a.log.Warn().Err(err).Str("email_id", emailID).Msg("sweeper publish failed; releasing lock for retry")
 		_ = a.store.Del(ctx, lockKey)
 		a.bumpPublishError("publish")
 		return

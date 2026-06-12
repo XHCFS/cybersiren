@@ -42,14 +42,15 @@ const (
 // plan declared fewer than 4 components (e.g. an email without
 // attachments).
 func packageState(
-	emailID, orgID int64,
+	emailID string,
+	orgID int64,
 	state map[string]string,
 	startedAt time.Time,
 	timeoutTriggered bool,
 ) (contracts.EmailsScored, error) {
 	planRaw, ok := state[fieldPlan]
 	if !ok {
-		return contracts.EmailsScored{}, fmt.Errorf("aggregator: package called without plan for email_id=%d", emailID)
+		return contracts.EmailsScored{}, fmt.Errorf("aggregator: package called without plan for email_id=%s", emailID)
 	}
 	var plan contracts.AnalysisPlan
 	if err := json.Unmarshal([]byte(planRaw), &plan); err != nil {
@@ -144,15 +145,17 @@ func completionStatus(state map[string]string) (complete, hasPlan bool) {
 // two separate Valkey ops. A concurrent handler for another component can read a
 // state snapshot in that window — scores.header field present (so the bucket
 // looks complete) but __partition_internal_id not yet visible — and would
-// publish with the email_id fallback, mis-keying the verdict off the parser row.
+// resolve internal_id=0, producing an unaddressable emails.scored (there is NO
+// email_id fallback — LANDMINE B) that the producer must then drop.
 //
 // We wait only when scores.header is present AND carried a non-zero internal_id
 // but the partition field is not yet set: the merge is just lagging and the
 // scores.header handler (or a #190 redelivery if it errored) will complete it.
 // A scores.header that carried internal_id==0 (degraded upstream) is "never
-// coming", so we do NOT wait — the email_id fallback stands. The globally-last
-// completing handler always observes the merged id, so this never deadlocks; the
-// timeout sweeper is the backstop regardless.
+// coming", so we do NOT wait — the resolved internal_id stays 0 and the producer
+// drops the message (publishAndCleanup logs+skips; svc-08 cannot key off it).
+// The globally-last completing handler always observes the merged id, so this
+// never deadlocks; the timeout sweeper is the backstop regardless.
 func internalIDPending(state map[string]string) bool {
 	if state[fieldPartitionInternalID] != "" {
 		return false
@@ -169,35 +172,40 @@ func internalIDPending(state map[string]string) bool {
 }
 
 // keyForOrgEmail returns the aggregation hash key scoped by tenant so two
-// orgs cannot clobber each other's buckets when email_id overlaps.
-func keyForOrgEmail(orgID, emailID int64) string {
-	return fmt.Sprintf("%s%d:%d", keyPrefix, orgID, emailID)
+// orgs cannot clobber each other's buckets when email_id overlaps. email_id is
+// a UUIDv7 string (#142), appended verbatim after the org segment.
+func keyForOrgEmail(orgID int64, emailID string) string {
+	return fmt.Sprintf("%s%d:%s", keyPrefix, orgID, emailID)
 }
 
 // publishLockKey is a short-TTL NX key for exclusive emails.scored emit.
-func publishLockKey(orgID, emailID int64) string {
-	return fmt.Sprintf("%spublock:%d:%d", keyPrefix, orgID, emailID)
+func publishLockKey(orgID int64, emailID string) string {
+	return fmt.Sprintf("%spublock:%d:%s", keyPrefix, orgID, emailID)
 }
 
 // parseAggregatorBucketKey parses aggregator:{org}:{email}. Returns ok=false for
-// lock keys (aggregator:publock:...) or malformed suffixes.
-func parseAggregatorBucketKey(key string) (orgID, emailID int64, ok bool) {
+// lock keys (aggregator:publock:...) or malformed keys.
+//
+// LANDMINE A: email_id is now a UUIDv7 string whose hyphens/hex would fail
+// strconv.ParseInt. We split on the LAST ":" so the org segment is the int64
+// prefix and everything after it is the raw email_id string (a UUID contains no
+// ":"); only the org segment is integer-parsed.
+func parseAggregatorBucketKey(key string) (orgID int64, emailID string, ok bool) {
 	if !strings.HasPrefix(key, keyPrefix) {
-		return 0, 0, false
+		return 0, "", false
 	}
 	rest := key[len(keyPrefix):]
 	if strings.HasPrefix(rest, "publock:") {
-		return 0, 0, false
+		return 0, "", false
 	}
 	colon := strings.LastIndexByte(rest, ':')
 	if colon <= 0 || colon >= len(rest)-1 {
-		return 0, 0, false
+		return 0, "", false
 	}
 	orgStr, emailStr := rest[:colon], rest[colon+1:]
 	o, err1 := strconv.ParseInt(orgStr, 10, 64)
-	em, err2 := strconv.ParseInt(emailStr, 10, 64)
-	if err1 != nil || err2 != nil || o <= 0 || em <= 0 {
-		return 0, 0, false
+	if err1 != nil || o <= 0 || emailStr == "" {
+		return 0, "", false
 	}
-	return o, em, true
+	return o, emailStr, true
 }

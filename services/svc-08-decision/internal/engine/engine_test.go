@@ -73,7 +73,7 @@ func (f *fakePublisher) Publish(_ context.Context, key, value []byte, retries in
 	return nil
 }
 
-func makeScoredMessage(t *testing.T, internalID, emailID int64) kafkaconsumer.Message {
+func makeScoredMessage(t *testing.T, internalID int64, emailID string) kafkaconsumer.Message {
 	t.Helper()
 	fetched := time.Date(2026, 5, 3, 10, 0, 0, 0, time.UTC)
 	url := 77
@@ -89,11 +89,47 @@ func makeScoredMessage(t *testing.T, internalID, emailID int64) kafkaconsumer.Me
 
 func TestDecodeScored_AllowsDistinctInternalAndMetaEmailID(t *testing.T) {
 	t.Parallel()
-	msg := makeScoredMessage(t, 2001, 1001)
+	msg := makeScoredMessage(t, 2001, "e1001")
 	got, err := decodeScored(msg.Value)
 	require.NoError(t, err)
 	require.Equal(t, int64(2001), got.InternalID)
-	require.Equal(t, int64(1001), got.Meta.EmailID)
+	require.Equal(t, "e1001", got.Meta.EmailID)
+}
+
+// A scored message with internal_id<=0 is unaddressable poison (it should have
+// been dropped at svc-07's producer). decodeScored must reject it with the
+// errUnresolvedInternalID sentinel so Handle can log it loudly — yet still
+// commit the offset (a NACK would wedge the partition forever). Finding #8.
+func TestDecodeScored_RejectsUnresolvedInternalID(t *testing.T) {
+	t.Parallel()
+	_, err := decodeScored(makeScoredMessage(t, 0, "e0").Value)
+	require.Error(t, err)
+	require.ErrorIs(t, err, errUnresolvedInternalID)
+
+	_, err = decodeScored(makeScoredMessage(t, -1, "eneg").Value)
+	require.ErrorIs(t, err, errUnresolvedInternalID)
+}
+
+func TestHandle_UnresolvedInternalID_CommitsWithoutWritingVerdict(t *testing.T) {
+	t.Parallel()
+	writer := &fakeWriter{out: persist.Output{CampaignID: 17, VerdictID: 44, EmailCount: 1}}
+	pub := &fakePublisher{}
+	eng := New(
+		Config{},
+		fakeRules{},
+		fakeSimhash{},
+		writer,
+		pub,
+		nil,
+		zerolog.Nop(),
+	)
+
+	// Poison: internal_id=0. Handle must commit the offset (nil) but write no
+	// verdict and publish nothing — the silent-data-loss path is now loud-but-safe.
+	err := eng.Handle(context.Background(), makeScoredMessage(t, 0, "e0"))
+	require.NoError(t, err, "poison must commit the offset, not NACK")
+	require.Equal(t, 0, writer.writes, "no verdict row may be written for an unaddressable message")
+	require.Len(t, pub.records, 0, "nothing may be published for an unaddressable message")
 }
 
 func TestHandle_DegradesWhenRulesUnavailable(t *testing.T) {
@@ -110,7 +146,7 @@ func TestHandle_DegradesWhenRulesUnavailable(t *testing.T) {
 		zerolog.Nop(),
 	)
 
-	err := eng.Handle(context.Background(), makeScoredMessage(t, 1001, 1001))
+	err := eng.Handle(context.Background(), makeScoredMessage(t, 1001, "e1001"))
 	require.NoError(t, err)
 	require.Equal(t, 1, writer.writes)
 	require.Equal(t, VerdictSourceRule, writer.lastInput.VerdictSource)
@@ -139,7 +175,7 @@ func TestHandle_UsesStoredKafkaWireOnDedupeReplay(t *testing.T) {
 		zerolog.Nop(),
 	)
 
-	err := eng.Handle(context.Background(), makeScoredMessage(t, 3001, 3001))
+	err := eng.Handle(context.Background(), makeScoredMessage(t, 3001, "e3001"))
 	require.NoError(t, err)
 	require.Len(t, pub.records, 1)
 	require.JSONEq(t, string(stored), string(pub.records[0].value))

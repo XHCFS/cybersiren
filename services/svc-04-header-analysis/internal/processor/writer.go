@@ -59,6 +59,17 @@ func (w *RuleHitWriter) Write(
 	if len(fired) == 0 {
 		return "ok", nil
 	}
+	// A zero/unresolved internal_id has no addressable emails row to attach a
+	// rule_hit to — rule_hits.entity_id is BIGINT NOT NULL with no FK, so a write
+	// would silently orphan the audit row. Skip it (the processor's
+	// ruleHitEntityID doc promises exactly this skip). Reachable only on a
+	// degraded/foreign analysis.headers; svc-02 always assigns a real internal_id
+	// on the live path.
+	if emailInternalID <= 0 {
+		w.log.Warn().Int64("org_id", orgID).Int("fired_rules", len(fired)).
+			Msg("rule_hits write skipped: internal_id unresolved (0)")
+		return "ok", nil
+	}
 
 	attempts := w.maxRetries + 1
 	if attempts < 1 {

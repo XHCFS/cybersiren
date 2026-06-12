@@ -1,0 +1,18 @@
+# ── demo-dashboard (standalone, throwaway demo UI) ──────────────────────────
+# NOT a pipeline service: a deletable stand-in for the svc-10 dashboard. It only
+# talks to the pipeline from the outside (svc-01 /api/v1/scan + Kafka consume).
+
+# Stage 1: builder
+FROM golang:1.25-alpine AS builder
+WORKDIR /app
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" \
+    -o /bin/demo-dashboard ./demo/dashboard/
+
+# Stage 2: final
+FROM alpine:3.19
+RUN apk --no-cache add ca-certificates tzdata
+COPY --from=builder /bin/demo-dashboard /bin/demo-dashboard
+ENTRYPOINT ["/bin/demo-dashboard"]

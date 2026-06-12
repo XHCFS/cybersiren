@@ -248,13 +248,17 @@ test-cover:
 vet:
 	go vet ./...
 
+# golangci-lint may be installed under $GOPATH/bin without that being on PATH
+# (common with `go install`). Prefer a PATH copy, else fall back to GOPATH/bin.
+GOLANGCI ?= $(shell command -v golangci-lint 2>/dev/null || echo $(shell go env GOPATH)/bin/golangci-lint)
+
 ## lint: Run golangci-lint
 lint:
-	golangci-lint run ./...
+	$(GOLANGCI) run ./...
 
 ## lint-fix: Run golangci-lint with auto-fix
 lint-fix:
-	golangci-lint run --fix ./...
+	$(GOLANGCI) run --fix ./...
 
 # =============================================================================
 # ── Utilities ────────────────────────────────────────────────────────────────
@@ -447,6 +451,22 @@ smoke: check-docker check-compose-env check-nlp-model
 ## smoke-stop: Stop the native pipeline stubs started by `make smoke`.
 smoke-stop:
 	@./scripts/dev/run_pipeline.sh stop
+
+## demo-up: One command — full pipeline + standalone demo dashboard (http://localhost:8090).
+##          Resets the DB volume, brings up infra + NLP, seeds the demo key, starts
+##          svc-01..09, and launches the dashboard. (Throwaway demo tooling — see demo/.)
+demo-up: check-docker check-compose-env check-nlp-model
+	@./demo/run-demo.sh up
+
+## demo-down: Stop the demo dashboard + native pipeline + infra started by `make demo-up`.
+demo-down:
+	@./demo/run-demo.sh down
+
+## demo-dash: Rebuild + restart ONLY the dashboard (infra + pipeline keep running).
+##            Use after editing demo/dashboard. Tip: DEMO_DEV=1 make demo-dash
+##            serves web/ from disk so later UI edits need only a browser refresh.
+demo-dash:
+	@./demo/run-demo.sh dash
 
 ## e2e-svc-03: End-to-end test of svc-03 /scan with a stubbed L2 sidecar
 ##            and injected TI fixture. Exercises guard short-circuits, L2

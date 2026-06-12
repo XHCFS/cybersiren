@@ -137,7 +137,7 @@ func TestUploadAttachmentsNoStoreProceeds(t *testing.T) {
 func TestBuildAnalysisURLsStampsInternalID(t *testing.T) {
 	t.Parallel()
 
-	meta := contracts.NewMetaWithFetched(42, 7, time.Now().UTC())
+	meta := contracts.NewMetaWithFetched("e42", 7, time.Now().UTC())
 	parsed := &email.ParsedEmail{
 		URLs: []email.ExtractedURL{{URL: "http://evil.test/x", Position: "body", HTMLContext: "plain_text"}},
 	}

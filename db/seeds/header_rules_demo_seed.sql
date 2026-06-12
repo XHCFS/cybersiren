@@ -17,7 +17,9 @@
 --      "expr":     <leaf-or-composite>
 --    }
 --
---  Idempotent: ON CONFLICT (org_id, name, version) DO UPDATE.
+--  Idempotent: ON CONFLICT (org_id, name, version) DO NOTHING -- rules are
+--  immutable once they have rule_hits (rules_immutable_after_hits trigger), so a
+--  re-seed must be a no-op; to change a rule, INSERT a new incremented version.
 -- ============================================================
 
 
@@ -75,12 +77,7 @@ VALUES
             {"signal": "auth.from_return_path_match", "op": "eq", "value": false}
         ]}
       }'::jsonb)
-ON CONFLICT (org_id, name, version) DO UPDATE
-    SET description  = EXCLUDED.description,
-        status       = EXCLUDED.status,
-        target       = EXCLUDED.target,
-        score_impact = EXCLUDED.score_impact,
-        logic        = EXCLUDED.logic;
+ON CONFLICT (org_id, name, version) DO NOTHING;
 
 
 -- ============================================================
@@ -146,12 +143,7 @@ VALUES
             {"signal": "reputation.domain_age_days", "op": "lt",  "value": 30}
         ]}
       }'::jsonb)
-ON CONFLICT (org_id, name, version) DO UPDATE
-    SET description  = EXCLUDED.description,
-        status       = EXCLUDED.status,
-        target       = EXCLUDED.target,
-        score_impact = EXCLUDED.score_impact,
-        logic        = EXCLUDED.logic;
+ON CONFLICT (org_id, name, version) DO NOTHING;
 
 
 -- ============================================================
@@ -239,9 +231,4 @@ VALUES
         "category": "structural",
         "expr": {"signal": "structural.encoding_anomaly", "op": "eq", "value": true}
       }'::jsonb)
-ON CONFLICT (org_id, name, version) DO UPDATE
-    SET description  = EXCLUDED.description,
-        status       = EXCLUDED.status,
-        target       = EXCLUDED.target,
-        score_impact = EXCLUDED.score_impact,
-        logic        = EXCLUDED.logic;
+ON CONFLICT (org_id, name, version) DO NOTHING;

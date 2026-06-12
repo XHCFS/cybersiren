@@ -69,7 +69,7 @@ func prefsWith(threshold int, channels ...string) OrgPrefs {
 func newVerdict() contracts.EmailsVerdict {
 	v := contracts.EmailsVerdict{RiskScore: 90, VerdictLabel: "phishing"}
 	v.Meta.OrgID = 7
-	v.Meta.EmailID = 100
+	v.Meta.EmailID = "e100"
 	return v
 }
 

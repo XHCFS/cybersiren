@@ -1,0 +1,8 @@
+{
+  "message": {
+    "data": "eyJlbWFpbEFkZHJlc3MiOiAidmljdGltQGRlbW8tY29ycC5leGFtcGxlIiwgImhpc3RvcnlJZCI6IDIwMDYwfQ==",
+    "messageId": "pubsub-msg-001",
+    "publishTime": "2026-06-10T16:15:01.000Z"
+  },
+  "subscription": "projects/cybersiren-demo/subscriptions/gmail-push-sub"
+}

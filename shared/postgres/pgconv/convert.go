@@ -16,6 +16,7 @@ package pgconv
 import (
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
@@ -79,4 +80,20 @@ func TimestamptzOrNull(t time.Time) pgtype.Timestamptz {
 		return pgtype.Timestamptz{}
 	}
 	return pgtype.Timestamptz{Time: t.UTC(), Valid: true}
+}
+
+// UUIDOrNull parses a canonical UUID string into a pgtype.UUID, mapping the
+// empty string OR an unparseable value to NULL (Valid:false). Use it for an
+// optional logical id (e.g. the UUIDv7 email_id stamped on email_identities):
+// an absent / malformed id must not abort the write, it simply leaves the
+// column NULL so the row is not resolvable by that id.
+func UUIDOrNull(s string) pgtype.UUID {
+	if s == "" {
+		return pgtype.UUID{}
+	}
+	u, err := uuid.Parse(s)
+	if err != nil {
+		return pgtype.UUID{}
+	}
+	return pgtype.UUID{Bytes: u, Valid: true}
 }

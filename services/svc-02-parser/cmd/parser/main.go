@@ -29,7 +29,6 @@ import (
 	"net/mail"
 	"net/netip"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 
@@ -44,6 +43,7 @@ import (
 	"github.com/saif/cybersiren/shared/objectstore"
 	"github.com/saif/cybersiren/shared/postgres/pgconv"
 	"github.com/saif/cybersiren/shared/postgres/repository"
+	"github.com/saif/cybersiren/shared/rfc822"
 	"github.com/saif/cybersiren/shared/svckit"
 )
 
@@ -125,7 +125,7 @@ func (a *parserApp) handle(ctx context.Context, msg kafkaconsumer.Message, deps 
 		deps.Log.Error().Err(err).
 			Int("partition", msg.Partition).
 			Int64("offset", msg.Offset).
-			Int64("email_id", raw.Meta.EmailID).
+			Str("email_id", raw.Meta.EmailID).
 			Msg("malformed emails.raw payload; skipping (offset will commit)")
 		return nil
 	}
@@ -136,7 +136,7 @@ func (a *parserApp) handle(ctx context.Context, msg kafkaconsumer.Message, deps 
 		deps.Log.Error().Err(fmt.Errorf("emails.raw has no org_id")).
 			Int("partition", msg.Partition).
 			Int64("offset", msg.Offset).
-			Int64("email_id", raw.Meta.EmailID).
+			Str("email_id", raw.Meta.EmailID).
 			Msg("emails.raw missing org_id; skipping (offset will commit)")
 		return nil
 	}
@@ -149,7 +149,7 @@ func (a *parserApp) handle(ctx context.Context, msg kafkaconsumer.Message, deps 
 		deps.Log.Error().Err(err).
 			Int("partition", msg.Partition).
 			Int64("offset", msg.Offset).
-			Int64("email_id", raw.Meta.EmailID).
+			Str("email_id", raw.Meta.EmailID).
 			Msg("undecodable raw_rfc822 base64; skipping (offset will commit)")
 		return nil
 	}
@@ -165,7 +165,7 @@ func (a *parserApp) handle(ctx context.Context, msg kafkaconsumer.Message, deps 
 		deps.Log.Warn().Err(err).
 			Int("partition", msg.Partition).
 			Int64("offset", msg.Offset).
-			Int64("email_id", raw.Meta.EmailID).
+			Str("email_id", raw.Meta.EmailID).
 			Msg("unparsable rfc822 message; persisting a degraded parse (no headers, best-effort body)")
 		parsed = degradedParse(rawBytes)
 	}
@@ -202,7 +202,7 @@ func (a *parserApp) handle(ctx context.Context, msg kafkaconsumer.Message, deps 
 
 	a.metrics.processed()
 	deps.Log.Info().
-		Int64("email_id", raw.Meta.EmailID).
+		Str("email_id", raw.Meta.EmailID).
 		Int64("internal_id", key.InternalID).
 		Int("urls", len(parsed.URLs)).
 		Int("attachments", len(parsed.Attachments)).
@@ -301,7 +301,7 @@ func (a *parserApp) publishAll(
 	emailID := raw.Meta.EmailID
 	orgID := raw.Meta.OrgID
 	meta := contracts.NewMetaWithFetched(emailID, orgID, fetchedAt)
-	kafkaKey := []byte(strconv.FormatInt(emailID, 10))
+	kafkaKey := []byte(emailID)
 
 	headersMsg := buildAnalysisHeaders(emailID, key.InternalID, orgID, fetchedAt, parsed, hv)
 
@@ -416,6 +416,7 @@ func buildPersist(
 	return repository.PersistParsedFull{
 		Email:       emailParams,
 		MessageID:   msgID,
+		EmailID:     raw.Meta.EmailID,
 		URLs:        urls,
 		Attachments: atts,
 		Recipients:  recips,
@@ -426,7 +427,8 @@ func buildPersist(
 // AnalysisHeadersMessage, carrying BOTH ids (G5/G17) and the body content (D9 —
 // the parser ships the body, svc-04 computes the structural flags).
 func buildAnalysisHeaders(
-	emailID, internalID, orgID int64,
+	emailID string,
+	internalID, orgID int64,
 	fetchedAt time.Time,
 	parsed *email.ParsedEmail,
 	hv headerView,
@@ -589,9 +591,12 @@ func storageURIAt(uris []string, i int) string {
 
 func messageID(raw contracts.EmailsRaw, h mail.Header) string {
 	if raw.MessageID != "" {
-		return raw.MessageID
+		// svc-01 already canonicalises this, but trim defensively so the
+		// email_identities registry stays canonical even for an older/foreign
+		// producer that forwarded a bracketed id.
+		return rfc822.TrimMessageID(raw.MessageID)
 	}
-	return strings.Trim(h.Get("Message-Id"), "<>")
+	return rfc822.TrimMessageID(h.Get("Message-Id"))
 }
 
 func splitAddress(raw string) (addr, name string) {

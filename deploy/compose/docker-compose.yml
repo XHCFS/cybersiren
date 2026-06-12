@@ -91,7 +91,7 @@ services:
   # Makefile/profile name "kafka" stays meaningful.
   kafka:
     image: redpandadata/redpanda:v24.2.7
-    profiles: ["kafka"]
+    profiles: ["kafka", "demo"]
     container_name: cybersiren-redpanda
     hostname: kafka
     command:
@@ -130,7 +130,7 @@ services:
   # retention/cleanup/compression then exits. Idempotent.
   kafka-init:
     image: redpandadata/redpanda:v24.2.7
-    profiles: ["kafka"]
+    profiles: ["kafka", "demo"]
     container_name: cybersiren-redpanda-init
     depends_on:
       kafka:
@@ -227,21 +227,36 @@ services:
     command:
       - |
         set -e
+        # Migrations run with ON_ERROR_STOP so a real per-statement failure is
+        # surfaced (not silently swallowed). A handful of early migrations are
+        # NOT re-runnable (bare CREATE TYPE/MATERIALIZED VIEW without IF NOT
+        # EXISTS), so on an already-migrated volume they legitimately error with
+        # "already exists" — we tolerate THAT per-file but print a loud WARNING
+        # with the failing file so a genuine schema break is visible in the log
+        # rather than hidden behind a blanket `|| true`.
         echo "Running migrations..."
         for f in /migrations/*.up.sql; do
           echo "  Applying $$(basename $$f)..."
-          psql -f "$$f" 2>&1 || true
+          if ! psql -v ON_ERROR_STOP=1 -f "$$f"; then
+            echo "  WARNING: $$(basename $$f) returned a non-zero status (expected for non-idempotent migrations re-run on an existing volume; investigate if this is a fresh DB)." >&2
+          fi
         done
+        # Seeds are all idempotent (ON CONFLICT DO NOTHING/UPDATE), so
+        # ON_ERROR_STOP=1 is safe on re-run and will FAIL the step loudly if a
+        # seed INSERT is rejected — otherwise a missing demo API key would only
+        # show up later as svc-01 401s and a downstream timeout.
         echo "Seeding organisations..."
-        psql -f /seeds/organisations_seed.sql
+        psql -v ON_ERROR_STOP=1 -f /seeds/organisations_seed.sql
+        echo "Seeding demo API key..."
+        psql -v ON_ERROR_STOP=1 -f /seeds/api_key_demo_seed.sql
         echo "Seeding feeds..."
-        psql -f /seeds/feeds.sql
+        psql -v ON_ERROR_STOP=1 -f /seeds/feeds.sql
         echo "Seeding TI demo data..."
-        psql -f /seeds/ti_demo_seed.sql
+        psql -v ON_ERROR_STOP=1 -f /seeds/ti_demo_seed.sql
         echo "Seeding header rules..."
-        psql -f /seeds/header_rules_demo_seed.sql
+        psql -v ON_ERROR_STOP=1 -f /seeds/header_rules_demo_seed.sql
         echo "Seeding attachment demo data..."
-        psql -f /seeds/attachment_demo_seed.sql
+        psql -v ON_ERROR_STOP=1 -f /seeds/attachment_demo_seed.sql
         echo "Demo seed complete."
     networks:
       - cybersiren
@@ -367,6 +382,37 @@ services:
       CYBERSIREN_HEADER__TIME_DRIFT_HOURS_THRESHOLD: "24"
       CYBERSIREN_HEADER__TYPOSQUAT_MAX_DISTANCE: "2"
       CYBERSIREN_HEADER__SCORING_BLEND: max
+    networks:
+      - cybersiren
+    restart: unless-stopped
+
+  # ── demo-dashboard (standalone, throwaway demo UI) ────────────────────────
+  # NOT a pipeline service. A deletable stand-in for the svc-10 dashboard: it
+  # forwards .eml uploads + Gmail messages to svc-01's /api/v1/scan and consumes
+  # emails.scored / emails.verdict for the per-module breakdown. svc-01 runs
+  # natively (run_pipeline.sh) on the host, so it is reached via host-gateway.
+  # Delete demo/ + this block to remove the demo entirely. UI: http://localhost:8090
+  demo-dashboard:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.demo_dashboard
+    profiles: ["demo"]
+    # No hard depends_on: the dashboard is resilient — its Kafka consumers
+    # reconnect when brokers appear and the UI/forwarding works regardless. This
+    # also lets it come up with just `--profile demo` (kafka is a separate profile).
+    ports:
+      - "8090:8090"
+    environment:
+      DEMO_ADDR: ":8090"
+      KAFKA_BROKERS: kafka:29092
+      SVC01_SCAN_URL: http://host.docker.internal:8081/api/v1/scan
+      DEMO_API_KEY: cs_demokey000000000000000000000DEMO
+      # Optional Gmail "Sign in with Google" — see demo/dashboard/README.md.
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      GOOGLE_REDIRECT_URL: ${GOOGLE_REDIRECT_URL:-http://localhost:8090/oauth/callback}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
       - cybersiren
     restart: unless-stopped

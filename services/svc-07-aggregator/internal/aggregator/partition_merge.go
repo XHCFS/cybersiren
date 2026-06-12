@@ -15,8 +15,11 @@ import (
 const fieldPartitionFetchedAt = "__partition_fetched_at"
 
 // Valkey field capturing emails.internal_id — the DB BIGSERIAL surrogate svc-02
-// assigns and forwards on scores.header. First non-zero wins (HSETNX); without
-// it emails.scored falls back to email_id (interim two-id model, no invariant).
+// assigns and forwards on scores.header. First non-zero wins (HSETNX). There is
+// NO email_id fallback: email_id is a UUIDv7 string and can NOT substitute for
+// the int64 internal_id (LANDMINE B). When this field is never set the resolved
+// internal_id stays 0 ("unresolved"); an emails.scored with internal_id=0 cannot
+// be addressed to a DB verdict row and MUST NOT be published.
 const fieldPartitionInternalID = "__partition_internal_id"
 
 // mergePartitionFetchedAt records emails.fetched_at on the aggregation hash
@@ -95,11 +98,14 @@ func extractPartitionInternalID(topic string, raw []byte) int64 {
 // internal_id is the DB BIGSERIAL surrogate forwarded from scores.header; it is
 // distinct from email_id (no invariant). fetched_at must be supplied by upstream
 // producers and captured in __partition_fetched_at.
-func resolvePartitionKeys(emailID int64, state map[string]string) (internalID int64, fetchedAt time.Time, err error) {
+//
+// LANDMINE B: email_id is a UUIDv7 string and can NOT substitute for the int64
+// internal_id. When no upstream carried __partition_internal_id we return
+// internalID=0 (emails.scored Validate downstream rejects a zero key) rather
+// than falling back to email_id.
+func resolvePartitionKeys(emailID string, state map[string]string) (internalID int64, fetchedAt time.Time, err error) {
 	// Prefer the DB-assigned internal_id forwarded from scores.header (svc-02 →
-	// analysis.headers → svc-04). Fall back to email_id only when no upstream
-	// carried it (interim, before internal_id propagation is fully wired).
-	internalID = emailID
+	// analysis.headers → svc-04). Stays 0 when no upstream carried it.
 	if v := state[fieldPartitionInternalID]; v != "" {
 		if parsed, perr := strconv.ParseInt(v, 10, 64); perr == nil && parsed != 0 {
 			internalID = parsed

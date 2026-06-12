@@ -470,7 +470,7 @@ type ApiKey struct {
 	OrgID  int64       `db:"org_id" json:"org_id"`
 	UserID pgtype.Int8 `db:"user_id" json:"user_id"`
 	Name   string      `db:"name" json:"name"`
-	// First 8 characters of the raw API key, stored for identification purposes (e.g. "cs_live_ab12").  The full key is never stored — only key_hash is persisted for authentication.  Constraint chk_api_keys_key_prefix_length enforces exactly 8 characters.
+	// Leading lookup fragment of the raw API key, produced by shared/auth KeyManager.LookupPrefix: the config prefix (e.g. "cs_") plus a bounded slice of the random suffix, always omitting at least the final 8 random characters so the stored prefix never reconstructs the full key. The full key is never stored — only key_hash (salted bcrypt) is persisted. Constraint chk_api_keys_key_prefix_length bounds it to 4..32 characters.
 	KeyPrefix  string             `db:"key_prefix" json:"key_prefix"`
 	KeyHash    string             `db:"key_hash" json:"key_hash"`
 	Scopes     []string           `db:"scopes" json:"scopes"`
@@ -628,6 +628,8 @@ type EmailIdentity struct {
 	FetchedAt pgtype.Timestamptz `db:"fetched_at" json:"fetched_at"`
 	// Timestamp when this identity row was first inserted. Corresponds to the ingestion time of the canonical email copy.
 	CreatedAt pgtype.Timestamptz `db:"created_at" json:"created_at"`
+	// The logical UUIDv7 email_id (G5/G17) assigned by svc-01 and carried on every Kafka message / Redis key for this email. Stamped here by svc-02 when it registers the identity so a holder of only the opaque email_id can resolve the canonical (internal_id, fetched_at) partition key. NULL for rows registered before migration 035 and for NULL-message_id emails that are never registered — such emails are not resolvable by email_id (best-effort mapping, not a dedup invariant).
+	EmailID pgtype.UUID `db:"email_id" json:"email_id"`
 }
 
 type EmailRecipient struct {

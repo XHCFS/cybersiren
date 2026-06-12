@@ -1,0 +1,26 @@
+{
+  "history": [
+    {
+      "id": "20055",
+      "messages": [
+        {
+          "id": "1929aabbccddeeff",
+          "threadId": "1929aa00"
+        }
+      ],
+      "messagesAdded": [
+        {
+          "message": {
+            "id": "1929aabbccddeeff",
+            "threadId": "1929aa00",
+            "labelIds": [
+              "INBOX",
+              "UNREAD"
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "historyId": "20060"
+}
