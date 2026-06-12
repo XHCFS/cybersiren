@@ -31,25 +31,40 @@ DEMO_PID="$LOGDIR/demo-dashboard.pid"
 
 step() { printf '\n\033[1;36m==> %s\033[0m\n' "$*"; }
 
+# wait_healthy blocks until a container reports healthy (or running, if it has no
+# healthcheck), up to N seconds.
+wait_healthy() {
+  local name="$1" tries="${2:-90}" st
+  for ((i = 0; i < tries; i++)); do
+    st=$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$name" 2>/dev/null || echo "")
+    case "$st" in healthy | running) return 0 ;; esac
+    sleep 1
+  done
+  echo "timed out waiting for $name to be healthy (status: ${st:-unknown})" >&2
+  return 1
+}
+
 up() {
   mkdir -p "$LOGDIR/bin"
 
-  step "[1/6] Checking the NLP model is present"
+  step "[1/5] Checking the NLP model is present"
   make check-nlp-model
 
-  step "[2/6] Resetting volumes for a clean database"
+  step "[2/5] Resetting volumes for a clean database"
   make down-v >/dev/null 2>&1 || true
 
-  step "[3/6] Starting infra (postgres + valkey + kafka)"
-  make up-infra
+  step "[3/5] Starting infra + NLP sidecar (~30s)"
+  # No `--wait`: the one-shot redpanda-init/kafka-init containers exit(0), and
+  # `up --wait` treats that as a failure (the reason `make smoke` drops it too).
+  # We wait for postgres ourselves (db-setup needs it); run_pipeline's preflight
+  # blocks on broker/NLP/DB readiness for the rest.
+  $DC --profile postgres --profile valkey --profile kafka --profile nlp-inference up -d
+  wait_healthy cybersiren-postgres 90
 
-  step "[4/6] Starting the NLP inference sidecar"
-  $DC --profile nlp-inference up -d
-
-  step "[5/6] Migrating + seeding the database"
+  step "[4/5] Migrating + seeding the database"
   make db-setup
 
-  step "[6/6] Starting the native pipeline + demo dashboard"
+  step "[5/5] Starting the native pipeline + demo dashboard"
   ./scripts/dev/run_pipeline.sh start
   go build -o "$DEMO_BIN" ./demo/dashboard
   "$DEMO_BIN" >"$DEMO_LOG" 2>&1 &
