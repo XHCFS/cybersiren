@@ -88,10 +88,12 @@ up() {
   sleep 2
 
   printf '\n\033[1;32m  ✅ Demo ready  →  http://localhost:8090\033[0m\n'
-  if [ -n "${GOOGLE_CLIENT_ID:-}" ]; then
+  # Ask the running demo itself (it loads demo/dashboard/.env; the shell env alone
+  # would miss creds set only in that file).
+  if curl -fsS "http://localhost${DEMO_ADDR:-:8090}/api/gmail/status" 2>/dev/null | grep -q '"configured":true'; then
     printf '     Gmail sign-in: ENABLED\n'
   else
-    printf '     Gmail sign-in: OFF (export GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET to enable)\n'
+    printf '     Gmail sign-in: OFF (set GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET in demo/dashboard/.env)\n'
   fi
   printf '     Dashboard log: %s\n     Stop everything:  make demo-down\n\n' "$DEMO_LOG"
 }
