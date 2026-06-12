@@ -2,6 +2,7 @@ package gmail
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"sync"
@@ -10,6 +11,7 @@ import (
 	"github.com/rs/zerolog"
 
 	"github.com/saif/cybersiren/services/svc-01-ingestion/internal/source"
+	"github.com/saif/cybersiren/shared/rfc822"
 )
 
 // adapterName labels emails.raw rows ingested over Gmail (matches the spec's
@@ -104,9 +106,13 @@ func (a *Adapter) Watch(ctx context.Context) (WatchResponse, error) {
 		return WatchResponse{}, fmt.Errorf("gmail watch: %w", err)
 	}
 	// Seed the cursor only if we don't already have one — re-watching must not
-	// rewind past mail we've already ingested.
+	// rewind past mail we've already ingested. A Get error must not silently
+	// skip seeding the watch baseline (a Valkey blip would otherwise leave us
+	// un-seeded); log it, but still never rewind an existing non-empty cursor.
 	cur, gerr := a.history.Get(ctx, a.opts.OrgID)
-	if gerr == nil && cur == "" && resp.HistoryID != "" {
+	if gerr != nil {
+		a.log.Warn().Err(gerr).Msg("gmail: read history cursor failed during watch seed; skipping seed this round")
+	} else if cur == "" && resp.HistoryID != "" {
 		if serr := a.history.Set(ctx, a.opts.OrgID, resp.HistoryID); serr != nil {
 			a.log.Warn().Err(serr).Msg("gmail: failed to seed history cursor")
 		}
@@ -117,6 +123,37 @@ func (a *Adapter) Watch(ctx context.Context) (WatchResponse, error) {
 		Str("watch_topic", a.opts.WatchTopic).
 		Msg("gmail watch registered (renew within 7 days)")
 	return resp, nil
+}
+
+// EnsureSeeded guarantees a history cursor exists before the poll loop runs.
+// Watch() seeds the cursor for push deployments, but a poll-only deployment
+// (push_enabled=false, poll_enabled=true — the no-public-webhook case
+// GmailConfig.Validate permits) has no watch() to provide a baseline, so
+// syncHistory would forever hit the cursor=="" guard and ingest nothing. When
+// no cursor is stored, EnsureSeeded fetches the mailbox's current historyId via
+// users.getProfile and stores it, so poll — like watch — ingests only mail
+// arriving AFTER startup. It is a no-op when a cursor already exists, so calling
+// it alongside Watch() (which may have already seeded) is safe.
+func (a *Adapter) EnsureSeeded(ctx context.Context) error {
+	cur, err := a.history.Get(ctx, a.opts.OrgID)
+	if err != nil {
+		return fmt.Errorf("read history cursor: %w", err)
+	}
+	if cur != "" {
+		return nil // already seeded (by Watch or a prior run); never rewind.
+	}
+	historyID, err := a.gmail.getProfile(ctx)
+	if err != nil {
+		return fmt.Errorf("seed history cursor via getProfile: %w", err)
+	}
+	if historyID == "" {
+		return fmt.Errorf("seed history cursor: getProfile returned an empty historyId")
+	}
+	if err := a.history.Set(ctx, a.opts.OrgID, historyID); err != nil {
+		return fmt.Errorf("persist seeded history cursor: %w", err)
+	}
+	a.log.Info().Str("history_id", historyID).Msg("gmail: seeded history cursor from mailbox profile (poll baseline)")
+	return nil
 }
 
 // Stop cancels the active watch (best-effort; used on shutdown).
@@ -177,28 +214,64 @@ func (a *Adapter) syncHistory(ctx context.Context) error {
 		return fmt.Errorf("read history cursor: %w", err)
 	}
 	if cursor == "" {
-		// No baseline yet — a watch() must run first to seed it. Without a
-		// startHistoryId, history.list cannot delta-sync, so skip quietly.
-		a.log.Debug().Msg("gmail: no history cursor yet; skipping sync (run Watch first)")
+		// No baseline yet. A push deployment seeds via watch(), but a poll-only
+		// deployment has none — so self-heal by seeding from the mailbox profile
+		// rather than bailing forever. (Without a startHistoryId, history.list
+		// cannot delta-sync.) After seeding there is by construction no backlog
+		// to walk this tick (we seed to "now"), so return and let the next tick
+		// pick up new mail.
+		if serr := a.EnsureSeeded(ctx); serr != nil {
+			return fmt.Errorf("seed history cursor before sync: %w", serr)
+		}
+		a.log.Debug().Msg("gmail: seeded history cursor on first sync; next tick will delta-sync")
 		return nil
 	}
 
 	msgIDs, latest, err := a.gmail.listHistory(ctx, cursor, a.opts.LabelIDs)
 	if err != nil {
+		// startHistoryId aged out of Gmail's ~1-week history retention. A delta
+		// sync is impossible; per Gmail's documented full-sync requirement we
+		// re-seed to the mailbox's current historyId to un-stick the pipeline.
+		// Mail that arrived during the outage gap is unavoidably missed — but
+		// that is strictly better than a cursor stuck forever (silent halt).
+		if errors.Is(err, errHistoryTooOld) {
+			fresh, perr := a.gmail.getProfile(ctx)
+			if perr != nil {
+				return fmt.Errorf("history too old; re-seed via getProfile: %w", perr)
+			}
+			if fresh == "" {
+				return fmt.Errorf("history too old; getProfile returned an empty historyId")
+			}
+			if serr := a.history.Set(ctx, a.opts.OrgID, fresh); serr != nil {
+				return fmt.Errorf("history too old; persist re-seeded cursor: %w", serr)
+			}
+			a.log.Warn().
+				Str("old_cursor", cursor).
+				Str("new_cursor", fresh).
+				Msg("gmail: history too old (404); re-seeded cursor — mail in the outage gap is missed per Gmail's full-sync requirement")
+			return nil
+		}
 		return fmt.Errorf("list history: %w", err)
 	}
 
+	failed := false
 	for _, id := range msgIDs {
 		if err := a.processMessage(ctx, id); err != nil {
-			// A single bad message must not stall the whole window; log and
-			// continue. The cursor only advances past it once we persist
-			// `latest`, but a transient fetch error here means we'd reprocess
-			// it next tick — dedup makes that safe.
-			a.log.Warn().Err(err).Str("gmail_message_id", id).Msg("gmail: message ingest failed; will retry next sync")
+			// A single bad message must not stall the whole window: log and
+			// continue the loop. But we must NOT advance the cursor past it,
+			// or it is silently dropped forever (never re-listed).
+			failed = true
+			a.log.Warn().Err(err).Str("gmail_message_id", id).Msg("gmail: message ingest failed; cursor held so window re-walks next sync")
 		}
 	}
 
-	if latest != "" && latest != cursor {
+	// Advance the cursor only when every message in the window succeeded. On a
+	// failure we leave the cursor so the whole window re-walks next tick; dedup
+	// suppresses re-publishing the ones that already succeeded. A *transient*
+	// failure thus recovers automatically; a *permanently* poison message
+	// re-walks until the deferred shared-consumer DLQ work (batch 8a-v) lands —
+	// acceptable versus silent loss.
+	if !failed && latest != "" && latest != cursor {
 		if err := a.history.Set(ctx, a.opts.OrgID, latest); err != nil {
 			return fmt.Errorf("persist history cursor: %w", err)
 		}
@@ -220,7 +293,7 @@ func (a *Adapter) processMessage(ctx context.Context, gmailMessageID string) err
 
 	req := source.IngestRequest{
 		Raw:           raw,
-		MessageID:     messageIDFromRaw(raw),
+		MessageID:     rfc822.MessageID(raw),
 		SourceAdapter: adapterName,
 	}
 	// APIKeyID is 0: Gmail mail is not API-key authenticated. The org is bound

@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -12,11 +13,14 @@ import (
 	sharedauth "github.com/saif/cybersiren/shared/auth"
 )
 
-// fakeKeys is an in-memory KeyReader keyed by lookup prefix.
+// fakeKeys is an in-memory KeyReader keyed by lookup prefix. last_used_at is now
+// touched on a detached goroutine, so touched is mutex-guarded to stay race-free.
 type fakeKeys struct {
-	rows    map[string][]APIKeyRow
+	rows   map[string][]APIKeyRow
+	getErr error
+
+	mu      sync.Mutex
 	touched []int64
-	getErr  error
 }
 
 func (f *fakeKeys) GetAPIKeyByPrefix(_ context.Context, keyPrefix string) ([]APIKeyRow, error) {
@@ -27,8 +31,31 @@ func (f *fakeKeys) GetAPIKeyByPrefix(_ context.Context, keyPrefix string) ([]API
 }
 
 func (f *fakeKeys) TouchAPIKeyLastUsed(_ context.Context, id int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.touched = append(f.touched, id)
 	return nil
+}
+
+// touchedIDs returns a snapshot of the keys touched so far.
+func (f *fakeKeys) touchedIDs() []int64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]int64(nil), f.touched...)
+}
+
+// waitForTouch polls up to a short deadline for the async last_used_at write to
+// land. It returns the snapshot; a timeout returns whatever was seen.
+func (f *fakeKeys) waitForTouch(t *testing.T) []int64 {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if got := f.touchedIDs(); len(got) > 0 {
+			return got
+		}
+		time.Sleep(time.Millisecond)
+	}
+	return f.touchedIDs()
 }
 
 // mint produces a valid key + its stored prefix/hash for org via the KeyManager.
@@ -83,8 +110,11 @@ func TestMiddleware_ValidKey_BindsOrgFromKey(t *testing.T) {
 	if seen.OrgID != 7 || seen.APIKeyID != 55 {
 		t.Errorf("principal = %+v, want org 7 / key 55", seen)
 	}
-	if len(keys.touched) != 1 || keys.touched[0] != 55 {
-		t.Errorf("last_used_at not touched for the authenticating key: %v", keys.touched)
+	// last_used_at is now touched on a detached goroutine; the auth success above
+	// is the load-bearing assertion. Wait briefly for the async write to confirm
+	// it still targets the authenticating key.
+	if touched := keys.waitForTouch(t); len(touched) != 1 || touched[0] != 55 {
+		t.Errorf("last_used_at not touched for the authenticating key: %v", touched)
 	}
 }
 

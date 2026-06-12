@@ -89,23 +89,22 @@ func (a *Adapter) handlePush(w http.ResponseWriter, r *http.Request) {
 
 // verifyPush authenticates an inbound push request. Two mechanisms, checked in
 // order; the request passes if EITHER configured check passes (and is rejected
-// only when a configured check fails):
+// when a configured check fails OR when nothing is configured at all):
 //
 //  1. Shared-secret token: the push subscription endpoint is registered as
 //     .../gmail/push?token=<secret>; we constant-time-compare the query token.
 //  2. OIDC bearer: Google signs the push with a Google-issued OIDC JWT whose
 //     `aud` claim is the configured PushAudience. We verify the audience claim
-//     here; full signature verification is documented as a hardening step in the
-//     runbook (it requires fetching Google's JWKS — out of scope for the demo,
-//     and the token check already gates the endpoint).
+//     here; full signature verification (fetch Google's JWKS, validate
+//     iss/exp/signature) is a documented hardening step left as-is for now.
 //
-// When neither is configured the endpoint is open (the runbook strongly
-// recommends setting at least the token).
+// The /gmail/push route is bound OUTSIDE the API-key auth middleware, so this is
+// the only gate on it. We therefore fail CLOSED: when neither a token nor an
+// audience is configured we reject every caller (an open public endpoint that
+// drives Gmail API traffic on demand is not acceptable). The operator is warned
+// at startup (see main.go) that the endpoint rejects until one is set.
 func (a *Adapter) verifyPush(r *http.Request) bool {
-	checkedSomething := false
-
 	if a.opts.PushToken != "" {
-		checkedSomething = true
 		got := r.URL.Query().Get("token")
 		if subtle.ConstantTimeCompare([]byte(got), []byte(a.opts.PushToken)) == 1 {
 			return true
@@ -113,16 +112,15 @@ func (a *Adapter) verifyPush(r *http.Request) bool {
 	}
 
 	if a.opts.PushAudience != "" {
-		checkedSomething = true
 		if aud, ok := bearerAudience(r.Header.Get("Authorization")); ok &&
 			subtle.ConstantTimeCompare([]byte(aud), []byte(a.opts.PushAudience)) == 1 {
 			return true
 		}
 	}
 
-	// No verification configured → accept (open endpoint). If something WAS
-	// configured and we reached here, every configured check failed → reject.
-	return !checkedSomething
+	// Fail closed: nothing configured → reject (not an open endpoint). Something
+	// configured but we reached here → every configured check failed → reject.
+	return false
 }
 
 // bearerAudience extracts the unverified `aud` claim from a "Bearer <jwt>"

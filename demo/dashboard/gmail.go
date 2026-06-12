@@ -221,16 +221,22 @@ func (g *gmailConnector) pollOnce(ctx context.Context) {
 	for i, id := range ids {
 		g.mu.Lock()
 		_, dup := g.seen[id]
-		g.seen[id] = struct{}{}
 		g.mu.Unlock()
 		if dup {
 			continue
 		}
 		// On the first poll, only scan the few most-recent messages so we give
-		// immediate feedback without bulk-scanning the whole recent inbox.
+		// immediate feedback without bulk-scanning the whole recent inbox. The
+		// skipped messages are deliberately left un-"seen" so a later poll scans
+		// every genuinely-new arrival exactly once.
 		if !baselined && i >= baselineForward {
 			continue
 		}
+		// Mark as seen only once we commit to scanning it, so the baseline skip
+		// above does not permanently suppress messages it merely deferred.
+		g.mu.Lock()
+		g.seen[id] = struct{}{}
+		g.mu.Unlock()
 		raw, err := g.getRaw(ctx, access, id)
 		if err != nil {
 			g.log.Error().Err(err).Str("msg", id).Msg("gmail: fetch raw failed")

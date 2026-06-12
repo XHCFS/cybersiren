@@ -31,10 +31,13 @@ func (f *fakeDedup) Claim(_ context.Context, _ int64, _ string) (bool, error) {
 	return f.fresh, nil
 }
 
+func (f *fakeDedup) Release(_ context.Context, _ int64, _ string) error { return nil }
+
 // unlimitedQuota always allows.
 type fakeQuota struct{}
 
 func (fakeQuota) Allow(_ context.Context, _ int64, _ *int32) (bool, error) { return true, nil }
+func (fakeQuota) Refund(_ context.Context, _ int64, _ *int32) error        { return nil }
 
 // nilOrg reports an unlimited monthly limit.
 type nilOrg struct{}
@@ -108,6 +111,15 @@ type gmailFixtureServer struct {
 	mu        sync.Mutex
 	hits      map[string]int
 	stopCalls int
+	// historyStatus, when non-zero, makes history.list reply with that HTTP
+	// status instead of the recorded 200 page (e.g. 404 → "history too old").
+	historyStatus int
+	// messageStatus, when non-zero, makes messages.get reply with that HTTP
+	// status instead of the recorded raw message (used to fail processMessage).
+	messageStatus int
+	// profileHistoryID overrides the historyId returned by users.getProfile;
+	// empty falls back to the recorded profile.json fixture (30000).
+	profileHistoryID string
 }
 
 func newGmailFixtureServer(t *testing.T) *gmailFixtureServer {
@@ -127,8 +139,28 @@ func newGmailFixtureServer(t *testing.T) *gmailFixtureServer {
 	mux.HandleFunc("/gmail/v1/users/me/history", func(w http.ResponseWriter, r *http.Request) {
 		g.assertBearer(r)
 		g.record("history.list")
+		g.mu.Lock()
+		status := g.historyStatus
+		g.mu.Unlock()
+		if status != 0 {
+			http.Error(w, `{"error":{"code":404,"message":"Requested entity was not found."}}`, status)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write(readFixture(t, "history_list.json"))
+	})
+	mux.HandleFunc("/gmail/v1/users/me/profile", func(w http.ResponseWriter, r *http.Request) {
+		g.assertBearer(r)
+		g.record("profile")
+		g.mu.Lock()
+		override := g.profileHistoryID
+		g.mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		if override != "" {
+			_, _ = w.Write([]byte(`{"emailAddress":"victim@demo-corp.example","historyId":"` + override + `"}`))
+			return
+		}
+		_, _ = w.Write(readFixture(t, "profile.json"))
 	})
 	mux.HandleFunc("/gmail/v1/users/me/watch", func(w http.ResponseWriter, r *http.Request) {
 		g.assertBearer(r)
@@ -147,6 +179,13 @@ func newGmailFixtureServer(t *testing.T) *gmailFixtureServer {
 	mux.HandleFunc("/gmail/v1/users/me/messages/", func(w http.ResponseWriter, r *http.Request) {
 		g.assertBearer(r)
 		g.record("messages.get")
+		g.mu.Lock()
+		status := g.messageStatus
+		g.mu.Unlock()
+		if status != 0 {
+			http.Error(w, `{"error":{"code":500,"message":"backend error"}}`, status)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write(readFixture(t, "message_raw.json"))
 	})

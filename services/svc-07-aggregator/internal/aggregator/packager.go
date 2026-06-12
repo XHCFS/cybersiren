@@ -145,15 +145,17 @@ func completionStatus(state map[string]string) (complete, hasPlan bool) {
 // two separate Valkey ops. A concurrent handler for another component can read a
 // state snapshot in that window — scores.header field present (so the bucket
 // looks complete) but __partition_internal_id not yet visible — and would
-// publish with the email_id fallback, mis-keying the verdict off the parser row.
+// resolve internal_id=0, producing an unaddressable emails.scored (there is NO
+// email_id fallback — LANDMINE B) that the producer must then drop.
 //
 // We wait only when scores.header is present AND carried a non-zero internal_id
 // but the partition field is not yet set: the merge is just lagging and the
 // scores.header handler (or a #190 redelivery if it errored) will complete it.
 // A scores.header that carried internal_id==0 (degraded upstream) is "never
-// coming", so we do NOT wait — the email_id fallback stands. The globally-last
-// completing handler always observes the merged id, so this never deadlocks; the
-// timeout sweeper is the backstop regardless.
+// coming", so we do NOT wait — the resolved internal_id stays 0 and the producer
+// drops the message (publishAndCleanup logs+skips; svc-08 cannot key off it).
+// The globally-last completing handler always observes the merged id, so this
+// never deadlocks; the timeout sweeper is the backstop regardless.
 func internalIDPending(state map[string]string) bool {
 	if state[fieldPartitionInternalID] != "" {
 		return false

@@ -7,6 +7,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/rs/zerolog"
+
 	contracts "github.com/saif/cybersiren/shared/contracts/kafka"
 )
 
@@ -44,14 +46,24 @@ type store struct {
 	limit int
 	file  string // JSON persistence path ("" = ephemeral / no persistence)
 	dirty bool
+	log   zerolog.Logger // flush diagnostics; defaults to a no-op logger
 }
 
 func newStore(limit int, file string) *store {
 	if limit <= 0 {
 		limit = 200
 	}
-	s := &store{byID: make(map[string]*scan), limit: limit, file: file}
+	s := &store{byID: make(map[string]*scan), limit: limit, file: file, log: zerolog.Nop()}
 	s.load()
+	return s
+}
+
+// withLogger attaches a logger for flush diagnostics, returning the store for
+// chaining. Optional: the store defaults to a no-op logger.
+func (s *store) withLogger(log zerolog.Logger) *store {
+	s.mu.Lock()
+	s.log = log
+	s.mu.Unlock()
 	return s
 }
 
@@ -94,15 +106,28 @@ func (s *store) flush() {
 		return
 	}
 	b, err := json.Marshal(persistedStore{ByID: s.byID, Feed: s.feed})
-	s.dirty = false
 	s.mu.Unlock()
 	if err != nil {
+		// Marshalling a snapshot of the store should not fail in practice; leave
+		// dirty set so the next tick retries.
+		s.log.Error().Err(err).Msg("store: marshal snapshot failed")
 		return
 	}
+	// Write to a temp file then rename so a reader never sees a half-written
+	// snapshot. Only clear the dirty flag once the snapshot is durably in place;
+	// on any failure we keep dirty=true so the next flush tick retries.
 	tmp := s.file + ".tmp"
-	if os.WriteFile(tmp, b, 0o600) == nil {
-		_ = os.Rename(tmp, s.file)
+	if err := os.WriteFile(tmp, b, 0o600); err != nil {
+		s.log.Error().Err(err).Str("file", tmp).Msg("store: write snapshot failed")
+		return
 	}
+	if err := os.Rename(tmp, s.file); err != nil {
+		s.log.Error().Err(err).Str("file", s.file).Msg("store: rename snapshot failed")
+		return
+	}
+	s.mu.Lock()
+	s.dirty = false
+	s.mu.Unlock()
 }
 
 // runFlusher persists the store every couple seconds while dirty, with a final

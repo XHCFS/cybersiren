@@ -78,14 +78,34 @@ func (a *Authenticator) Middleware(next http.Handler) http.Handler {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-		// Best-effort: a failure to record last_used_at must not reject the
-		// request (the auth decision already stands).
-		if touchErr := a.keys.TouchAPIKeyLastUsed(r.Context(), principal.APIKeyID); touchErr != nil {
-			a.log.Warn().Err(touchErr).Int64("api_key_id", principal.APIKeyID).
-				Msg("failed to touch api_keys.last_used_at")
-		}
+		// Best-effort AND non-blocking: last_used_at is bookkeeping, so it must
+		// neither reject the request nor sit on the hot path waiting for a DB
+		// round-trip. Fire it on a detached context (so it survives the request
+		// returning) bounded by a short timeout; a slow or failed update only
+		// logs.
+		a.touchLastUsedAsync(r.Context(), principal.APIKeyID)
 		next.ServeHTTP(w, r.WithContext(NewContext(r.Context(), principal)))
 	})
+}
+
+// touchLastUsedTimeout bounds the detached last_used_at write so a stuck DB
+// cannot leak goroutines indefinitely.
+const touchLastUsedTimeout = 5 * time.Second
+
+// touchLastUsedAsync records api_keys.last_used_at off the request's hot path.
+// It uses context.WithoutCancel so the write is not aborted when the request
+// context is cancelled (the response has already been sent), bounded by a short
+// timeout. Best-effort: any error only logs.
+func (a *Authenticator) touchLastUsedAsync(reqCtx context.Context, apiKeyID int64) {
+	ctx := context.WithoutCancel(reqCtx)
+	go func() {
+		ctx, cancel := context.WithTimeout(ctx, touchLastUsedTimeout)
+		defer cancel()
+		if err := a.keys.TouchAPIKeyLastUsed(ctx, apiKeyID); err != nil {
+			a.log.Warn().Err(err).Int64("api_key_id", apiKeyID).
+				Msg("failed to touch api_keys.last_used_at")
+		}
+	}()
 }
 
 // NewContext binds a Principal onto ctx (read via FromContext). The middleware

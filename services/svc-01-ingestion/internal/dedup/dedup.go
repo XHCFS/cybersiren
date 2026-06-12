@@ -20,10 +20,12 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/rs/zerolog/log"
 	valkeygo "github.com/valkey-io/valkey-go"
 
 	db "github.com/saif/cybersiren/db/sqlc"
 	"github.com/saif/cybersiren/shared/postgres/repository"
+	sharedvalkey "github.com/saif/cybersiren/shared/valkey"
 )
 
 // ClaimTTLSeconds is the dedup window: 7 days, per the spec Redis key table
@@ -56,21 +58,17 @@ func (d *Deduper) Claim(ctx context.Context, orgID int64, messageID string) (boo
 	// Primary: atomic Valkey claim. SET key "1" NX EX ttl — the first writer in
 	// the window gets OK (new), subsequent writers get nil (duplicate). The TTL
 	// is armed in the same command, so a crashed round-trip can never leave a
-	// key without expiry (mirrors svc-09 store.go).
+	// key without expiry (mirrors svc-09 store.go). The shared primitive returns
+	// claimed=true/new, claimed=false/nil-err=duplicate, and a non-nil error for
+	// a real Valkey failure — on which we fall through to the DB read fallback
+	// rather than fail the ingest on a cache blip.
 	if d.valkey != nil {
 		key := claimKey(orgID, messageID)
-		_, err := d.valkey.Do(ctx,
-			d.valkey.B().Set().Key(key).Value("1").Nx().ExSeconds(ClaimTTLSeconds).Build(),
-		).ToString()
-		switch {
-		case err == nil:
-			return true, nil // claimed → new
-		case valkeygo.IsValkeyNil(err):
-			return false, nil // key already present → duplicate
-		default:
-			// Valkey error: fall through to the DB read fallback rather than
-			// fail the ingest on a cache blip.
+		claimed, err := sharedvalkey.Claim(ctx, d.valkey, key, ClaimTTLSeconds)
+		if err == nil {
+			return claimed, nil // claimed→new, !claimed→duplicate
 		}
+		// Valkey error: fall through to the DB read fallback.
 	}
 
 	// Fallback: read the email_identities registry under the org GUC. A present
@@ -100,9 +98,34 @@ func (d *Deduper) dbFallback(ctx context.Context, orgID int64, messageID string)
 		}
 	})
 	if err != nil {
-		return false, fmt.Errorf("dedup db fallback: %w", err)
+		// Fail OPEN: on a DB read error we cannot prove this is a duplicate, and
+		// the package contract is "better to publish than drop a real email —
+		// svc-02's ON CONFLICT backstops". Treat the email as not-a-known-
+		// duplicate (fresh → publish) and log, rather than failing the ingest.
+		log.Warn().Err(err).Int64("org_id", orgID).Str("message_id", messageID).
+			Msg("dedup db fallback failed; failing open (treating as fresh)")
+		return true, nil
 	}
 	return !seen, nil
+}
+
+// Release drops the Valkey claim for (orgID, messageID) so a request that
+// claimed but then failed to publish does not suppress the client's retry for
+// the full 7-day window. It is best-effort: a no-op when messageID is empty or
+// Valkey is unavailable, and a DEL error is logged but never surfaced (the
+// claim's TTL will eventually evict it regardless). It deliberately does NOT
+// touch the DB — svc-02 owns the email_identities registry; releasing a claim
+// only undoes svc-01's own in-memory dedup window.
+func (d *Deduper) Release(ctx context.Context, orgID int64, messageID string) error {
+	if messageID == "" || d.valkey == nil {
+		return nil
+	}
+	key := claimKey(orgID, messageID)
+	if err := sharedvalkey.Release(ctx, d.valkey, key); err != nil {
+		log.Warn().Err(err).Int64("org_id", orgID).Str("message_id", messageID).
+			Msg("dedup claim release failed (best-effort; TTL will evict)")
+	}
+	return nil
 }
 
 // claimKey builds the dedup:{org_id}:{message_id} Valkey key.

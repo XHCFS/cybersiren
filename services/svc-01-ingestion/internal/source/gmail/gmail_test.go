@@ -147,18 +147,152 @@ func TestPollTriggersIngest(t *testing.T) {
 	}
 }
 
-// TestSyncNoCursor_NoOp asserts a sync without a seeded cursor does nothing
-// (history.list needs a startHistoryId — a watch() must seed it first).
-func TestSyncNoCursor_NoOp(t *testing.T) {
+// TestSyncNoCursor_SelfSeeds asserts a sync without a seeded cursor self-heals
+// by seeding from the mailbox profile (poll-only deployments have no watch() to
+// seed it), then returns without walking history or publishing — the next tick
+// delta-syncs from the freshly seeded baseline. This is the poll-only fix:
+// previously a missing cursor meant "ingest nothing forever".
+func TestSyncNoCursor_SelfSeeds(t *testing.T) {
 	srv := newGmailFixtureServer(t)
 	pub := &recordingPublisher{}
-	a := newAdapter(t, srv, pub, &fakeDedup{fresh: true}, NewMemoryHistoryStore())
+	hist := NewMemoryHistoryStore()
+	a := newAdapter(t, srv, pub, &fakeDedup{fresh: true}, hist)
 
 	if err := a.syncHistory(context.Background()); err != nil {
-		t.Fatalf("syncHistory with no cursor should be a no-op, got: %v", err)
+		t.Fatalf("syncHistory with no cursor should self-seed, got: %v", err)
 	}
+	// No mail ingested this tick (we seed to "now"), and no history walked.
 	if pub.count() != 0 || srv.hitCount("history.list") != 0 {
-		t.Error("no cursor → no history walk and no publish")
+		t.Error("first sync with no cursor → seed only; no history walk, no publish")
+	}
+	// The cursor is now seeded from getProfile (profile.json historyId=30000).
+	if srv.hitCount("profile") != 1 {
+		t.Errorf("getProfile hits = %d, want 1 (seeding)", srv.hitCount("profile"))
+	}
+	cur, _ := hist.Get(context.Background(), testOrgID)
+	if cur != "30000" {
+		t.Errorf("cursor seeded to %q, want 30000 from getProfile", cur)
+	}
+}
+
+// TestEnsureSeeded_PollOnlySeedsFromProfile asserts the poll-only fix:
+// EnsureSeeded fetches the mailbox baseline via getProfile and stores it when no
+// cursor exists, and is a no-op (no getProfile, no rewind) when one already does.
+func TestEnsureSeeded_PollOnlySeedsFromProfile(t *testing.T) {
+	srv := newGmailFixtureServer(t)
+	hist := NewMemoryHistoryStore()
+	a := newAdapter(t, srv, &recordingPublisher{}, &fakeDedup{fresh: true}, hist)
+
+	// No cursor → seed from getProfile (profile.json historyId=30000).
+	if err := a.EnsureSeeded(context.Background()); err != nil {
+		t.Fatalf("EnsureSeeded (unseeded): %v", err)
+	}
+	if srv.hitCount("profile") != 1 {
+		t.Errorf("getProfile hits = %d, want 1", srv.hitCount("profile"))
+	}
+	cur, _ := hist.Get(context.Background(), testOrgID)
+	if cur != "30000" {
+		t.Fatalf("seeded cursor = %q, want 30000", cur)
+	}
+
+	// Already seeded → no-op: no further getProfile call, cursor unchanged.
+	if err := a.EnsureSeeded(context.Background()); err != nil {
+		t.Fatalf("EnsureSeeded (already seeded): %v", err)
+	}
+	if srv.hitCount("profile") != 1 {
+		t.Errorf("getProfile hits = %d after second call, want still 1 (no-op when seeded)", srv.hitCount("profile"))
+	}
+	cur, _ = hist.Get(context.Background(), testOrgID)
+	if cur != "30000" {
+		t.Errorf("cursor changed to %q on no-op EnsureSeeded, want 30000 preserved", cur)
+	}
+}
+
+// TestSyncHistory_CursorHeldOnMessageFailure asserts that when processMessage
+// fails (here: messages.get 500s), the cursor is NOT advanced past the window,
+// so the failed message is re-listed next tick instead of being silently
+// dropped. Advancing the cursor on failure was the silent-drop bug.
+func TestSyncHistory_CursorHeldOnMessageFailure(t *testing.T) {
+	srv := newGmailFixtureServer(t)
+	srv.messageStatus = http.StatusInternalServerError // make processMessage fail
+	pub := &recordingPublisher{}
+	hist := NewMemoryHistoryStore()
+	if err := hist.Set(context.Background(), testOrgID, fixtureStartCursor); err != nil {
+		t.Fatal(err)
+	}
+	a := newAdapter(t, srv, pub, &fakeDedup{fresh: true}, hist)
+
+	// syncHistory must NOT return an error (it logs+continues per message)...
+	if err := a.syncHistory(context.Background()); err != nil {
+		t.Fatalf("syncHistory: %v", err)
+	}
+	// ...nothing published (the fetch failed)...
+	if pub.count() != 0 {
+		t.Errorf("published %d emails.raw, want 0 on message-fetch failure", pub.count())
+	}
+	// ...and crucially the cursor is HELD at the start value, not advanced to
+	// fixtureLatestHistory — so the window re-walks next tick.
+	cur, _ := hist.Get(context.Background(), testOrgID)
+	if cur != fixtureStartCursor {
+		t.Errorf("cursor = %q after a failed message, want it HELD at %q (not advanced — that is the silent-drop bug)", cur, fixtureStartCursor)
+	}
+
+	// Sanity: once the message succeeds, the cursor advances normally.
+	srv.messageStatus = 0
+	if err := a.syncHistory(context.Background()); err != nil {
+		t.Fatalf("syncHistory (recovered): %v", err)
+	}
+	if pub.count() != 1 {
+		t.Errorf("published %d after recovery, want 1", pub.count())
+	}
+	cur, _ = hist.Get(context.Background(), testOrgID)
+	if cur != fixtureLatestHistory {
+		t.Errorf("cursor = %q after recovery, want %q advanced", cur, fixtureLatestHistory)
+	}
+}
+
+// TestSyncHistory_HistoryTooOldReseeds asserts that a 404 from history.list
+// (startHistoryId aged out of Gmail's history retention) re-seeds the cursor to
+// the current getProfile historyId and returns nil (recovered), instead of
+// returning the error and leaving the cursor stuck forever (silent halt).
+func TestSyncHistory_HistoryTooOldReseeds(t *testing.T) {
+	srv := newGmailFixtureServer(t)
+	srv.historyStatus = http.StatusNotFound // history.list → 404 "too old"
+	srv.profileHistoryID = "45000"          // re-seed target
+	pub := &recordingPublisher{}
+	hist := NewMemoryHistoryStore()
+	if err := hist.Set(context.Background(), testOrgID, "100"); err != nil { // stale cursor
+		t.Fatal(err)
+	}
+	a := newAdapter(t, srv, pub, &fakeDedup{fresh: true}, hist)
+
+	// 404 must be RECOVERED, not surfaced as an error.
+	if err := a.syncHistory(context.Background()); err != nil {
+		t.Fatalf("syncHistory on history-too-old should recover (nil), got: %v", err)
+	}
+	// Re-seeded to the fresh profile historyId; the stale cursor is un-stuck.
+	cur, _ := hist.Get(context.Background(), testOrgID)
+	if cur != "45000" {
+		t.Errorf("cursor = %q after 404, want re-seeded to 45000 (getProfile)", cur)
+	}
+	if srv.hitCount("profile") != 1 {
+		t.Errorf("getProfile hits = %d, want 1 (re-seed)", srv.hitCount("profile"))
+	}
+	if pub.count() != 0 {
+		t.Errorf("published %d during re-seed, want 0 (gap mail is unavoidably missed)", pub.count())
+	}
+
+	// After re-seed, history.list recovers and a normal sync delta-syncs again.
+	srv.historyStatus = 0
+	// Move the stored cursor to the fixture start so the recorded page applies.
+	if err := hist.Set(context.Background(), testOrgID, fixtureStartCursor); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.syncHistory(context.Background()); err != nil {
+		t.Fatalf("syncHistory after recovery: %v", err)
+	}
+	if pub.count() != 1 {
+		t.Errorf("published %d after recovery, want 1", pub.count())
 	}
 }
 

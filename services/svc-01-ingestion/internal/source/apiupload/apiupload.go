@@ -12,13 +12,13 @@ import (
 	"errors"
 	"io"
 	"net/http"
-	"net/mail"
 	"strings"
 
 	"github.com/rs/zerolog"
 
 	"github.com/saif/cybersiren/services/svc-01-ingestion/internal/auth"
 	"github.com/saif/cybersiren/services/svc-01-ingestion/internal/source"
+	"github.com/saif/cybersiren/shared/rfc822"
 )
 
 // adapterName labels emails.raw rows ingested over the API.
@@ -126,7 +126,7 @@ func (a *Adapter) parseRequest(r *http.Request) (source.IngestRequest, error) {
 		return source.IngestRequest{}, errors.New("empty RFC-822 message")
 	}
 	if messageID == "" {
-		messageID = messageIDFromRaw(raw)
+		messageID = rfc822.MessageID(raw)
 	}
 
 	return source.IngestRequest{
@@ -134,18 +134,6 @@ func (a *Adapter) parseRequest(r *http.Request) (source.IngestRequest, error) {
 		MessageID:     messageID,
 		SourceAdapter: adapterName,
 	}, nil
-}
-
-// messageIDFromRaw extracts the RFC 5322 Message-ID from the raw message,
-// stripping angle brackets so the dedup key matches svc-02's email_identities
-// registration (which trims "<>"). Returns "" when the header is absent or the
-// message is unparseable (such messages are simply not deduplicated).
-func messageIDFromRaw(raw []byte) string {
-	msg, err := mail.ReadMessage(strings.NewReader(string(raw)))
-	if err != nil {
-		return ""
-	}
-	return strings.Trim(msg.Header.Get("Message-Id"), "<>")
 }
 
 // writeOutcome renders the ingestion outcome onto the HTTP response.

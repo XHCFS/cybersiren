@@ -40,7 +40,8 @@ BEGIN
     ) THEN
         ALTER TABLE api_keys
             ADD CONSTRAINT chk_api_keys_key_prefix_length
-            CHECK (length(key_prefix) BETWEEN 4 AND 32);
+            CHECK (length(key_prefix) BETWEEN 4 AND 32)
+            NOT VALID;
     END IF;
 END;
 $$;

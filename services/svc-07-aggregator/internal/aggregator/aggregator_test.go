@@ -136,13 +136,15 @@ func TestHandle_DuplicateMessage_DoesNotRepublish(t *testing.T) {
 		contracts.TopicScoresURL, contracts.TopicScoresHeader,
 	)))
 	require.NoError(t, a.Handle(ctx, envelopeMsg(t, contracts.TopicScoresURL, emailID, orgID, 50)))
-	require.NoError(t, a.Handle(ctx, headerMsg(t, emailID, orgID, 0, 60)))
+	// scores.header forwards a non-zero internal_id so the message is addressable
+	// and actually publishes (internal_id=0 is dropped at the producer — finding #8).
+	require.NoError(t, a.Handle(ctx, headerMsg(t, emailID, orgID, 4242, 60)))
 	require.Equal(t, 1, pub.count())
 
 	// A redelivered duplicate of an already-completed email arrives — it
 	// hits an already-deleted key, so it just re-stores fresh state but
 	// the plan is no longer present (key was DEL'd). It must NOT publish.
-	require.NoError(t, a.Handle(ctx, headerMsg(t, emailID, orgID, 0, 60)))
+	require.NoError(t, a.Handle(ctx, headerMsg(t, emailID, orgID, 4242, 60)))
 	assert.Equal(t, 1, pub.count(), "duplicate after DEL must not republish")
 }
 
@@ -156,15 +158,18 @@ func TestHandle_PublishFailure_ReleasesLockForRetry(t *testing.T) {
 
 	emailID, orgID := "e99", int64(1)
 
-	require.NoError(t, a.Handle(ctx, planMsg(t, emailID, orgID, contracts.TopicScoresURL)))
-	err := a.Handle(ctx, envelopeMsg(t, contracts.TopicScoresURL, emailID, orgID, 80))
+	// scores.header carries a non-zero internal_id so the message is addressable
+	// and reaches the publish path (an internal_id=0 message is dropped before
+	// publish — finding #8 — and would never exercise the publish-failure branch).
+	require.NoError(t, a.Handle(ctx, planMsg(t, emailID, orgID, contracts.TopicScoresHeader)))
+	err := a.Handle(ctx, headerMsg(t, emailID, orgID, 4242, 80))
 	require.Error(t, err, "publish failure must surface as error so offset is not committed")
 	assert.Equal(t, 0, pub.count())
 
 	assert.False(t, store.nxHeld(publishLockKey(orgID, emailID)), "publish NX lock must be released after failure")
 
 	// Redelivery succeeds.
-	require.NoError(t, a.Handle(ctx, envelopeMsg(t, contracts.TopicScoresURL, emailID, orgID, 80)))
+	require.NoError(t, a.Handle(ctx, headerMsg(t, emailID, orgID, 4242, 80)))
 	assert.Equal(t, 1, pub.count())
 }
 
@@ -183,8 +188,11 @@ func TestSweeper_TimeoutEmitsPartial(t *testing.T) {
 	require.NoError(t, a.Handle(ctx, planMsg(t, emailID, orgID,
 		contracts.TopicScoresURL, contracts.TopicScoresHeader,
 	)))
-	require.NoError(t, a.Handle(ctx, envelopeMsg(t, contracts.TopicScoresURL, emailID, orgID, 50)))
-	// Header never arrives.
+	// scores.header arrives (carrying the addressable internal_id) but URL never
+	// does — the partial still has a valid internal_id and must publish on
+	// timeout. (A partial whose header never arrives has internal_id=0 and is
+	// dropped at the producer — finding #8 — so it can't stand in here.)
+	require.NoError(t, a.Handle(ctx, headerMsg(t, emailID, orgID, 4242, 60)))
 
 	require.Equal(t, 0, pub.count())
 
@@ -195,9 +203,42 @@ func TestSweeper_TimeoutEmitsPartial(t *testing.T) {
 	require.Equal(t, 1, pub.count(), "timeout must trigger a partial emit")
 	var out contracts.EmailsScored
 	require.NoError(t, json.Unmarshal(pub.messages[0], &out))
+	assert.Equal(t, int64(4242), out.InternalID)
 	assert.True(t, out.TimeoutTriggered)
 	assert.True(t, out.PartialAnalysis)
-	assert.Equal(t, []string{contracts.TopicScoresHeader}, out.MissingComponents)
+	assert.Equal(t, []string{contracts.TopicScoresURL}, out.MissingComponents)
+}
+
+// When a bucket completes but no scores.header ever forwarded svc-02's
+// internal_id, the resolved internal_id is 0 — the emails.scored cannot be
+// addressed to a DB verdict row (there is NO email_id fallback, LANDMINE B) and
+// svc-08 would silently discard it. The producer must DROP it loudly (skip the
+// emit, commit the offset) and still tear down the bucket + lock so the dead
+// email_id does not linger and re-fire. Finding #8.
+func TestHandle_UnresolvedInternalID_DropsWithoutPublishing(t *testing.T) {
+	t.Parallel()
+
+	store := newFakeStore()
+	pub := &recorderPublisher{}
+	a := newAgg(t, store, pub)
+	ctx := context.Background()
+
+	emailID, orgID := "e-noid", int64(1)
+
+	require.NoError(t, a.Handle(ctx, planMsg(t, emailID, orgID,
+		contracts.TopicScoresURL, contracts.TopicScoresHeader,
+	)))
+	require.NoError(t, a.Handle(ctx, envelopeMsg(t, contracts.TopicScoresURL, emailID, orgID, 50)))
+	// scores.header arrives carrying internal_id=0 (degraded upstream): the bucket
+	// completes but the message is unaddressable. Handle must commit (nil), not NACK.
+	require.NoError(t, a.Handle(ctx, headerMsg(t, emailID, orgID, 0, 60)))
+
+	assert.Equal(t, 0, pub.count(), "unresolved internal_id must NOT be published")
+
+	// Bucket + lock torn down so the dead email_id does not re-fire.
+	state, _ := store.HGetAll(ctx, keyForOrgEmail(orgID, emailID))
+	assert.Empty(t, state, "bucket must be cleaned up after a drop")
+	assert.False(t, store.nxHeld(publishLockKey(orgID, emailID)), "publish lock must be released after a drop")
 }
 
 // On the FIRST write for a bucket, Expire is the only thing that ever sets a

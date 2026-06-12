@@ -115,6 +115,13 @@ func registerRoutes(mux *http.ServeMux, deps svckit.Deps) {
 		if gmailsrc.PushEnabled(deps.Cfg.Gmail) {
 			ga.Register(mux)
 			deps.Log.Info().Msg("gmail push endpoint registered at POST /gmail/push")
+			// The push route is bound OUTSIDE the API-key middleware; verifyPush
+			// is its only gate and fails closed. Warn loudly if neither a token
+			// nor an audience is configured: the endpoint will reject every push
+			// until the operator sets one.
+			if deps.Cfg.Gmail.PushToken == "" && deps.Cfg.Gmail.PushAudience == "" {
+				deps.Log.Warn().Msg("gmail: push enabled but neither push_token nor push_audience is configured; /gmail/push will REJECT all callers (fail-closed) until one is set")
+			}
 		}
 	}
 }
@@ -136,6 +143,14 @@ func onReady(ctx context.Context, deps svckit.Deps) error {
 		go gmailAdapter.RunWatchRenewer(ctx)
 	}
 	if gmailsrc.PollEnabled(deps.Cfg.Gmail) {
+		// Seed the cursor before polling. Watch() seeds it for push deployments,
+		// but a poll-only deployment (push_enabled=false) has none, so without
+		// this the poll loop would forever hit the cursor=="" guard and ingest
+		// nothing. No-op when Watch already seeded. Non-fatal: syncHistory also
+		// self-heals, so a transient failure here is recovered on the next tick.
+		if err := gmailAdapter.EnsureSeeded(ctx); err != nil {
+			deps.Log.Warn().Err(err).Msg("gmail: initial poll-cursor seed failed (syncHistory will retry on its first tick)")
+		}
 		go gmailAdapter.RunPollLoop(ctx)
 	}
 	return nil

@@ -109,41 +109,14 @@ type GetEmailIdentityRow struct {
 }
 
 // Looks up the canonical (internal_id, fetched_at) for an (org_id, message_id)
-// pair in the cross-partition dedup registry. Runs inside WithOrgTx; the RLS
-// GUC scopes the row. Returns no row when the message was never registered.
+// pair in the cross-partition dedup registry. email_identities has NO RLS
+// policy, so org-scoping here is enforced solely by the explicit
+// `WHERE org_id = $1` predicate — NOT by the RLS GUC. A future variant that
+// drops that predicate trusting RLS would leak rows across tenants. Returns no
+// row when the message was never registered.
 func (q *Queries) GetEmailIdentity(ctx context.Context, arg GetEmailIdentityParams) (GetEmailIdentityRow, error) {
 	row := q.db.QueryRow(ctx, getEmailIdentity, arg.OrgID, arg.MessageID)
 	var i GetEmailIdentityRow
-	err := row.Scan(&i.InternalID, &i.FetchedAt)
-	return i, err
-}
-
-const getEmailIdentityByEmailID = `-- name: GetEmailIdentityByEmailID :one
-SELECT internal_id, fetched_at
-FROM email_identities
-WHERE org_id = $1
-  AND email_id = $2
-`
-
-type GetEmailIdentityByEmailIDParams struct {
-	OrgID   int64       `db:"org_id" json:"org_id"`
-	EmailID pgtype.UUID `db:"email_id" json:"email_id"`
-}
-
-type GetEmailIdentityByEmailIDRow struct {
-	InternalID int64              `db:"internal_id" json:"internal_id"`
-	FetchedAt  pgtype.Timestamptz `db:"fetched_at" json:"fetched_at"`
-}
-
-// Resolves the logical UUIDv7 email_id (G5/G17) back to the canonical
-// (internal_id, fetched_at) partition key, so a caller holding only the opaque
-// email_id (e.g. the svc-01 demo UI polling a verdict) can read the partitioned
-// emails / verdict rows. email_id is stamped on the identity row by svc-02 at
-// registration (migration 035). Runs inside WithOrgTx; the RLS GUC scopes the
-// row. Returns no row for an unknown email_id or one registered before 035.
-func (q *Queries) GetEmailIdentityByEmailID(ctx context.Context, arg GetEmailIdentityByEmailIDParams) (GetEmailIdentityByEmailIDRow, error) {
-	row := q.db.QueryRow(ctx, getEmailIdentityByEmailID, arg.OrgID, arg.EmailID)
-	var i GetEmailIdentityByEmailIDRow
 	err := row.Scan(&i.InternalID, &i.FetchedAt)
 	return i, err
 }
@@ -322,8 +295,9 @@ type RegisterEmailIdentityParams struct {
 // while no row means another ingestion already registered it (duplicate signal).
 // email_id is the logical UUIDv7 (G5/G17), stamped here so the read side can map
 // it back to (internal_id, fetched_at); it is NULL when the email carries no
-// usable Message-ID (such emails are not registered). Runs inside WithOrgTx so
-// the RLS GUC scopes the write.
+// usable Message-ID (such emails are not registered). email_identities has NO
+// RLS policy: the write is scoped to the caller's tenant by the explicit org_id
+// value in the VALUES list, NOT by the RLS GUC.
 func (q *Queries) RegisterEmailIdentity(ctx context.Context, arg RegisterEmailIdentityParams) (int64, error) {
 	row := q.db.QueryRow(ctx, registerEmailIdentity,
 		arg.OrgID,

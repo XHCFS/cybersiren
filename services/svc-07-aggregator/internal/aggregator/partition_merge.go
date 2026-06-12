@@ -15,8 +15,11 @@ import (
 const fieldPartitionFetchedAt = "__partition_fetched_at"
 
 // Valkey field capturing emails.internal_id — the DB BIGSERIAL surrogate svc-02
-// assigns and forwards on scores.header. First non-zero wins (HSETNX); without
-// it emails.scored falls back to email_id (interim two-id model, no invariant).
+// assigns and forwards on scores.header. First non-zero wins (HSETNX). There is
+// NO email_id fallback: email_id is a UUIDv7 string and can NOT substitute for
+// the int64 internal_id (LANDMINE B). When this field is never set the resolved
+// internal_id stays 0 ("unresolved"); an emails.scored with internal_id=0 cannot
+// be addressed to a DB verdict row and MUST NOT be published.
 const fieldPartitionInternalID = "__partition_internal_id"
 
 // mergePartitionFetchedAt records emails.fetched_at on the aggregation hash

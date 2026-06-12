@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -14,6 +15,26 @@ import (
 
 // googleAPIBase is the Gmail API v1 root; overridable via config for tests.
 const googleAPIBase = "https://gmail.googleapis.com"
+
+// errHistoryTooOld signals that history.list returned HTTP 404 — the stored
+// startHistoryId predates Gmail's ~1-week history retention window, so a delta
+// sync is impossible and the caller must re-seed the cursor and do a full sync
+// (see https://developers.google.com/gmail/api/guides/sync#partial_synchronization).
+var errHistoryTooOld = errors.New("gmail history.list: startHistoryId too old (404); re-seed required")
+
+// apiError carries the HTTP status of a non-2xx Gmail API response so callers
+// can branch on specific codes (e.g. 404 from history.list → errHistoryTooOld)
+// without string-matching the message.
+type apiError struct {
+	status  int
+	method  string
+	path    string
+	snippet string
+}
+
+func (e *apiError) Error() string {
+	return fmt.Sprintf("gmail api %s %s: status %d: %s", e.method, e.path, e.status, e.snippet)
+}
 
 // client is a thin Gmail API v1 REST client over an OAuth2 token source. Only
 // the four calls the adapter needs are implemented: history.list, messages.get
@@ -85,6 +106,12 @@ func (c *client) listHistory(
 
 		var page historyListResponse
 		if err := c.getJSON(ctx, fmt.Sprintf("/gmail/v1/users/%s/history?%s", url.PathEscape(c.user), q.Encode()), &page); err != nil {
+			// A 404 means startHistoryId has aged out of Gmail's history
+			// retention window; the caller must re-seed + full-sync.
+			var ae *apiError
+			if errors.As(err, &ae) && ae.status == http.StatusNotFound {
+				return nil, startHistoryID, errHistoryTooOld
+			}
 			return nil, startHistoryID, err
 		}
 		// The page-level historyId is the mailbox's current high-water mark and
@@ -162,6 +189,24 @@ func (c *client) getRawMessage(ctx context.Context, messageID string) (rawMessag
 	return m, nil
 }
 
+// profileResponse is the users.getProfile reply. We only need the mailbox's
+// current historyId — the high-water mark used to seed a fresh cursor.
+type profileResponse struct {
+	EmailAddress string `json:"emailAddress"`
+	HistoryID    string `json:"historyId"`
+}
+
+// getProfile fetches the mailbox profile and returns its current historyId —
+// the baseline a poll-only deployment seeds when it has no watch() to provide
+// one, and the re-seed target after a 404 ("history too old").
+func (c *client) getProfile(ctx context.Context) (historyID string, err error) {
+	var p profileResponse
+	if err := c.getJSON(ctx, fmt.Sprintf("/gmail/v1/users/%s/profile", url.PathEscape(c.user)), &p); err != nil {
+		return "", err
+	}
+	return p.HistoryID, nil
+}
+
 // watchRequest is the users.watch body.
 type watchRequest struct {
 	TopicName string   `json:"topicName"`
@@ -236,7 +281,12 @@ func (c *client) do(ctx context.Context, method, path string, body io.Reader, ou
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<10))
-		return fmt.Errorf("gmail api %s %s: status %d: %s", method, path, resp.StatusCode, strings.TrimSpace(string(snippet)))
+		return &apiError{
+			status:  resp.StatusCode,
+			method:  method,
+			path:    path,
+			snippet: strings.TrimSpace(string(snippet)),
+		}
 	}
 	if out == nil {
 		_, _ = io.Copy(io.Discard, resp.Body)

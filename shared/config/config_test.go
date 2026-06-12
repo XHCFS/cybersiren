@@ -601,6 +601,25 @@ func TestLoad_AttachmentNotificationGmailDefaults(t *testing.T) {
 	if len(cfg.Gmail.Scopes) != 1 || cfg.Gmail.Scopes[0] != "https://www.googleapis.com/auth/gmail.readonly" {
 		t.Errorf("Gmail.Scopes = %v, want [gmail.readonly]", cfg.Gmail.Scopes)
 	}
+	// Watched mailbox defaults to "me" (the authenticated user) per ARCH-SPEC §2.1.
+	if cfg.Gmail.User != "me" {
+		t.Errorf("Gmail.User = %q, want %q", cfg.Gmail.User, "me")
+	}
+	// watch() reacts to the INBOX label by default.
+	if len(cfg.Gmail.LabelIDs) != 1 || cfg.Gmail.LabelIDs[0] != "INBOX" {
+		t.Errorf("Gmail.LabelIDs = %v, want [INBOX]", cfg.Gmail.LabelIDs)
+	}
+	// Both delivery paths are enabled by default (push webhook + fallback poll).
+	if !cfg.Gmail.PushEnabled {
+		t.Errorf("Gmail.PushEnabled = false, want true by default")
+	}
+	if !cfg.Gmail.PollEnabled {
+		t.Errorf("Gmail.PollEnabled = false, want true by default")
+	}
+	// Each Gmail API round-trip is bounded at 30s by default.
+	if cfg.Gmail.HTTPTimeout != 30*time.Second {
+		t.Errorf("Gmail.HTTPTimeout = %v, want 30s", cfg.Gmail.HTTPTimeout)
+	}
 }
 
 func TestLoad_AttachmentNotificationGmailEnvOverride(t *testing.T) {

@@ -93,24 +93,15 @@ WHERE internal_id = $1
 
 -- name: GetEmailIdentity :one
 -- Looks up the canonical (internal_id, fetched_at) for an (org_id, message_id)
--- pair in the cross-partition dedup registry. Runs inside WithOrgTx; the RLS
--- GUC scopes the row. Returns no row when the message was never registered.
+-- pair in the cross-partition dedup registry. email_identities has NO RLS
+-- policy, so org-scoping here is enforced solely by the explicit
+-- `WHERE org_id = $1` predicate — NOT by the RLS GUC. A future variant that
+-- drops that predicate trusting RLS would leak rows across tenants. Returns no
+-- row when the message was never registered.
 SELECT internal_id, fetched_at
 FROM email_identities
 WHERE org_id = $1
   AND message_id = $2;
-
--- name: GetEmailIdentityByEmailID :one
--- Resolves the logical UUIDv7 email_id (G5/G17) back to the canonical
--- (internal_id, fetched_at) partition key, so a caller holding only the opaque
--- email_id (e.g. the svc-01 demo UI polling a verdict) can read the partitioned
--- emails / verdict rows. email_id is stamped on the identity row by svc-02 at
--- registration (migration 035). Runs inside WithOrgTx; the RLS GUC scopes the
--- row. Returns no row for an unknown email_id or one registered before 035.
-SELECT internal_id, fetched_at
-FROM email_identities
-WHERE org_id = sqlc.arg(org_id)
-  AND email_id = sqlc.arg(email_id);
 
 -- name: RegisterEmailIdentity :one
 -- Claims (org_id, message_id) for this ingestion. ON CONFLICT DO NOTHING makes
@@ -118,8 +109,9 @@ WHERE org_id = sqlc.arg(org_id)
 -- while no row means another ingestion already registered it (duplicate signal).
 -- email_id is the logical UUIDv7 (G5/G17), stamped here so the read side can map
 -- it back to (internal_id, fetched_at); it is NULL when the email carries no
--- usable Message-ID (such emails are not registered). Runs inside WithOrgTx so
--- the RLS GUC scopes the write.
+-- usable Message-ID (such emails are not registered). email_identities has NO
+-- RLS policy: the write is scoped to the caller's tenant by the explicit org_id
+-- value in the VALUES list, NOT by the RLS GUC.
 INSERT INTO email_identities (org_id, message_id, internal_id, fetched_at, email_id)
 VALUES ($1, $2, $3, $4, $5)
 ON CONFLICT (org_id, message_id) DO NOTHING

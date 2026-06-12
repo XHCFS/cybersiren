@@ -16,9 +16,11 @@ import (
 // ---- fakes -----------------------------------------------------------------
 
 type fakeDedup struct {
-	fresh bool
-	err   error
-	calls int
+	fresh      bool
+	err        error
+	calls      int
+	releases   int
+	releaseErr error
 }
 
 func (f *fakeDedup) Claim(_ context.Context, _ int64, _ string) (bool, error) {
@@ -26,13 +28,26 @@ func (f *fakeDedup) Claim(_ context.Context, _ int64, _ string) (bool, error) {
 	return f.fresh, f.err
 }
 
+func (f *fakeDedup) Release(_ context.Context, _ int64, _ string) error {
+	f.releases++
+	return f.releaseErr
+}
+
 type fakeQuota struct {
-	allow bool
-	err   error
+	allow   bool
+	err     error
+	allows  int
+	refunds int
 }
 
 func (f *fakeQuota) Allow(_ context.Context, _ int64, _ *int32) (bool, error) {
+	f.allows++
 	return f.allow, f.err
+}
+
+func (f *fakeQuota) Refund(_ context.Context, _ int64, _ *int32) error {
+	f.refunds++
+	return nil
 }
 
 type fakeOrgs struct {
@@ -117,9 +132,13 @@ func TestIngest_Accepted_PublishesUUIDv7KeyedRaw(t *testing.T) {
 	}
 }
 
-func TestIngest_Duplicate_DoesNotPublish(t *testing.T) {
+func TestIngest_Duplicate_DoesNotPublishOrConsumeQuota(t *testing.T) {
 	pub := &fakePublisher{}
-	core := newCore(&fakeDedup{fresh: false}, &fakeQuota{allow: true}, &fakeOrgs{}, pub)
+	qq := &fakeQuota{allow: true}
+	dd := &fakeDedup{fresh: false}
+	// A real limit is present, so a non-duplicate would have consumed quota.
+	limit := int32(100)
+	core := newCore(dd, qq, &fakeOrgs{limit: &limit}, pub)
 
 	out, err := core.Ingest(context.Background(), 7, 1, sampleReq())
 	if err != nil {
@@ -131,12 +150,21 @@ func TestIngest_Duplicate_DoesNotPublish(t *testing.T) {
 	if pub.calls != 0 {
 		t.Errorf("a duplicate must NOT republish, got %d publishes", pub.calls)
 	}
+	// Dedup claim is taken first; a duplicate short-circuits BEFORE quota.
+	if qq.allows != 0 {
+		t.Errorf("a duplicate must not consume quota, got %d Allow calls", qq.allows)
+	}
+	if dd.releases != 0 {
+		t.Errorf("a duplicate took no claim, so nothing to release, got %d", dd.releases)
+	}
 }
 
-func TestIngest_OverQuota_429AndNoPublish(t *testing.T) {
+func TestIngest_OverQuota_429ReleasesClaimAndNoPublish(t *testing.T) {
 	pub := &fakePublisher{}
 	dd := &fakeDedup{fresh: true}
-	core := newCore(dd, &fakeQuota{allow: false}, &fakeOrgs{}, pub)
+	qq := &fakeQuota{allow: false}
+	limit := int32(1)
+	core := newCore(dd, qq, &fakeOrgs{limit: &limit}, pub)
 
 	out, err := core.Ingest(context.Background(), 7, 1, sampleReq())
 	if err != nil {
@@ -148,8 +176,13 @@ func TestIngest_OverQuota_429AndNoPublish(t *testing.T) {
 	if pub.calls != 0 {
 		t.Errorf("over-quota must not publish, got %d", pub.calls)
 	}
-	if dd.calls != 0 {
-		t.Errorf("quota is checked before dedup; dedup must not run, got %d calls", dd.calls)
+	// Dedup is now claimed BEFORE the quota check, so the claim must exist...
+	if dd.calls != 1 {
+		t.Errorf("dedup claim runs before quota, want 1 call, got %d", dd.calls)
+	}
+	// ...and a 429'd request must release it so it does not burn the 7-day window.
+	if dd.releases != 1 {
+		t.Errorf("an over-quota request must release its dedup claim, got %d releases", dd.releases)
 	}
 }
 
@@ -167,6 +200,42 @@ func TestIngest_PublishFailure_Errors(t *testing.T) {
 	core := newCore(&fakeDedup{fresh: true}, &fakeQuota{allow: true}, &fakeOrgs{}, pub)
 	if _, err := core.Ingest(context.Background(), 7, 1, sampleReq()); err == nil {
 		t.Fatal("expected a publish failure to surface as an error")
+	}
+}
+
+// TestIngest_PublishFailure_ReleasesClaimAndRefundsQuota proves the compensation
+// path: a failed publish must drop the dedup claim AND refund the quota, then a
+// retry against a now-healthy producer must actually re-publish (not be
+// swallowed as a duplicate).
+func TestIngest_PublishFailure_ReleasesClaimAndRefundsQuota(t *testing.T) {
+	pub := &fakePublisher{err: errors.New("broker down")}
+	dd := &fakeDedup{fresh: true}
+	qq := &fakeQuota{allow: true}
+	limit := int32(100)
+	core := newCore(dd, qq, &fakeOrgs{limit: &limit}, pub)
+
+	if _, err := core.Ingest(context.Background(), 7, 1, sampleReq()); err == nil {
+		t.Fatal("expected a publish failure to surface as an error")
+	}
+	if dd.releases != 1 {
+		t.Errorf("a publish failure must release the dedup claim, got %d releases", dd.releases)
+	}
+	if qq.refunds != 1 {
+		t.Errorf("a publish failure must refund the quota, got %d refunds", qq.refunds)
+	}
+
+	// Retry: producer now healthy. The claim was released, so dedup reports fresh
+	// again and the email actually re-publishes.
+	pub.err = nil
+	out, err := core.Ingest(context.Background(), 7, 1, sampleReq())
+	if err != nil {
+		t.Fatalf("retry after a released claim must succeed: %v", err)
+	}
+	if out.Status != source.StatusAccepted {
+		t.Fatalf("retry status = %v, want accepted", out.Status)
+	}
+	if pub.calls != 2 {
+		t.Errorf("retry must re-publish (not be suppressed), got %d total publishes", pub.calls)
 	}
 }
 

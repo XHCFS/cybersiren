@@ -134,10 +134,20 @@ func (e *Engine) Handle(ctx context.Context, msg kafkaconsumer.Message) error {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "decode failed")
 		e.bumpStatus("error")
-		e.log.Error().Err(err).
-			Int("partition", msg.Partition).Int64("offset", msg.Offset).
-			Msg("malformed emails.scored; skipping")
-		return nil // commit offset on malformed input — see brief §8 (3)
+		if errors.Is(err, errUnresolvedInternalID) {
+			// Poison that escaped svc-07's producer-side drop: the verdict can
+			// never be addressed to a DB row. Make it visibly loud (not lumped
+			// in with ordinary malformed input). We still commit the offset — a
+			// NACK would wedge the partition forever on an unfixable message.
+			e.log.Error().Err(err).
+				Int("partition", msg.Partition).Int64("offset", msg.Offset).
+				Msg("emails.scored has unresolved internal_id (<=0); verdict cannot be addressed — dropping (svc-07 should have dropped this at the producer)")
+		} else {
+			e.log.Error().Err(err).
+				Int("partition", msg.Partition).Int64("offset", msg.Offset).
+				Msg("malformed emails.scored; skipping")
+		}
+		return nil // commit offset on malformed/poison input — see brief §8 (3)
 	}
 
 	logCtx := e.log.With().
@@ -491,6 +501,12 @@ func verdictKafkaBody(out persist.Output, fresh func() ([]byte, error)) ([]byte,
 	return fresh()
 }
 
+// errUnresolvedInternalID flags an emails.scored whose internal_id is <= 0.
+// svc-07 must drop these at the producer; one reaching here is a silent
+// data-loss escape (the verdict can never be addressed to a DB row), so Handle
+// logs it at Error level distinctly from ordinary malformed input.
+var errUnresolvedInternalID = errors.New("emails.scored: internal_id must be > 0")
+
 func decodeScored(b []byte) (contracts.EmailsScored, error) {
 	var out contracts.EmailsScored
 	if len(b) == 0 {
@@ -506,7 +522,11 @@ func decodeScored(b []byte) (contracts.EmailsScored, error) {
 		return out, fmt.Errorf("emails.scored: meta.org_id must be > 0, got %d", out.Meta.OrgID)
 	}
 	if out.InternalID <= 0 {
-		return out, fmt.Errorf("emails.scored: internal_id must be > 0, got %d", out.InternalID)
+		// Poison: svc-07 should have dropped this at the producer (internal_id is
+		// the verdict-row key; there is NO email_id fallback). If one slipped
+		// through we commit the offset (a NACK would wedge the partition forever)
+		// but surface it loudly via errUnresolvedInternalID — see Handle.
+		return out, fmt.Errorf("%w: got %d", errUnresolvedInternalID, out.InternalID)
 	}
 	if out.FetchedAt.IsZero() {
 		return out, errors.New("emails.scored: fetched_at is required (emails partition key)")

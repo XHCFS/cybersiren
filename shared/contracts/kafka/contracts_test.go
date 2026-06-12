@@ -368,9 +368,14 @@ func TestValidate_ScorePayloads(t *testing.T) {
 		{"ScoresHeaderMessage/negative", contracts.ScoresHeaderMessage{EmailID: "e1001", Component: contracts.ComponentHeader, Score: -1}, true},
 		{"ScoresHeaderMessage/over", contracts.ScoresHeaderMessage{EmailID: "e1001", Component: contracts.ComponentHeader, Score: 101}, true},
 
-		// ── EmailsScored (nullable component scores) ────────────────────
+		// ── EmailsScored (nullable component scores + addressing key) ───
+		// internal_id is the verdict-row PK; email_id (UUIDv7 string) can NOT
+		// substitute for it (LANDMINE B), so internal_id<=0 is unaddressable
+		// poison svc-08 would silently drop — Validate rejects it here.
 		{"EmailsScored/all-nil", contracts.EmailsScored{Meta: meta, InternalID: 1001}, false},
 		{"EmailsScored/in-range", contracts.EmailsScored{Meta: meta, InternalID: 1001, URLScore: ptr(72), HeaderScore: ptr(0), AttachmentScore: ptr(100), NLPScore: ptr(60)}, false},
+		{"EmailsScored/internalID-zero", contracts.EmailsScored{Meta: meta, InternalID: 0, URLScore: ptr(50)}, true},
+		{"EmailsScored/internalID-negative", contracts.EmailsScored{Meta: meta, InternalID: -1}, true},
 		{"EmailsScored/url-negative", contracts.EmailsScored{Meta: meta, InternalID: 1001, URLScore: ptr(-1)}, true},
 		{"EmailsScored/header-over", contracts.EmailsScored{Meta: meta, InternalID: 1001, HeaderScore: ptr(101)}, true},
 		{"EmailsScored/attachment-over", contracts.EmailsScored{Meta: meta, InternalID: 1001, AttachmentScore: ptr(150)}, true},

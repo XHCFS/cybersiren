@@ -3,7 +3,6 @@ package gmail
 import (
 	"encoding/base64"
 	"fmt"
-	"net/mail"
 	"strings"
 )
 
@@ -26,17 +25,4 @@ func decodeRawRFC822(raw string) ([]byte, error) {
 		return nil, fmt.Errorf("decode web-safe base64: %w", err)
 	}
 	return b, nil
-}
-
-// messageIDFromRaw extracts the RFC 5322 Message-ID from an RFC-822 message,
-// stripping the angle brackets so the dedup key matches svc-02's
-// email_identities registration (which trims "<>"). Returns "" when the header
-// is absent or the message is unparseable — such messages are simply not
-// deduplicated (mirrors the API-upload adapter).
-func messageIDFromRaw(raw []byte) string {
-	msg, err := mail.ReadMessage(strings.NewReader(string(raw)))
-	if err != nil {
-		return ""
-	}
-	return strings.Trim(msg.Header.Get("Message-Id"), "<>")
 }

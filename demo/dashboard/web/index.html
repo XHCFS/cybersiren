@@ -373,7 +373,7 @@ function headerCard(hd){
   if(hd.fired_rules&&hd.fired_rules.length) h+='<div class="pills">'+hd.fired_rules.slice(0,6).map(r=>'<span class="badge warn">'+esc(r.rule_name||('rule '+r.rule_id))+' '+(r.score_impact>=0?'+':'')+r.score_impact+'</span>').join('')+'</div>';
   return h+'</div>';
 }
-function authBadge(k,val){ const v=(val||'').toLowerCase(); const cls = v==='pass'?'ok':(v===''||v==='none'?'':'bad'); return '<span class="badge '+cls+'">'+k+' '+(val||'—')+'</span>'; }
+function authBadge(k,val){ const v=(val||'').toLowerCase(); const cls = v==='pass'?'ok':(v===''||v==='none'?'':'bad'); return '<span class="badge '+cls+'">'+k+' '+esc(val||'—')+'</span>'; }
 function nlpCard(n){
   if(!n) return '<div class="mod"><h3>🧠 NLP<span class="score muted">n/a</span></h3></div>';
   let h='<div class="mod">'+modHead('NLP / content','🧠',n.score);

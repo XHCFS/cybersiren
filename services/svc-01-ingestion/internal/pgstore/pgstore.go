@@ -7,9 +7,11 @@ package pgstore
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -76,6 +78,13 @@ func NewOrgStore(pool *pgxpool.Pool) *OrgStore { return &OrgStore{pool: pool} }
 func (s *OrgStore) MonthlyLimit(ctx context.Context, orgID int64) (*int32, error) {
 	org, err := db.New(s.pool).GetOrganisationByID(ctx, orgID)
 	if err != nil {
+		// GetOrganisationByID filters deleted_at IS NULL, so a soft-deleted (or
+		// otherwise missing) org returns ErrNoRows. Per this method's contract a
+		// missing org maps to nil = unlimited — do not 500 a still-authenticating
+		// key whose org row is gone. All other errors are real infra failures.
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
 		return nil, fmt.Errorf("get organisation by id: %w", err)
 	}
 	if !org.MonthlyIngestionLimit.Valid {

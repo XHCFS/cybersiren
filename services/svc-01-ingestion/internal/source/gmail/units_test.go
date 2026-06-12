@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/saif/cybersiren/shared/rfc822"
 )
 
 // decodeB64 decodes a standard-base64 string (used for the emails.raw
@@ -33,7 +35,7 @@ func TestDecodeRawRFC822_WebSafe(t *testing.T) {
 	if string(got) != original {
 		t.Errorf("decoded = %q, want %q", string(got), original)
 	}
-	if mid := messageIDFromRaw(got); mid != "id-1@b.test" {
+	if mid := rfc822.MessageID(got); mid != "id-1@b.test" {
 		t.Errorf("message_id = %q, want id-1@b.test (brackets stripped)", mid)
 	}
 }
@@ -54,7 +56,7 @@ func TestDecodeRawRFC822_PaddedAndEmpty(t *testing.T) {
 // TestMessageIDFromRaw_Absent asserts an unparseable / header-less message
 // yields "" (not deduplicated) rather than erroring.
 func TestMessageIDFromRaw_Absent(t *testing.T) {
-	if mid := messageIDFromRaw([]byte("not a valid email")); mid != "" {
+	if mid := rfc822.MessageID([]byte("not a valid email")); mid != "" {
 		t.Errorf("message_id = %q, want empty for header-less message", mid)
 	}
 }
@@ -124,13 +126,22 @@ func TestVerifyPush_Token(t *testing.T) {
 	}
 }
 
-// TestVerifyPush_OpenWhenUnconfigured asserts an endpoint with no verification
-// configured accepts (documented behaviour; runbook recommends a token).
-func TestVerifyPush_OpenWhenUnconfigured(t *testing.T) {
+// TestVerifyPush_FailsClosedWhenUnconfigured asserts that an endpoint with NO
+// verification configured rejects every caller (fail-closed). The /gmail/push
+// route is bound outside the API-key middleware, so an open default would be a
+// public, unauthenticated trigger for Gmail API traffic.
+func TestVerifyPush_FailsClosedWhenUnconfigured(t *testing.T) {
 	a := &Adapter{opts: Options{}}
 	req := httptest.NewRequest(http.MethodPost, "/gmail/push", nil)
-	if !a.verifyPush(req) {
-		t.Error("unconfigured endpoint should accept")
+	if a.verifyPush(req) {
+		t.Error("unconfigured endpoint must reject (fail-closed), not accept")
+	}
+
+	// Even a request bearing a token/JWT must be rejected when nothing is
+	// configured to check against.
+	withToken := httptest.NewRequest(http.MethodPost, "/gmail/push?token=anything", nil)
+	if a.verifyPush(withToken) {
+		t.Error("unconfigured endpoint must reject even a token-bearing caller")
 	}
 }
 

@@ -96,6 +96,42 @@ func TestDecodeScored_AllowsDistinctInternalAndMetaEmailID(t *testing.T) {
 	require.Equal(t, "e1001", got.Meta.EmailID)
 }
 
+// A scored message with internal_id<=0 is unaddressable poison (it should have
+// been dropped at svc-07's producer). decodeScored must reject it with the
+// errUnresolvedInternalID sentinel so Handle can log it loudly — yet still
+// commit the offset (a NACK would wedge the partition forever). Finding #8.
+func TestDecodeScored_RejectsUnresolvedInternalID(t *testing.T) {
+	t.Parallel()
+	_, err := decodeScored(makeScoredMessage(t, 0, "e0").Value)
+	require.Error(t, err)
+	require.ErrorIs(t, err, errUnresolvedInternalID)
+
+	_, err = decodeScored(makeScoredMessage(t, -1, "eneg").Value)
+	require.ErrorIs(t, err, errUnresolvedInternalID)
+}
+
+func TestHandle_UnresolvedInternalID_CommitsWithoutWritingVerdict(t *testing.T) {
+	t.Parallel()
+	writer := &fakeWriter{out: persist.Output{CampaignID: 17, VerdictID: 44, EmailCount: 1}}
+	pub := &fakePublisher{}
+	eng := New(
+		Config{},
+		fakeRules{},
+		fakeSimhash{},
+		writer,
+		pub,
+		nil,
+		zerolog.Nop(),
+	)
+
+	// Poison: internal_id=0. Handle must commit the offset (nil) but write no
+	// verdict and publish nothing — the silent-data-loss path is now loud-but-safe.
+	err := eng.Handle(context.Background(), makeScoredMessage(t, 0, "e0"))
+	require.NoError(t, err, "poison must commit the offset, not NACK")
+	require.Equal(t, 0, writer.writes, "no verdict row may be written for an unaddressable message")
+	require.Len(t, pub.records, 0, "nothing may be published for an unaddressable message")
+}
+
 func TestHandle_DegradesWhenRulesUnavailable(t *testing.T) {
 	t.Parallel()
 	writer := &fakeWriter{out: persist.Output{CampaignID: 17, VerdictID: 44, EmailCount: 1}}

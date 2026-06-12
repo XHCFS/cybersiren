@@ -9,7 +9,10 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/rs/zerolog/log"
 	valkeygo "github.com/valkey-io/valkey-go"
+
+	sharedvalkey "github.com/saif/cybersiren/shared/valkey"
 )
 
 // counterTTLSeconds bounds a month's counter key so a long-idle org's stale
@@ -45,20 +48,41 @@ func (l *Limiter) Allow(ctx context.Context, orgID int64, limit *int32) (bool, e
 		return true, nil // quota disabled (fail-open)
 	}
 
+	// INCR the month counter and arm the TTL only on the first write (count==1),
+	// so the TTL is set exactly once and a mid-month counter is never reset by a
+	// later EXPIRE. Either op erroring fails open (allow) so a cache blip cannot
+	// wedge ingestion. The shared primitive returns the post-increment count and
+	// the raw INCR error (count==0) or EXPIRE error (count already incremented);
+	// we map both onto the existing fail-open messages.
 	key := counterKey(orgID, time.Now().UTC())
-	count, err := l.valkey.Do(ctx, l.valkey.B().Incr().Key(key).Build()).ToInt64()
+	count, err := sharedvalkey.IncrWithExpiry(ctx, l.valkey, key, counterTTLSeconds)
 	if err != nil {
-		return true, fmt.Errorf("quota incr: %w", err) // fail-open
-	}
-	if count == 1 {
-		// First write this month: arm the TTL so the counter self-evicts.
-		if expErr := l.valkey.Do(ctx,
-			l.valkey.B().Expire().Key(key).Seconds(counterTTLSeconds).Build(),
-		).Error(); expErr != nil {
-			return true, fmt.Errorf("quota expire: %w", expErr) // fail-open
+		if count == 0 {
+			return true, fmt.Errorf("quota incr: %w", err) // fail-open
 		}
+		return true, fmt.Errorf("quota expire: %w", err) // fail-open
 	}
 	return count <= int64(*limit), nil
+}
+
+// Refund decrements the org's current-month counter, undoing an Allow that did
+// not result in a published email (e.g. a publish failure after the quota was
+// consumed). It is best-effort and fail-open: a no-op when the limit is nil/<=0
+// (unlimited orgs were never counted) or when Valkey is unavailable, and a DECR
+// error is logged but never surfaced. The counter is monotonic within a month
+// otherwise, so this keeps it honest without ever being able to wedge ingestion.
+func (l *Limiter) Refund(ctx context.Context, orgID int64, limit *int32) error {
+	if limit == nil || *limit <= 0 {
+		return nil // unlimited orgs are never counted; nothing to refund
+	}
+	if l.valkey == nil {
+		return nil // quota disabled; Allow never incremented
+	}
+	key := counterKey(orgID, time.Now().UTC())
+	if err := sharedvalkey.Decr(ctx, l.valkey, key); err != nil {
+		log.Warn().Err(err).Int64("org_id", orgID).Msg("quota refund failed (best-effort)")
+	}
+	return nil
 }
 
 // counterKey builds the quota:{org_id}:{YYYYMM} Valkey key.
