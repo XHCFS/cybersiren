@@ -130,7 +130,10 @@ func TestIncrWithExpiryDecr_Live(t *testing.T) {
 	if err := Decr(ctx, client, key); err != nil {
 		t.Fatalf("Decr error: %v", err)
 	}
-	got, err := client.Do(ctx, client.B().Get().Key(key).Build()).ToInt64()
+	// GET returns the counter as a RESP3 blob string, so parse it with AsInt64
+	// (string→int64); ToInt64 only accepts a RESP3 integer reply (as TTL/INCR
+	// return) and would error "blob string is not a RESP3 int64".
+	got, err := client.Do(ctx, client.B().Get().Key(key).Build()).AsInt64()
 	if err != nil {
 		t.Fatalf("GET after Decr error: %v", err)
 	}
