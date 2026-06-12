@@ -234,6 +234,8 @@ services:
         done
         echo "Seeding organisations..."
         psql -f /seeds/organisations_seed.sql
+        echo "Seeding demo API key..."
+        psql -f /seeds/api_key_demo_seed.sql
         echo "Seeding feeds..."
         psql -f /seeds/feeds.sql
         echo "Seeding TI demo data..."
