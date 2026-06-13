@@ -23,7 +23,7 @@ SELECT
     total,
     online_count,
     offline_count,
-    avg_risk_score,
+    COALESCE(avg_risk_score, 0)::float8 AS avg_risk_score,
     max_risk_score,
     earliest_seen,
     latest_seen
@@ -46,7 +46,7 @@ SELECT
     first_seen,
     last_seen,
     email_count,
-    avg_email_risk_score,
+    COALESCE(avg_email_risk_score, 0)::float8 AS avg_email_risk_score,
     verdict_phishing,
     verdict_malware,
     verdict_suspicious,
@@ -71,7 +71,7 @@ SELECT
     seconds_since_fetch,
     total_threats_contributed,
     active_threats,
-    avg_threat_risk_score,
+    COALESCE(avg_threat_risk_score, 0)::float8 AS avg_threat_risk_score,
     most_recent_threat
 FROM mv_feed_health
 ORDER BY last_fetched_at DESC NULLS LAST, feed_id;
@@ -90,7 +90,7 @@ SELECT
     total_hits,
     hits_last_24h,
     hits_last_7d,
-    total_score_contributed,
+    COALESCE(total_score_contributed, 0)::bigint AS total_score_contributed,
     last_fired_at
 FROM mv_rule_performance
 WHERE org_id = @org_id OR org_id IS NULL
@@ -106,7 +106,7 @@ SELECT
     emails_last_24h,
     emails_last_7d,
     emails_last_30d,
-    avg_risk_score,
+    COALESCE(avg_risk_score, 0)::float8 AS avg_risk_score,
     max_risk_score,
     high_risk_count,
     medium_risk_count,
