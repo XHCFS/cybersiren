@@ -596,7 +596,20 @@ func messageID(raw contracts.EmailsRaw, h mail.Header) string {
 		// producer that forwarded a bracketed id.
 		return rfc822.TrimMessageID(raw.MessageID)
 	}
-	return rfc822.TrimMessageID(h.Get("Message-Id"))
+	if hdr := rfc822.TrimMessageID(h.Get("Message-Id")); hdr != "" {
+		return hdr
+	}
+	// No usable Message-ID (common for pasted / uploaded .eml that real MTAs
+	// would have stamped). Synthesize a stable, unique id from the logical
+	// UUIDv7 email_id so the email is still registered in email_identities and
+	// therefore resolvable by email_id in the read API (svc-10 console). The
+	// email_id is unique per ingestion, so this never causes a false dedup and
+	// never collides on the (org_id, message_id) registry key. Without this the
+	// email persists but is unreachable from the console detail view (404).
+	if raw.Meta.EmailID != "" {
+		return raw.Meta.EmailID + "@synthesized.cybersiren.local"
+	}
+	return ""
 }
 
 func splitAddress(raw string) (addr, name string) {
