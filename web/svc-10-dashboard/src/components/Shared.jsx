@@ -60,3 +60,46 @@ export function RiskPill({ score }) {
 export function VerdictChip({ label }) {
   return <span className={`chip ${verdictClass(label)}`}>{verdictText(label)}</span>;
 }
+
+// ErrorBoundary catches render-time throws anywhere in the subtree so an
+// unanticipated error (e.g. a contract field arriving in an unexpected shape)
+// degrades to the shared ErrorState chrome with a reload action instead of
+// unmounting the whole app to a blank white screen.
+export class ErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { error: null };
+  }
+
+  static getDerivedStateFromError(error) {
+    return { error };
+  }
+
+  componentDidCatch(error, info) {
+    // Surface the failure for diagnostics without crashing the tree.
+    // eslint-disable-next-line no-console
+    console.error('Render error caught by ErrorBoundary:', error, info);
+  }
+
+  render() {
+    if (this.state.error) {
+      return (
+        <div className="state error" style={{ minHeight: '60vh' }}>
+          <div className="state-title">Something went wrong</div>
+          <div style={{ maxWidth: 460 }}>
+            {(this.state.error && this.state.error.message) ||
+              'An unexpected error interrupted this view.'}
+          </div>
+          <button
+            className="btn sm"
+            onClick={() => window.location.reload()}
+            style={{ marginTop: 6 }}
+          >
+            Reload
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
