@@ -72,6 +72,36 @@ WHERE org_id = $1
   AND email = $2
   AND deleted_at IS NULL;
 
+-- name: GetUserByEmailWithPassword :one
+-- Reads a user by (org_id, email) INCLUDING password_hash, for the svc-10
+-- dashboard login flow (POST /api/v1/auth/login). GetUserByEmail deliberately
+-- omits password_hash; this variant returns it so the handler can bcrypt-compare
+-- the presented password against the stored hash. password_hash is NULLABLE
+-- (users may be created without a local password); the caller MUST reject a NULL
+-- hash and never leak which credential field was wrong (generic 401). users is a
+-- control-plane table and is NOT RLS-forced, so the org_id predicate is the
+-- tenant boundary. Soft-deleted users are excluded.
+SELECT
+    id,
+    org_id,
+    email,
+    display_name,
+    role,
+    password_hash,
+    last_login_at,
+    created_at
+FROM users
+WHERE org_id = $1
+  AND email = $2
+  AND deleted_at IS NULL;
+
+-- name: TouchUserLastLogin :exec
+-- Records that a user successfully authenticated (best-effort; off the login
+-- hot path). users is a control-plane table, not RLS-forced.
+UPDATE users
+SET last_login_at = NOW()
+WHERE id = $1;
+
 -- name: ListOrgAdmins :many
 -- Admin contacts for an organisation, used by SVC-09 to address email alerts
 -- (ARCH-SPEC §1-step6a: "SELECT email, display_name FROM users WHERE org_id=?

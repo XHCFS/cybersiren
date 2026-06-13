@@ -161,6 +161,62 @@ func (q *Queries) GetUserByEmail(ctx context.Context, arg GetUserByEmailParams) 
 	return i, err
 }
 
+const getUserByEmailWithPassword = `-- name: GetUserByEmailWithPassword :one
+SELECT
+    id,
+    org_id,
+    email,
+    display_name,
+    role,
+    password_hash,
+    last_login_at,
+    created_at
+FROM users
+WHERE org_id = $1
+  AND email = $2
+  AND deleted_at IS NULL
+`
+
+type GetUserByEmailWithPasswordParams struct {
+	OrgID int64  `db:"org_id" json:"org_id"`
+	Email string `db:"email" json:"email"`
+}
+
+type GetUserByEmailWithPasswordRow struct {
+	ID           int64              `db:"id" json:"id"`
+	OrgID        int64              `db:"org_id" json:"org_id"`
+	Email        string             `db:"email" json:"email"`
+	DisplayName  pgtype.Text        `db:"display_name" json:"display_name"`
+	Role         UserRole           `db:"role" json:"role"`
+	PasswordHash pgtype.Text        `db:"password_hash" json:"password_hash"`
+	LastLoginAt  pgtype.Timestamptz `db:"last_login_at" json:"last_login_at"`
+	CreatedAt    pgtype.Timestamptz `db:"created_at" json:"created_at"`
+}
+
+// Reads a user by (org_id, email) INCLUDING password_hash, for the svc-10
+// dashboard login flow (POST /api/v1/auth/login). GetUserByEmail deliberately
+// omits password_hash; this variant returns it so the handler can bcrypt-compare
+// the presented password against the stored hash. password_hash is NULLABLE
+// (users may be created without a local password); the caller MUST reject a NULL
+// hash and never leak which credential field was wrong (generic 401). users is a
+// control-plane table and is NOT RLS-forced, so the org_id predicate is the
+// tenant boundary. Soft-deleted users are excluded.
+func (q *Queries) GetUserByEmailWithPassword(ctx context.Context, arg GetUserByEmailWithPasswordParams) (GetUserByEmailWithPasswordRow, error) {
+	row := q.db.QueryRow(ctx, getUserByEmailWithPassword, arg.OrgID, arg.Email)
+	var i GetUserByEmailWithPasswordRow
+	err := row.Scan(
+		&i.ID,
+		&i.OrgID,
+		&i.Email,
+		&i.DisplayName,
+		&i.Role,
+		&i.PasswordHash,
+		&i.LastLoginAt,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const getUserByID = `-- name: GetUserByID :one
 SELECT
     id,
@@ -323,5 +379,18 @@ WHERE id = $1
 // Records that an API key was used for a request.
 func (q *Queries) TouchAPIKeyLastUsed(ctx context.Context, id int64) error {
 	_, err := q.db.Exec(ctx, touchAPIKeyLastUsed, id)
+	return err
+}
+
+const touchUserLastLogin = `-- name: TouchUserLastLogin :exec
+UPDATE users
+SET last_login_at = NOW()
+WHERE id = $1
+`
+
+// Records that a user successfully authenticated (best-effort; off the login
+// hot path). users is a control-plane table, not RLS-forced.
+func (q *Queries) TouchUserLastLogin(ctx context.Context, id int64) error {
+	_, err := q.db.Exec(ctx, touchUserLastLogin, id)
 	return err
 }
