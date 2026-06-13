@@ -288,17 +288,16 @@ After score blending + rule adjustments:
 | 0–25 | — | `benign` |
 | 26–50 | — | `suspicious` |
 | 51–75 | — | `phishing` |
-| 76–100 | attachment is the dominant/high driver | `malware` |
+| 76–100 | a high (malware-grade) attachment is present | `malware` |
 | 76–100 | otherwise | `phishing` (high) |
 
-**Malware-vs-phishing reconcile (76–100 band).** The top band covers both "phishing(high)" and "malware". We disambiguate by the dominant signal: a high score driven by a malicious attachment is `malware`; a high score driven by URL/header/NLP signals is high-confidence `phishing`. This is `ReconcileLabel(score, components)`; `engine.LabelFor` is left pure (score→band only) and the reconcile wraps it.
+**Malware-vs-phishing reconcile (76–100 band).** The top band covers both "phishing(high)" and "malware". We disambiguate by the attachment: a top-band verdict that carries a malware-grade attachment is `malware`; a top-band verdict driven only by URL/header/NLP signals (no malware-grade attachment) is high-confidence `phishing`. This is `ReconcileLabel(score, components)`; `engine.LabelFor` is left pure (score→band only) and the reconcile wraps it.
 
-The attachment is the **dominant/high driver** iff:
+The verdict is `malware` iff a **high, malware-grade attachment** is present:
 - the attachment component is present (a `nil` component is "absent", not 0), AND
-- `attachment_score >= 76` (the malware-band floor — the attachment must itself be malware-grade), AND
-- `attachment_score >= max(present url, header, nlp)` — it is at least as high as every other present component. A `nil` component is ignored; if the attachment is the only present component it is trivially the max.
+- `attachment_score >= 76` (the malware-band floor — the attachment must itself be malware-grade).
 
-Tie-handling: comparisons use `>=`, so an attachment **tied** with another high component still resolves to `malware` (the more severe of two equally-plausible labels). Only a strictly-higher non-attachment component demotes the verdict to `phishing(high)`.
+A confirmed malware-grade attachment makes the verdict `malware` **even when another component (URL/header/NLP) scored higher** — a malicious attachment is the more actionable threat, so its presence dominates the label. Only when no malware-grade attachment is present (absent, or `attachment_score < 76`) does the top-band verdict stay `phishing(high)`.
 
 Bands 0–75 are unaffected by the reconcile — attachment is ignored there.
 

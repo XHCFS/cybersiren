@@ -40,10 +40,12 @@ func LabelFor(score int) Label {
 // brief §3.6. It returns LabelFor(score) unchanged for every band except
 // the malware band (76–100), where it returns:
 //
-//   - LabelMalware  — only when the attachment component is the dominant
-//     high driver of the score (see attachmentIsDominantHigh).
+//   - LabelMalware  — whenever a high, malware-grade attachment is present
+//     (see hasHighAttachment). A confirmed malware-grade attachment makes
+//     the verdict malware even when a URL/header/NLP signal scored higher,
+//     because the malicious attachment is the more actionable threat.
 //   - LabelPhishing — otherwise (the high score is driven by URL/header/
-//     NLP signals, i.e. phishing(high)).
+//     NLP signals with no malware-grade attachment, i.e. phishing(high)).
 //
 // Bands 0–75 are returned verbatim; this is purely a malware-vs-phishing
 // disambiguation of the top band.
@@ -57,35 +59,22 @@ func ReconcileLabel(score int, c Components) Label {
 	if base != LabelMalware {
 		return base
 	}
-	if attachmentIsDominantHigh(c) {
+	if hasHighAttachment(c) {
 		return LabelMalware
 	}
 	return LabelPhishing
 }
 
-// attachmentIsDominantHigh reports whether the attachment component is
-// the dominant high driver of the blended score. It is true iff the
-// attachment score is present, is itself in the malware band (≥ 76, the
-// malware-band floor), and is ≥ every other PRESENT component (a nil
-// component is not "present" and is ignored; if attachment is the only
-// present component it is trivially the max). Ties go to attachment
-// (>=), so an attachment tied with another high component still yields
-// malware — the more severe of the two equally-plausible labels.
-func attachmentIsDominantHigh(c Components) bool {
-	if c.Attachment == nil || *c.Attachment < 76 {
-		return false
-	}
-	att := *c.Attachment
-	if c.URL != nil && *c.URL > att {
-		return false
-	}
-	if c.Header != nil && *c.Header > att {
-		return false
-	}
-	if c.NLP != nil && *c.NLP > att {
-		return false
-	}
-	return true
+// hasHighAttachment reports whether the email carries a high, malware-grade
+// attachment: the attachment component is present (a nil component is
+// "absent", not 0) and is itself in the malware band (≥ 76, the malware-band
+// floor). Per §3.6 a malware-grade attachment makes the top-band verdict
+// "malware" regardless of the other components — even when a URL/header/NLP
+// signal scored higher — because a confirmed malicious attachment is the more
+// actionable threat. Attachments below the floor (< 76) leave the verdict
+// phishing(high).
+func hasHighAttachment(c Components) bool {
+	return c.Attachment != nil && *c.Attachment >= 76
 }
 
 // verdictLabelAndConfidence computes the persisted/wire verdict label and
