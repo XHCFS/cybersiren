@@ -35,6 +35,59 @@ func LabelFor(score int) Label {
 	}
 }
 
+// ReconcileLabel refines the verdict label inside the high-risk band so
+// the pipeline distinguishes "phishing(high)" from "malware" per design
+// brief §3.6. It returns LabelFor(score) unchanged for every band except
+// the malware band (76–100), where it returns:
+//
+//   - LabelMalware  — only when the attachment component is the dominant
+//     high driver of the score (see attachmentIsDominantHigh).
+//   - LabelPhishing — otherwise (the high score is driven by URL/header/
+//     NLP signals, i.e. phishing(high)).
+//
+// Bands 0–75 are returned verbatim; this is purely a malware-vs-phishing
+// disambiguation of the top band.
+//
+// IMPORTANT: this changes only the persisted/wire label string. Confidence
+// must still be computed against the SCORE's natural band via
+// Confidence(score, LabelFor(score), …) — passing the reconciled phishing
+// label for an 85 score would collapse confidence to 0. See §3.6/§3.7.
+func ReconcileLabel(score int, c Components) Label {
+	base := LabelFor(score)
+	if base != LabelMalware {
+		return base
+	}
+	if attachmentIsDominantHigh(c) {
+		return LabelMalware
+	}
+	return LabelPhishing
+}
+
+// attachmentIsDominantHigh reports whether the attachment component is
+// the dominant high driver of the blended score. It is true iff the
+// attachment score is present, is itself in the malware band (≥ 76, the
+// malware-band floor), and is ≥ every other PRESENT component (a nil
+// component is not "present" and is ignored; if attachment is the only
+// present component it is trivially the max). Ties go to attachment
+// (>=), so an attachment tied with another high component still yields
+// malware — the more severe of the two equally-plausible labels.
+func attachmentIsDominantHigh(c Components) bool {
+	if c.Attachment == nil || *c.Attachment < 76 {
+		return false
+	}
+	att := *c.Attachment
+	if c.URL != nil && *c.URL > att {
+		return false
+	}
+	if c.Header != nil && *c.Header > att {
+		return false
+	}
+	if c.NLP != nil && *c.NLP > att {
+		return false
+	}
+	return true
+}
+
 // LabelBand returns the [lower, upper] threshold bounds of the label's
 // score band. Used by the confidence formula to compute distance from
 // the nearest threshold.

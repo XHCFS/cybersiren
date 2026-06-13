@@ -283,12 +283,26 @@ Each fired rule is written to `rule_hits` with `entity_type='email'`, `entity_id
 
 After score blending + rule adjustments:
 
-| Score range | Label |
-|-------------|-------|
-| 0–25 | `benign` |
-| 26–50 | `suspicious` |
-| 51–75 | `phishing` |
-| 76–100 | `malware` |
+| Score range | Condition | Label |
+|-------------|-----------|-------|
+| 0–25 | — | `benign` |
+| 26–50 | — | `suspicious` |
+| 51–75 | — | `phishing` |
+| 76–100 | attachment is the dominant/high driver | `malware` |
+| 76–100 | otherwise | `phishing` (high) |
+
+**Malware-vs-phishing reconcile (76–100 band).** The top band covers both "phishing(high)" and "malware". We disambiguate by the dominant signal: a high score driven by a malicious attachment is `malware`; a high score driven by URL/header/NLP signals is high-confidence `phishing`. This is `ReconcileLabel(score, components)`; `engine.LabelFor` is left pure (score→band only) and the reconcile wraps it.
+
+The attachment is the **dominant/high driver** iff:
+- the attachment component is present (a `nil` component is "absent", not 0), AND
+- `attachment_score >= 76` (the malware-band floor — the attachment must itself be malware-grade), AND
+- `attachment_score >= max(present url, header, nlp)` — it is at least as high as every other present component. A `nil` component is ignored; if the attachment is the only present component it is trivially the max.
+
+Tie-handling: comparisons use `>=`, so an attachment **tied** with another high component still resolves to `malware` (the more severe of two equally-plausible labels). Only a strictly-higher non-attachment component demotes the verdict to `phishing(high)`.
+
+Bands 0–75 are unaffected by the reconcile — attachment is ignored there.
+
+**Confidence is unaffected by the reconcile.** Confidence is computed against the SCORE's natural band — `Confidence(score, LabelFor(score), …)` — NOT the reconciled label. An 85 reclassified from `malware` to `phishing(high)` keeps the confidence it had in the 76–100 band; renaming the label must not move the distance-to-threshold. Passing the reconciled `phishing` label into `Confidence` would (wrongly) measure distance against the 51–75 band and collapse confidence toward 0. See §3.7.
 
 Note: `spam` and `unknown` labels exist in the `verdict_label` enum but are not yet assigned by the automated pipeline (reserved for analyst overrides).
 

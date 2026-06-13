@@ -227,6 +227,11 @@ func (e *Engine) Handle(ctx context.Context, msg kafkaconsumer.Message) error {
 		)
 	}
 
+	// preRuleLabel stays the PURE LabelFor band (no attachment reconcile):
+	// it is the pre-rule snapshot input that rule conditions match on, so
+	// reconciling it here could change which rules fire — a scoring
+	// feedback loop. The malware-vs-phishing reconcile is applied only to
+	// the final verdict label below.
 	preRuleLabel := LabelFor(Round(nudgedScore))
 	snap := BuildSnapshot(SnapshotInputs{
 		Scored:        scored,
@@ -245,8 +250,12 @@ func (e *Engine) Handle(ctx context.Context, msg kafkaconsumer.Message) error {
 	}
 
 	finalScore := ClampInt(Round(nudgedScore)+ruleAdjustment, 0, 100)
-	label := LabelFor(finalScore)
-	confidence := Confidence(finalScore, label, scored.PartialAnalysis, source)
+	// Verdict label is reconciled (malware vs phishing(high) in the 76–100
+	// band per §3.6). Confidence MUST use the score's NATURAL band label
+	// (LabelFor), not the reconciled one — otherwise an 85 reclassified to
+	// phishing would measure distance against the 51–75 band and collapse.
+	label := ReconcileLabel(finalScore, components)
+	confidence := Confidence(finalScore, LabelFor(finalScore), scored.PartialAnalysis, source)
 	procElapsed := time.Since(startedAt)
 
 	wireElapsed := procElapsed // snapshot for VerdictWireBuilder closure
@@ -393,9 +402,12 @@ func (e *Engine) publishDegraded(
 	elapsed time.Duration,
 ) error {
 	finalScore := ClampInt(Round(nudgedScore), 0, 100)
-	label := LabelFor(finalScore)
+	// Reconcile the verdict label (malware vs phishing(high)) but compute
+	// confidence against the score's natural band — see the main path
+	// above and §3.6/§3.7.
+	label := ReconcileLabel(finalScore, components)
 	source := VerdictSourceRule
-	confidence := Confidence(finalScore, label, scored.PartialAnalysis, source)
+	confidence := Confidence(finalScore, LabelFor(finalScore), scored.PartialAnalysis, source)
 	mvdeg := e.modelVersionFor(scored, source)
 
 	out, err := e.writer.Write(ctx, persist.Input{
