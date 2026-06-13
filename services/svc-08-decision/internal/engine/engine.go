@@ -254,8 +254,9 @@ func (e *Engine) Handle(ctx context.Context, msg kafkaconsumer.Message) error {
 	// band per §3.6). Confidence MUST use the score's NATURAL band label
 	// (LabelFor), not the reconciled one — otherwise an 85 reclassified to
 	// phishing would measure distance against the 51–75 band and collapse.
-	label := ReconcileLabel(finalScore, components)
-	confidence := Confidence(finalScore, LabelFor(finalScore), scored.PartialAnalysis, source)
+	// Both invariants live in verdictLabelAndConfidence so this path and the
+	// degraded path below stay in lockstep.
+	label, confidence := verdictLabelAndConfidence(finalScore, components, scored.PartialAnalysis, source)
 	procElapsed := time.Since(startedAt)
 
 	wireElapsed := procElapsed // snapshot for VerdictWireBuilder closure
@@ -404,10 +405,9 @@ func (e *Engine) publishDegraded(
 	finalScore := ClampInt(Round(nudgedScore), 0, 100)
 	// Reconcile the verdict label (malware vs phishing(high)) but compute
 	// confidence against the score's natural band — see the main path
-	// above and §3.6/§3.7.
-	label := ReconcileLabel(finalScore, components)
+	// above and §3.6/§3.7. Shared helper keeps both paths in lockstep.
 	source := VerdictSourceRule
-	confidence := Confidence(finalScore, LabelFor(finalScore), scored.PartialAnalysis, source)
+	label, confidence := verdictLabelAndConfidence(finalScore, components, scored.PartialAnalysis, source)
 	mvdeg := e.modelVersionFor(scored, source)
 
 	out, err := e.writer.Write(ctx, persist.Input{

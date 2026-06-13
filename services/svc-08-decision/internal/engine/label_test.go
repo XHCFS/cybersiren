@@ -76,43 +76,59 @@ func TestReconcileLabel(t *testing.T) {
 	}
 }
 
-// TestReconcileLabel_ConfidenceInvariant guards the confidence trap: a
-// score in the malware band reclassified to phishing must keep the SAME
-// confidence it would have had as malware, because confidence is computed
-// against the score's NATURAL band (LabelFor), independent of the
-// malware-vs-phishing renaming. If confidence ever started keying off the
-// reconciled label, an 85→phishing would measure against the 51–75 band
-// and collapse to 0 — this test would catch that regression.
-func TestReconcileLabel_ConfidenceInvariant(t *testing.T) {
+// TestVerdictLabelAndConfidence_ConfidenceTrap guards the confidence trap
+// at the EXACT production seam both Handle and publishDegraded call:
+// verdictLabelAndConfidence. A malware-band score reclassified to phishing
+// must keep the confidence of its NATURAL (76–100) band, because confidence
+// is computed against LabelFor(score), not the reconciled label.
+//
+// This is not a tautology: it derives the "buggy" value from the reconciled
+// label and asserts the helper does NOT use it. Were a future edit to thread
+// the reconciled label into Confidence (the regression the brief warns
+// about), the phishing case below would collapse from the natural band value
+// to the 51–75-band value and these assertions would fail.
+func TestVerdictLabelAndConfidence_ConfidenceTrap(t *testing.T) {
 	const score = 85
-	// Two component sets that yield the same score band but different
-	// reconciled labels.
+
+	// A high-band component set whose reconciled label is phishing(high)
+	// (URL-driven, no dominant attachment) and one whose reconciled label is
+	// malware (attachment-dominant). The trap only bites the phishing case.
+	phishingCase := Components{URL: ptrInt(85)}                        // → phishing(high)
 	malwareCase := Components{Attachment: ptrInt(90), URL: ptrInt(40)} // → malware
-	phishingCase := Components{URL: ptrInt(85)}                        // → phishing
 
-	if got := ReconcileLabel(score, malwareCase); got != LabelMalware {
-		t.Fatalf("precondition: malwareCase reconciled to %v, want malware", got)
-	}
-	if got := ReconcileLabel(score, phishingCase); got != LabelPhishing {
-		t.Fatalf("precondition: phishingCase reconciled to %v, want phishing", got)
-	}
-
-	// Confidence is always computed against LabelFor(score), so both must
-	// match — and both must equal the natural malware-band confidence.
+	// The natural-band confidence the helper MUST return regardless of the
+	// reconciled label, and the collapsed value the buggy wiring WOULD return
+	// for the phishing case. They must differ, or the test proves nothing.
 	natural := Confidence(score, LabelFor(score), false, VerdictSourceModel)
-	confMalware := Confidence(score, LabelFor(score), false, VerdictSourceModel)
-	confPhishing := Confidence(score, LabelFor(score), false, VerdictSourceModel)
-
-	if confMalware != natural || confPhishing != natural {
-		t.Fatalf("confidence drifted from natural band: malware=%v phishing=%v natural=%v",
-			confMalware, confPhishing, natural)
+	buggyCollapsed := Confidence(score, LabelPhishing, false, VerdictSourceModel)
+	if natural == buggyCollapsed {
+		t.Fatalf("test cannot exercise the trap: natural-band confidence (%v) equals "+
+			"the reconciled-phishing-band value (%v)", natural, buggyCollapsed)
 	}
-	// Sanity: had we (wrongly) keyed confidence off the reconciled phishing
-	// label, it would differ from the natural malware-band value.
-	wrong := Confidence(score, LabelPhishing, false, VerdictSourceModel)
-	if wrong == natural {
-		t.Fatalf("test is not exercising the trap: phishing-band confidence (%v) equals natural (%v)",
-			wrong, natural)
+
+	gotPhishLabel, gotPhishConf := verdictLabelAndConfidence(score, phishingCase, false, VerdictSourceModel)
+	if gotPhishLabel != LabelPhishing {
+		t.Fatalf("phishing case: label = %v, want phishing", gotPhishLabel)
+	}
+	if gotPhishConf != natural {
+		t.Fatalf("CONFIDENCE TRAP: phishing-reconciled label collapsed confidence to %v; "+
+			"must stay at the natural malware-band value %v (got the buggy %v? %t)",
+			gotPhishConf, natural, buggyCollapsed, gotPhishConf == buggyCollapsed)
+	}
+
+	gotMalLabel, gotMalConf := verdictLabelAndConfidence(score, malwareCase, false, VerdictSourceModel)
+	if gotMalLabel != LabelMalware {
+		t.Fatalf("malware case: label = %v, want malware", gotMalLabel)
+	}
+	if gotMalConf != natural {
+		t.Fatalf("malware case: confidence = %v, want natural-band %v", gotMalConf, natural)
+	}
+
+	// The whole point: labels differ (malware vs phishing) yet confidences are
+	// identical — the reconcile renames the label without perturbing confidence.
+	if gotPhishConf != gotMalConf {
+		t.Fatalf("confidence must be label-independent: phishing=%v malware=%v",
+			gotPhishConf, gotMalConf)
 	}
 }
 

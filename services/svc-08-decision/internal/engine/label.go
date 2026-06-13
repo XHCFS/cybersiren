@@ -88,6 +88,24 @@ func attachmentIsDominantHigh(c Components) bool {
 	return true
 }
 
+// verdictLabelAndConfidence computes the persisted/wire verdict label and
+// its confidence for a final score. This is the single seam both the main
+// (Handle) and degraded (publishDegraded) paths use, so the two CANNOT
+// drift apart and the confidence-trap invariant is exercised by one set of
+// tests.
+//
+// The label is RECONCILED (malware vs phishing(high) in the 76–100 band per
+// §3.6). The confidence is deliberately computed against the score's NATURAL
+// band — Confidence(finalScore, LabelFor(finalScore), …) — NOT the reconciled
+// label. Threading the reconciled label into Confidence is the regression the
+// brief warns about: an 85 reclassified to phishing would measure distance
+// against the 51–75 band and collapse confidence toward 0. See §3.6/§3.7.
+func verdictLabelAndConfidence(finalScore int, c Components, partialAnalysis bool, source string) (Label, float64) {
+	label := ReconcileLabel(finalScore, c)
+	confidence := Confidence(finalScore, LabelFor(finalScore), partialAnalysis, source)
+	return label, confidence
+}
+
 // LabelBand returns the [lower, upper] threshold bounds of the label's
 // score band. Used by the confidence formula to compute distance from
 // the nearest threshold.
