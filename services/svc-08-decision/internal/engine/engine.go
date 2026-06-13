@@ -250,12 +250,9 @@ func (e *Engine) Handle(ctx context.Context, msg kafkaconsumer.Message) error {
 	}
 
 	finalScore := ClampInt(Round(nudgedScore)+ruleAdjustment, 0, 100)
-	// Verdict label is reconciled (malware vs phishing(high) in the 76–100
-	// band per §3.6). Confidence MUST use the score's NATURAL band label
-	// (LabelFor), not the reconciled one — otherwise an 85 reclassified to
-	// phishing would measure distance against the 51–75 band and collapse.
-	// Both invariants live in verdictLabelAndConfidence so this path and the
-	// degraded path below stay in lockstep.
+	// Label is reconciled; confidence stays on the score's natural band. The
+	// shared seam keeps this path and the degraded path in lockstep — see
+	// verdictLabelAndConfidence for the confidence-trap invariant.
 	label, confidence := verdictLabelAndConfidence(finalScore, components, scored.PartialAnalysis, source)
 	procElapsed := time.Since(startedAt)
 
@@ -403,9 +400,8 @@ func (e *Engine) publishDegraded(
 	elapsed time.Duration,
 ) error {
 	finalScore := ClampInt(Round(nudgedScore), 0, 100)
-	// Reconcile the verdict label (malware vs phishing(high)) but compute
-	// confidence against the score's natural band — see the main path
-	// above and §3.6/§3.7. Shared helper keeps both paths in lockstep.
+	// Same shared seam as the main path: reconciled label, natural-band
+	// confidence. See verdictLabelAndConfidence.
 	source := VerdictSourceRule
 	label, confidence := verdictLabelAndConfidence(finalScore, components, scored.PartialAnalysis, source)
 	mvdeg := e.modelVersionFor(scored, source)

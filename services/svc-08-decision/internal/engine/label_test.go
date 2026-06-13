@@ -44,17 +44,20 @@ func TestReconcileLabel(t *testing.T) {
 		c     Components
 		want  Label
 	}{
-		// Malware band (76–100): malware whenever a high (≥76) attachment
-		// is present, regardless of the other components.
+		// Malware band (76–100): malware whenever a high (≥76) attachment is
+		// present. ReconcileLabel never COMPARES components — the other scores'
+		// magnitudes are irrelevant; only "is the attachment ≥ the floor" matters.
+		// The cases below set non-attachment components purely to prove they are
+		// ignored, not because they participate in a comparison.
 		{"high attachment → malware", 85, Components{Attachment: ptrInt(90), URL: ptrInt(40)}, LabelMalware},
 		{"attachment nil in band → phishing", 85, Components{URL: ptrInt(85)}, LabelPhishing},
 		{"attachment present but below floor → phishing", 85, Components{Attachment: ptrInt(30), URL: ptrInt(80)}, LabelPhishing},
 		{"attachment just below floor (75) → phishing", 85, Components{Attachment: ptrInt(75), URL: ptrInt(95)}, LabelPhishing},
-		{"high attachment even though URL strictly higher → malware", 90, Components{Attachment: ptrInt(80), URL: ptrInt(95)}, LabelMalware},
-		{"high attachment even though NLP higher → malware (smoke case)", 80, Components{Attachment: ptrInt(90), NLP: ptrInt(100), Header: ptrInt(60)}, LabelMalware},
-		{"attachment ties another high component → malware", 85, Components{Attachment: ptrInt(90), URL: ptrInt(90)}, LabelMalware},
+		{"high attachment, larger URL ignored → malware", 90, Components{Attachment: ptrInt(80), URL: ptrInt(95)}, LabelMalware},
+		{"high attachment, larger NLP/Header ignored → malware (smoke case)", 80, Components{Attachment: ptrInt(90), NLP: ptrInt(100), Header: ptrInt(60)}, LabelMalware},
+		{"high attachment, equal URL ignored → malware", 85, Components{Attachment: ptrInt(90), URL: ptrInt(90)}, LabelMalware},
 		{"attachment only present component → malware", 85, Components{Attachment: ptrInt(80)}, LabelMalware},
-		{"attachment at floor (76), URL higher → malware", 85, Components{Attachment: ptrInt(76), URL: ptrInt(99)}, LabelMalware},
+		{"attachment at floor (76), larger URL ignored → malware", 85, Components{Attachment: ptrInt(76), URL: ptrInt(99)}, LabelMalware},
 		{"no components in band → phishing", 90, Components{}, LabelPhishing},
 
 		// Boundary at 76, both ways.

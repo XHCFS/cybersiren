@@ -35,29 +35,28 @@ func LabelFor(score int) Label {
 	}
 }
 
-// ReconcileLabel refines the verdict label inside the high-risk band so
-// the pipeline distinguishes "phishing(high)" from "malware" per design
-// brief §3.6. It returns LabelFor(score) unchanged for every band except
-// the malware band (76–100), where it returns:
+// ReconcileLabel refines the verdict label inside the high-risk band so the
+// pipeline distinguishes "phishing(high)" from "malware" per design brief §3.6.
+// Bands 0–75 are returned verbatim; only the malware band (76–100) is split:
 //
-//   - LabelMalware  — whenever a high, malware-grade attachment is present
-//     (see hasHighAttachment). A confirmed malware-grade attachment makes
-//     the verdict malware even when a URL/header/NLP signal scored higher,
-//     because the malicious attachment is the more actionable threat.
-//   - LabelPhishing — otherwise (the high score is driven by URL/header/
-//     NLP signals with no malware-grade attachment, i.e. phishing(high)).
+//   - LabelMalware  — a high, malware-grade attachment is present (see
+//     hasHighAttachment). It wins even when a URL/header/NLP signal scored
+//     higher, because the malicious attachment is the more actionable threat.
+//   - LabelPhishing — otherwise (high score driven by URL/header/NLP signals
+//     with no malware-grade attachment, i.e. phishing(high)).
 //
-// Bands 0–75 are returned verbatim; this is purely a malware-vs-phishing
-// disambiguation of the top band.
-//
-// IMPORTANT: this changes only the persisted/wire label string. Confidence
-// must still be computed against the SCORE's natural band via
-// Confidence(score, LabelFor(score), …) — passing the reconciled phishing
-// label for an 85 score would collapse confidence to 0. See §3.6/§3.7.
+// This refines only the persisted/wire label; confidence MUST stay on the
+// score's natural band — see verdictLabelAndConfidence for the why.
 func ReconcileLabel(score int, c Components) Label {
-	base := LabelFor(score)
-	if base != LabelMalware {
-		return base
+	return reconcile(LabelFor(score), c)
+}
+
+// reconcile applies the malware-vs-phishing split to an already-computed
+// natural-band label, so the hot path can derive the band once and feed it to
+// both the reconcile and the confidence formula without recomputing LabelFor.
+func reconcile(natural Label, c Components) Label {
+	if natural != LabelMalware {
+		return natural
 	}
 	if hasHighAttachment(c) {
 		return LabelMalware
@@ -65,34 +64,30 @@ func ReconcileLabel(score int, c Components) Label {
 	return LabelPhishing
 }
 
-// hasHighAttachment reports whether the email carries a high, malware-grade
-// attachment: the attachment component is present (a nil component is
-// "absent", not 0) and is itself in the malware band (≥ 76, the malware-band
-// floor). Per §3.6 a malware-grade attachment makes the top-band verdict
-// "malware" regardless of the other components — even when a URL/header/NLP
-// signal scored higher — because a confirmed malicious attachment is the more
-// actionable threat. Attachments below the floor (< 76) leave the verdict
-// phishing(high).
+// hasHighAttachment reports whether the email carries a malware-grade
+// attachment: the attachment component is present (a nil component is "absent",
+// not 0) and is itself in the malware band. The floor is taken from
+// LabelBand(LabelMalware) so it can never drift from LabelFor's band edges.
 func hasHighAttachment(c Components) bool {
-	return c.Attachment != nil && *c.Attachment >= 76
+	floor, _ := LabelBand(LabelMalware)
+	return c.Attachment != nil && *c.Attachment >= floor
 }
 
-// verdictLabelAndConfidence computes the persisted/wire verdict label and
-// its confidence for a final score. This is the single seam both the main
-// (Handle) and degraded (publishDegraded) paths use, so the two CANNOT
-// drift apart and the confidence-trap invariant is exercised by one set of
-// tests.
+// verdictLabelAndConfidence computes the persisted/wire verdict label and its
+// confidence for a final score. Both the main (Handle) and degraded
+// (publishDegraded) paths go through this single seam, so the two cannot drift
+// and one set of tests covers the invariant below.
 //
-// The label is RECONCILED (malware vs phishing(high) in the 76–100 band per
-// §3.6). The confidence is deliberately computed against the score's NATURAL
-// band — Confidence(finalScore, LabelFor(finalScore), …) — NOT the reconciled
-// label. Threading the reconciled label into Confidence is the regression the
-// brief warns about: an 85 reclassified to phishing would measure distance
-// against the 51–75 band and collapse confidence toward 0. See §3.6/§3.7.
+// CONFIDENCE TRAP: the label is reconciled (malware vs phishing(high) in the
+// 76–100 band per §3.6), but confidence is computed against the score's NATURAL
+// band, never the reconciled label. Threading the reconciled label in would
+// measure an 85 reclassified to phishing against the 51–75 band and collapse
+// confidence toward 0. The natural band is bound to `natural` once and passed
+// straight to Confidence; there is deliberately no reconciled-label variable in
+// scope to thread in by mistake. See §3.6/§3.7.
 func verdictLabelAndConfidence(finalScore int, c Components, partialAnalysis bool, source string) (Label, float64) {
-	label := ReconcileLabel(finalScore, c)
-	confidence := Confidence(finalScore, LabelFor(finalScore), partialAnalysis, source)
-	return label, confidence
+	natural := LabelFor(finalScore)
+	return reconcile(natural, c), Confidence(finalScore, natural, partialAnalysis, source)
 }
 
 // LabelBand returns the [lower, upper] threshold bounds of the label's

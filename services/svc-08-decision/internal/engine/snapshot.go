@@ -25,7 +25,14 @@ func BuildSnapshot(in SnapshotInputs) rules.SignalSnapshot {
 		"score.blended":         in.BlendedScore,
 		"score.campaign_nudged": in.NudgedScore,
 		"partial_analysis":      in.Scored.PartialAnalysis,
-		"verdict.label":         string(in.PreRuleLabel),
+		// verdict.label is the PRE-RULE pure score→band label (LabelFor), NOT
+		// the final reconciled verdict. Rules match on it before they run, so it
+		// deliberately ignores the malware-vs-phishing(high) attachment
+		// reconcile: a high-band email with no malware-grade attachment shows
+		// here as "malware" even though its final verdict is "phishing". Rule
+		// authors keying on verdict.label == "malware" are matching the band,
+		// not the published label. See engine.go (preRuleLabel) and brief §3.5.
+		"verdict.label": string(in.PreRuleLabel),
 	}
 
 	if in.Components.URL != nil {

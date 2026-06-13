@@ -268,7 +268,10 @@ SVC-08 loads rules with `target IN ('email', 'decision')` (SVC-04 loads `target 
 "score.attachment"   → float64 (or absent if null)
 "score.blended"      → float64 (the pre-rule blended score)
 "partial_analysis"   → bool
-"verdict.label"      → string (pre-rule verdict label, before adjustments)
+"verdict.label"      → string (pre-rule score→band label, before adjustments; this is
+                       the pure LabelFor band, NOT the final reconciled verdict — a
+                       high-band email with no malware-grade attachment shows here as
+                       "malware" even though its published verdict is "phishing")
 "campaign.is_new"    → bool
 "campaign.risk_score"→ float64 (rolling average from campaigns table, 0 if new)
 "campaign.email_count"→ int
@@ -291,7 +294,7 @@ After score blending + rule adjustments:
 | 76–100 | a high (malware-grade) attachment is present | `malware` |
 | 76–100 | otherwise | `phishing` (high) |
 
-**Malware-vs-phishing reconcile (76–100 band).** The top band covers both "phishing(high)" and "malware". We disambiguate by the attachment: a top-band verdict that carries a malware-grade attachment is `malware`; a top-band verdict driven only by URL/header/NLP signals (no malware-grade attachment) is high-confidence `phishing`. This is `ReconcileLabel(score, components)`; `engine.LabelFor` is left pure (score→band only) and the reconcile wraps it.
+**Malware-vs-phishing reconcile (76–100 band).** The top band covers both "phishing(high)" and "malware". We disambiguate by the attachment: a top-band verdict that carries a malware-grade attachment is `malware`; a top-band verdict driven only by URL/header/NLP signals (no malware-grade attachment) is high-band `phishing` (i.e. `phishing(high)`). "High" here means the score band, not the confidence value — see the confidence note below: a `phishing(high)` verdict near a band edge can carry a confidence close to 0. This is `ReconcileLabel(score, components)`; `engine.LabelFor` is left pure (score→band only) and the reconcile wraps it.
 
 The verdict is `malware` iff a **high, malware-grade attachment** is present:
 - the attachment component is present (a `nil` component is "absent", not 0), AND
