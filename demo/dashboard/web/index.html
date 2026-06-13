@@ -4,6 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>CyberSiren — Inbox Scanner</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none'%3E%3Cpath d='M12 2l8 3v6c0 5-3.4 8.5-8 11-4.6-2.5-8-6-8-11V5l8-3z' stroke='%232ee6c4' stroke-width='1.5' stroke-linejoin='round'/%3E%3Cpath d='M12 7v6M12 16v0.5' stroke='%232ee6c4' stroke-width='1.6' stroke-linecap='round'/%3E%3C/svg%3E" />
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=Outfit:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
@@ -123,6 +124,20 @@
   .link:last-child{border-bottom:0}
   .l1l2{display:flex; gap:6px; margin-top:5px; flex-wrap:wrap}
   .gc-green{--gc:var(--green)} .gc-amber{--gc:var(--amber)} .gc-rose{--gc:var(--rose)}
+
+  /* consumer verdict: plain-language reasons + collapsible technical details */
+  .reasons{border:1px solid var(--line); border-radius:14px; padding:14px 16px; margin-bottom:14px; background:#0b1422}
+  .reasons.low{border-color:#1c4332} .reasons.med{border-color:#4a3a18} .reasons.high{border-color:#5a2330}
+  .reasons .rh{font-family:'Fraunces',serif; font-size:14.5px; margin-bottom:9px; color:var(--text)}
+  .reasons ul{margin:0; padding-left:20px} .reasons li{margin:6px 0; font-size:13.5px}
+  .reasons.low li::marker{color:var(--green)} .reasons.med li::marker{color:var(--amber)} .reasons.high li::marker{color:var(--rose)}
+  .reasons .advice{margin-top:11px; font-size:12.5px; color:var(--muted); border-top:1px dashed #16243a; padding-top:9px}
+  details.tech{border:1px solid var(--line); border-radius:12px; background:#0a1422; overflow:hidden}
+  details.tech>summary{cursor:pointer; padding:12px 16px; font-size:13px; color:var(--muted); user-select:none; list-style:none}
+  details.tech>summary::-webkit-details-marker{display:none}
+  details.tech>summary::before{content:"▸  "; color:var(--teal)} details.tech[open]>summary::before{content:"▾  "}
+  details.tech>summary:hover{color:var(--text)}
+  .techbody{padding:4px 16px 16px}
   .toast{position:fixed; bottom:22px; left:50%; transform:translateX(-50%); background:#0e1c2b; border:1px solid var(--teal);
     color:var(--text); padding:11px 18px; border-radius:11px; font-size:13px; opacity:0; transition:opacity .3s; pointer-events:none}
   .toast.show{opacity:1}
@@ -138,7 +153,7 @@
       </div>
       <div>
         <h1>CyberSiren</h1>
-        <div class="sub">Inbox phishing scanner · live demo</div>
+        <div class="sub">Phishing protection for your inbox</div>
       </div>
     </div>
     <div class="gmail-pill" id="gmail-pill">
@@ -289,9 +304,67 @@ function modHead(title,icon,score){ return '<h3>'+icon+' '+title+'<span class="s
 function kv(k,v){ return '<div class="kv"><span class="k">'+k+'</span><span class="v">'+v+'</span></div>'; }
 
 // The pipeline label is a SEVERITY BAND (benign≤25 / suspicious≤50 / phishing≤75
-// / malware≤100), not a threat type — "malware" just means top band. Show
-// severity wording so it doesn't read as "this email contains malware".
-function bandName(l){ return ({benign:'Clean', suspicious:'Suspicious', phishing:'High risk', malware:'Critical'})[l] || (l||'unknown'); }
+// / malware≤100), not a threat type — "malware" just means top band. Collapse
+// the six labels into a 3-tier consumer verdict so it reads as a safety call,
+// never "this email contains malware".
+function bandName(l){ if(l==='benign') return 'Safe'; if(l==='spam') return 'Spam'; if(l==='phishing'||l==='malware') return 'Dangerous'; return 'Suspicious'; }
+function bandClass(l){ if(l==='benign') return 'low'; if(l==='phishing'||l==='malware') return 'high'; return 'med'; }
+function bandAdvice(cls){ return cls==='high' ? 'Don’t click links, open attachments, or reply. Delete it or report it.'
+  : cls==='med' ? 'Treat with caution — verify the sender before acting on anything in this message.'
+  : 'This message looks legitimate, but always stay alert with links and attachments.'; }
+
+// consumerReasons turns the pipeline's module signals into a few plain-English
+// sentences a non-technical user understands. It reads only fields already in
+// the scanView DTO (see view.go) — no new backend data.
+function consumerReasons(v){
+  const out=[]; const m=v.modules||{}; const ver=v.verdict;
+  const push=(s)=>{ if(s && out.indexOf(s)<0) out.push(s); };
+  // Attachment
+  const a=m.attachment;
+  if(a){
+    if(a.malicious>0) push('Carries a malicious attachment.');
+    (a.files||[]).forEach(f=>{
+      if(f.dangerous_extension) push('Has a dangerous attachment type'+(f.filename?(' (“'+f.filename+'”)'):'')+'.');
+      else if(f.extension_mismatch) push('An attachment’s real type doesn’t match its name.');
+      if(f.has_macros) push('An attachment can run code (macros).');
+    });
+  }
+  // URLs
+  const u=m.url;
+  if(u){
+    if(u.ti_blocked>0) push('Links to a site on a known-malicious blocklist.');
+    (u.links||[]).forEach(l=>{
+      if(l.guard_hit){ const b=String(l.guard_hit).split(':').pop(); push('A link imitates a known brand'+(b&&b!==l.guard_hit?(' ('+b+')'):'')+'.'); }
+      if(l.ml_verdict==='phishing') push('A link looks like a fake login / phishing page.');
+      if(l.is_shortened) push('Uses a shortened link that hides where it really goes.');
+    });
+  }
+  // Header / sender authentication
+  const hd=m.header;
+  if(hd){
+    const af=['spf','dkim','dmarc'].filter(k=>{ const s=String(hd[k]||'').toLowerCase(); return s==='fail'||s==='softfail'; });
+    if(af.length) push('Failed sender authentication ('+af.map(x=>x.toUpperCase()).join('/')+') — the sender may be spoofed.');
+    if(hd.typosquat_target) push('The sender’s domain imitates '+hd.typosquat_target+'.');
+    if(hd.free_provider) push('Sent from a free webmail account posing as an organisation.');
+  }
+  // Language / NLP
+  const n=m.nlp;
+  if(n){
+    if(n.urgency!=null && n.urgency>=0.6) push('Uses urgent, pressuring language to rush you.');
+    const cls=String(n.classification||n.intent||'').toLowerCase();
+    if(cls.indexOf('cred')>=0||cls.indexOf('phish')>=0||cls.indexOf('account')>=0) push('Tries to get your password or personal details.');
+    if(n.obfuscation) push('Text is disguised to slip past spam filters.');
+    if(n.has_facets && n.impersonated_brand) push('Pretends to be '+n.impersonated_brand+'.');
+  }
+  if(out.length) return out.slice(0,4);
+  // No risk signals → reassurances for a Safe verdict.
+  const ok=[];
+  if(hd && String(hd.spf||'').toLowerCase()==='pass') ok.push('Passed sender authentication checks.');
+  if(u && !(u.ti_blocked>0)) ok.push('No links matched known threats.');
+  if(a && !(a.malicious>0)) ok.push('No risky attachments found.');
+  ok.push('Language and structure look normal.');
+  return ok.slice(0,4);
+}
 // topDriver names the highest-scoring module so the verdict says WHAT drove it.
 function topDriver(m){
   if(!m) return '';
@@ -302,36 +375,38 @@ function topDriver(m){
 
 function renderDetail(v){
   const d=$('detail');
-  if(v.status==='pending' || (!v.verdict && !v.modules.url && !v.modules.header && !v.modules.nlp && !v.modules.attachment)){
-    d.innerHTML='<div class="placeholder"><div><div class="spin" style="font-size:26px">⏳</div><div style="margin-top:8px">Scoring <code>'+esc(v.email_id.slice(0,18))+'…</code><br/><span class="muted small">parsing → URL/header/NLP/attachment → aggregation → decision</span></div></div></div>';
+  const m=v.modules||{};
+  if(v.status==='pending' || (!v.verdict && !m.url && !m.header && !m.nlp && !m.attachment)){
+    d.innerHTML='<div class="placeholder"><div><div class="spin" style="font-size:26px">⏳</div><div style="margin-top:8px">Checking this email…<br/><span class="muted small">usually a few seconds — reading links, sender, language &amp; attachments</span></div></div></div>';
     return;
   }
+  const ver=v.verdict; const score=ver?ver.risk_score:null;
+  const cls = ver?bandClass(ver.label):'med';
+  const gc = cls==='high'?'var(--rose)':cls==='med'?'var(--amber)':'var(--green)';
+  const gcCls = cls==='high'?'gc-rose':cls==='med'?'gc-amber':'gc-green';
   let html='';
-  // hero
-  const ver=v.verdict; const score=ver?ver.risk_score:null; const s=sev(score);
-  const gc = s.cls==='high'?'var(--rose)':s.cls==='med'?'var(--amber)':'var(--green)';
-  html+='<div class="hero '+s.cls+'">'
-    + '<div class="gauge '+s.gc+'" style="--p:'+(score==null?0:score)+'; --gc:'+gc+'"><b>'+(score==null?'…':score)+'</b></div>'
-    + '<div><div class="label">'+(ver?esc(bandName(ver.label)):'scoring…')+'</div>'
-    + '<div class="sub">'+(ver?((topDriver(v.modules)?topDriver(v.modules)+' · ':'')+'confidence '+pct(ver.confidence)+' · '+esc(ver.source||'')+(ver.model_version?(' · '+esc(ver.model_version)):'')):'final decision pending')+'</div></div>';
-  // pipeline composites
-  const m=v.modules;
+  // ── consumer verdict hero: big safety call + the email it's about ──
+  html+='<div class="hero '+cls+'">'
+    + '<div class="gauge '+gcCls+'" style="--p:'+(score==null?0:score)+'; --gc:'+gc+'"><b>'+(score==null?'…':score)+'</b></div>'
+    + '<div><div class="label">'+(ver?esc(bandName(ver.label)):'Scoring…')+'</div>'
+    + '<div class="sub">'+esc(v.subject||'(no subject)')+(v.from?(' · '+esc(v.from)):'')+'</div></div>'
+    + '</div>';
+  // ── plain-language reasons + advice ──
+  if(ver){
+    const reasons=consumerReasons(v);
+    const heading = cls==='low' ? 'Why this looks safe' : (cls==='high' ? 'Why this is dangerous' : 'Why this is suspicious');
+    html+='<div class="reasons '+cls+'"><div class="rh">'+heading+'</div><ul>'+reasons.map(r=>'<li>'+esc(r)+'</li>').join('')+'</ul>'
+      + '<div class="advice">'+esc(bandAdvice(cls))+'</div></div>';
+  }
+  // ── full analyst-grade breakdown, collapsed by default ──
+  let tech='';
   const comp=[['URL',m.url&&m.url.score],['Header',m.header&&m.header.score],['NLP',m.nlp&&m.nlp.score],['Attach',m.attachment&&m.attachment.score]];
-  html+='<div class="pipe">'+comp.map(c=>'<div class="m"><div class="v" style="color:'+(c[1]==null?'var(--faint)':(c[1]>=70?'var(--rose)':c[1]>=40?'var(--amber)':'var(--green)'))+'">'+(c[1]==null?'—':c[1])+'</div><div class="k">'+c[0]+'</div></div>').join('')+'</div>';
-  html+='</div>';
-
-  html+='<div class="modules">';
-  html+=urlCard(m.url);
-  html+=headerCard(m.header);
-  html+=nlpCard(m.nlp);
-  html+=attachCard(m.attachment);
-  html+='</div>';
-
-  // aggregation + fired rules
+  tech+='<div class="pipe" style="margin-left:0">'+comp.map(c=>'<div class="m"><div class="v" style="color:'+(c[1]==null?'var(--faint)':(c[1]>=70?'var(--rose)':c[1]>=40?'var(--amber)':'var(--green)'))+'">'+(c[1]==null?'—':c[1])+'</div><div class="k">'+c[0]+'</div></div>').join('')+'</div>';
+  if(ver) tech+='<div class="muted small" style="margin:8px 0 12px">'+(topDriver(m)?topDriver(m)+' · ':'')+'confidence '+pct(ver.confidence)+' · '+esc(ver.source||'')+(ver.model_version?(' · '+esc(ver.model_version)):'')+'</div>';
+  tech+='<div class="modules">'+urlCard(m.url)+headerCard(m.header)+nlpCard(m.nlp)+attachCard(m.attachment)+'</div>';
   if(v.aggregation){
     const a=v.aggregation;
-    html+='<div class="mod" style="margin-top:14px"><h3>🧮 Aggregation</h3>'
-      + '<div class="pills">'
+    tech+='<div class="mod" style="margin-top:14px"><h3>🧮 Aggregation</h3><div class="pills">'
       + '<span class="badge '+(a.partial_analysis?'warn':'ok')+'">'+(a.partial_analysis?'partial analysis':'all components scored')+'</span>'
       + (a.timeout_triggered?'<span class="badge warn">timeout</span>':'')
       + ((a.missing_components&&a.missing_components.length)?('<span class="badge warn">missing: '+esc(a.missing_components.join(', '))+'</span>'):'')
@@ -339,9 +414,10 @@ function renderDetail(v){
       + '</div></div>';
   }
   if(ver&&ver.fired_rules&&ver.fired_rules.length){
-    html+='<div class="mod" style="margin-top:14px"><h3>⚖️ Decision rules</h3>'
+    tech+='<div class="mod" style="margin-top:14px"><h3>⚖️ Decision rules</h3>'
       + ver.fired_rules.map(r=>kv(esc(r.rule_name||('rule '+r.rule_id)), (r.score_impact>=0?'+':'')+r.score_impact)).join('')+'</div>';
   }
+  html+='<details class="tech"><summary>See technical details — module-by-module breakdown</summary><div class="techbody">'+tech+'</div></details>';
   d.innerHTML=html;
 }
 
@@ -413,7 +489,9 @@ function attachCard(a){
 }
 
 /* ---------- boot ---------- */
-if(new URLSearchParams(location.search).get('gmail')==='connected'){ toast('Gmail connected — scanning your inbox'); history.replaceState({},'',location.pathname); }
+{ const gp=new URLSearchParams(location.search).get('gmail');
+  if(gp==='connected'){ toast('Gmail connected — scanning your inbox'); history.replaceState({},'',location.pathname); }
+  else if(gp==='error'){ toast('Couldn’t connect Gmail — please try again'); history.replaceState({},'',location.pathname); } }
 loadGmail(); loadFeed();
 setInterval(loadGmail, 5000);
 setInterval(loadFeed, POLL_FEED_MS);
