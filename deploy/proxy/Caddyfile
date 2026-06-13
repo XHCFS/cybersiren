@@ -1,0 +1,18 @@
+# CyberSiren unified front door.
+#
+# Serves the branded landing page (two doors: the inbox scanner + the analyst
+# console) as the single entry point for the system. The doors deep-link to the
+# two host-published apps (portal :8090, analyst console :8089), so there is no
+# cross-origin OAuth-redirect or SPA base-path rewiring to manage — each app
+# keeps serving from its own origin.
+#
+# Published on the host as :8888 (see the `proxy` service in
+# deploy/compose/docker-compose.yml).
+:80 {
+	root * /srv
+	file_server
+	encode gzip
+
+	# Health endpoint for the compose healthcheck.
+	respond /healthz "ok" 200
+}
