@@ -227,6 +227,11 @@ func (e *Engine) Handle(ctx context.Context, msg kafkaconsumer.Message) error {
 		)
 	}
 
+	// preRuleLabel stays the PURE LabelFor band (no attachment reconcile):
+	// it is the pre-rule snapshot input that rule conditions match on, so
+	// reconciling it here could change which rules fire — a scoring
+	// feedback loop. The malware-vs-phishing reconcile is applied only to
+	// the final verdict label below.
 	preRuleLabel := LabelFor(Round(nudgedScore))
 	snap := BuildSnapshot(SnapshotInputs{
 		Scored:        scored,
@@ -245,8 +250,10 @@ func (e *Engine) Handle(ctx context.Context, msg kafkaconsumer.Message) error {
 	}
 
 	finalScore := ClampInt(Round(nudgedScore)+ruleAdjustment, 0, 100)
-	label := LabelFor(finalScore)
-	confidence := Confidence(finalScore, label, scored.PartialAnalysis, source)
+	// Label is reconciled; confidence stays on the score's natural band. The
+	// shared seam keeps this path and the degraded path in lockstep — see
+	// verdictLabelAndConfidence for the confidence-trap invariant.
+	label, confidence := verdictLabelAndConfidence(finalScore, components, scored.PartialAnalysis, source)
 	procElapsed := time.Since(startedAt)
 
 	wireElapsed := procElapsed // snapshot for VerdictWireBuilder closure
@@ -393,9 +400,10 @@ func (e *Engine) publishDegraded(
 	elapsed time.Duration,
 ) error {
 	finalScore := ClampInt(Round(nudgedScore), 0, 100)
-	label := LabelFor(finalScore)
+	// Same shared seam as the main path: reconciled label, natural-band
+	// confidence. See verdictLabelAndConfidence.
 	source := VerdictSourceRule
-	confidence := Confidence(finalScore, label, scored.PartialAnalysis, source)
+	label, confidence := verdictLabelAndConfidence(finalScore, components, scored.PartialAnalysis, source)
 	mvdeg := e.modelVersionFor(scored, source)
 
 	out, err := e.writer.Write(ctx, persist.Input{

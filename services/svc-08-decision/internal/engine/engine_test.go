@@ -73,15 +73,29 @@ func (f *fakePublisher) Publish(_ context.Context, key, value []byte, retries in
 	return nil
 }
 
+// makeScoredMessage builds a minimal scored message carrying a single URL
+// component (77) — a model-sourced email in the phishing band. It is just the
+// general makeScoredMessageWith with that one component, kept as a named helper
+// for the many tests that don't care about the component mix.
 func makeScoredMessage(t *testing.T, internalID int64, emailID string) kafkaconsumer.Message {
 	t.Helper()
+	return makeScoredMessageWith(t, internalID, emailID, Components{URL: ptrInt(77)})
+}
+
+// makeScoredMessageWith builds an emails.scored carrying the given component
+// scores so tests can drive a chosen blended/final risk band. A nil score is
+// omitted (absent component).
+func makeScoredMessageWith(t *testing.T, internalID int64, emailID string, c Components) kafkaconsumer.Message {
+	t.Helper()
 	fetched := time.Date(2026, 5, 3, 10, 0, 0, 0, time.UTC)
-	url := 77
 	body, err := json.Marshal(contracts.EmailsScored{
-		Meta:       contracts.NewMetaWithFetched(emailID, 7, fetched),
-		InternalID: internalID,
-		FetchedAt:  fetched,
-		URLScore:   &url,
+		Meta:            contracts.NewMetaWithFetched(emailID, 7, fetched),
+		InternalID:      internalID,
+		FetchedAt:       fetched,
+		URLScore:        c.URL,
+		HeaderScore:     c.Header,
+		NLPScore:        c.NLP,
+		AttachmentScore: c.Attachment,
 	})
 	require.NoError(t, err)
 	return kafkaconsumer.Message{Value: body}
@@ -152,6 +166,165 @@ func TestHandle_DegradesWhenRulesUnavailable(t *testing.T) {
 	require.Equal(t, VerdictSourceRule, writer.lastInput.VerdictSource)
 	require.Len(t, pub.records, 1)
 	require.Equal(t, 2, pub.records[0].retries)
+}
+
+// TestHandle_MalwareBandConfidenceNotCollapsedByReconcile drives the MAIN
+// (Handle) path with an ML-driven, attachment-absent component set that lands
+// in the malware band (76–100) and reconciles to phishing(high). It asserts
+// the persisted+published verdict label is phishing AND the confidence is the
+// score's NATURAL malware-band value — not the collapsed 51–75-band value the
+// confidence trap would produce. Guards the main-path verdictLabelAndConfidence call.
+func TestHandle_MalwareBandConfidenceNotCollapsedByReconcile(t *testing.T) {
+	t.Parallel()
+	writer := &fakeWriter{out: persist.Output{CampaignID: 17, VerdictID: 44, EmailCount: 1}}
+	pub := &fakePublisher{}
+	eng := New(
+		Config{},
+		fakeRules{}, // available, fires nothing → main path, no rule adjustment
+		fakeSimhash{},
+		writer,
+		pub,
+		nil,
+		zerolog.Nop(),
+	)
+
+	// Header=NLP=90, no attachment → blend 90, source=model, reconcile=phishing(high).
+	comps := Components{Header: ptrInt(90), NLP: ptrInt(90)}
+	msg := makeScoredMessageWith(t, 5001, "e5001", comps)
+
+	err := eng.Handle(context.Background(), msg)
+	require.NoError(t, err)
+	require.Equal(t, 1, writer.writes)
+
+	const finalScore = 90
+	require.Equal(t, finalScore, writer.lastInput.RiskScore, "ML-only blend must land in malware band")
+	require.Equal(t, string(LabelPhishing), writer.lastInput.Label, "URL/header/NLP-driven high score reconciles to phishing(high)")
+
+	natural := Confidence(finalScore, LabelFor(finalScore), false, VerdictSourceModel)
+	collapsed := Confidence(finalScore, LabelPhishing, false, VerdictSourceModel)
+	// Pin the literal value, not just the wiring: malware band [76,100], score
+	// 90 → min(90-76,100-90)/25 = 10/25 = 0.4 (model source, no partial penalty).
+	require.InDelta(t, 0.4, natural, 1e-9, "natural malware-band confidence for score 90 (model)")
+	require.InDelta(t, 0.0, collapsed, 1e-9, "phishing band [51,75] is below 90 → distance clamps to 0")
+	require.NotEqual(t, natural, collapsed, "test precondition: the two bands must differ")
+	require.Equal(t, natural, writer.lastInput.Confidence,
+		"confidence must use the score's natural malware band, not the reconciled phishing band")
+	require.NotEqual(t, collapsed, writer.lastInput.Confidence,
+		"confidence trap: reconcile to phishing must NOT collapse confidence to the 51-75 band")
+
+	// The published wire verdict must carry the same decoupled values.
+	require.Len(t, pub.records, 1)
+	var v contracts.EmailsVerdict
+	require.NoError(t, json.Unmarshal(pub.records[0].value, &v))
+	require.Equal(t, string(LabelPhishing), v.VerdictLabel)
+	require.Equal(t, natural, v.Confidence)
+}
+
+// TestHandle_DegradedMalwareBandConfidenceNotCollapsed drives the DEGRADED
+// (publishDegraded) path with a high-band score that carries a malware-grade
+// attachment, so it reconciles to MALWARE. It pins the degraded path's
+// reconcile + rule-scaled confidence. NOTE: because the reconciled label here
+// equals LabelFor(90), this case alone does NOT exercise the confidence trap on
+// the degraded path (threading the reconciled label would be a no-op) — the
+// phishing branch is covered by TestHandle_DegradedPhishingHighConfidenceNotCollapsed.
+func TestHandle_DegradedMalwareBandConfidenceNotCollapsed(t *testing.T) {
+	t.Parallel()
+	writer := &fakeWriter{out: persist.Output{CampaignID: 17, VerdictID: 44, EmailCount: 1}}
+	pub := &fakePublisher{}
+	eng := New(
+		Config{},
+		nil, // unavailable rules cache → degraded path
+		fakeSimhash{},
+		writer,
+		pub,
+		nil,
+		zerolog.Nop(),
+	)
+
+	// Attachment=URL=90 → blend 90. A malware-grade attachment (≥76) is present,
+	// so the top band reconciles to malware; the other components are not
+	// compared, only checked for the attachment floor.
+	comps := Components{Attachment: ptrInt(90), URL: ptrInt(90)}
+	msg := makeScoredMessageWith(t, 6001, "e6001", comps)
+
+	err := eng.Handle(context.Background(), msg)
+	require.NoError(t, err)
+	require.Equal(t, 1, writer.writes)
+	require.Equal(t, VerdictSourceRule, writer.lastInput.VerdictSource, "degraded path is rule-sourced")
+
+	const finalScore = 90
+	require.Equal(t, finalScore, writer.lastInput.RiskScore)
+	require.Equal(t, string(LabelMalware), writer.lastInput.Label, "attachment-dominant high score reconciles to malware")
+
+	natural := Confidence(finalScore, LabelFor(finalScore), false, VerdictSourceRule)
+	collapsed := Confidence(finalScore, LabelPhishing, false, VerdictSourceRule)
+	// Literal value: malware band [76,100], score 90 → 10/25 = 0.4, scaled by
+	// the rule-source 0.5 factor = 0.2.
+	require.InDelta(t, 0.2, natural, 1e-9, "natural malware-band confidence ×0.5 rule scaling for score 90")
+	require.NotEqual(t, natural, collapsed, "test precondition: the two bands must differ")
+	require.Equal(t, natural, writer.lastInput.Confidence,
+		"degraded path confidence must use the natural malware band (rule-scaled), not the phishing band")
+
+	require.Len(t, pub.records, 1)
+	var v contracts.EmailsVerdict
+	require.NoError(t, json.Unmarshal(pub.records[0].value, &v))
+	require.Equal(t, string(LabelMalware), v.VerdictLabel)
+	require.Equal(t, natural, v.Confidence)
+}
+
+// TestHandle_DegradedPhishingHighConfidenceNotCollapsed drives the DEGRADED
+// (publishDegraded) path with a high-band score and NO malware-grade attachment,
+// so it reconciles to phishing(high). THIS is the case that exercises the
+// confidence trap on the degraded path: the reconciled label (phishing) differs
+// from LabelFor(90) (malware), so threading the reconciled label into Confidence
+// would collapse the value to 0. The malware-case test above can't catch that
+// regression (its reconciled label equals LabelFor). Guards engine.go's
+// publishDegraded verdictLabelAndConfidence call.
+func TestHandle_DegradedPhishingHighConfidenceNotCollapsed(t *testing.T) {
+	t.Parallel()
+	writer := &fakeWriter{out: persist.Output{CampaignID: 17, VerdictID: 44, EmailCount: 1}}
+	pub := &fakePublisher{}
+	eng := New(
+		Config{},
+		nil, // unavailable rules cache → degraded path
+		fakeSimhash{},
+		writer,
+		pub,
+		nil,
+		zerolog.Nop(),
+	)
+
+	// Header=NLP=90, no attachment → blend 90, high band, no malware-grade
+	// attachment → reconciles to phishing(high). Degraded path forces source=rule.
+	comps := Components{Header: ptrInt(90), NLP: ptrInt(90)}
+	msg := makeScoredMessageWith(t, 6002, "e6002", comps)
+
+	err := eng.Handle(context.Background(), msg)
+	require.NoError(t, err)
+	require.Equal(t, 1, writer.writes)
+	require.Equal(t, VerdictSourceRule, writer.lastInput.VerdictSource, "degraded path is rule-sourced")
+
+	const finalScore = 90
+	require.Equal(t, finalScore, writer.lastInput.RiskScore)
+	require.Equal(t, string(LabelPhishing), writer.lastInput.Label,
+		"high score with no malware-grade attachment reconciles to phishing(high)")
+
+	natural := Confidence(finalScore, LabelFor(finalScore), false, VerdictSourceRule)
+	collapsed := Confidence(finalScore, LabelPhishing, false, VerdictSourceRule)
+	// Literal value: malware band [76,100], score 90 → 10/25 = 0.4, ×0.5 rule = 0.2.
+	// The collapsed (buggy) value uses the reconciled phishing band [51,75], where
+	// 90 is out of range → 0.
+	require.InDelta(t, 0.2, natural, 1e-9, "natural malware-band confidence ×0.5 rule scaling")
+	require.InDelta(t, 0.0, collapsed, 1e-9, "phishing-band distance for score 90 clamps to 0")
+	require.NotEqual(t, natural, collapsed, "test precondition: the two bands must differ")
+	require.Equal(t, natural, writer.lastInput.Confidence,
+		"CONFIDENCE TRAP (degraded path): phishing-reconciled label must NOT collapse confidence")
+
+	require.Len(t, pub.records, 1)
+	var v contracts.EmailsVerdict
+	require.NoError(t, json.Unmarshal(pub.records[0].value, &v))
+	require.Equal(t, string(LabelPhishing), v.VerdictLabel)
+	require.Equal(t, natural, v.Confidence)
 }
 
 func TestHandle_UsesStoredKafkaWireOnDedupeReplay(t *testing.T) {
