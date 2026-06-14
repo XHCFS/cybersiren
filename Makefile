@@ -462,6 +462,23 @@ demo-up: check-docker check-compose-env check-nlp-model
 demo-down:
 	@./demo/run-demo.sh down
 
+## full-up: One command — the ENTIRE system in containers (the `full` profile):
+##          infra + sidecars + all 10 pipeline services + svc-10 API & console
+##          SPA + the consumer portal + the unified landing. Submitted email
+##          flows emails.raw -> emails.verdict and shows in both frontends.
+full-up: check-docker check-compose-env check-nlp-model check-fusion-models
+	$(DOCKER_COMPOSE) --profile full up -d --build
+	@echo ""
+	@echo "  CyberSiren — the whole stack is starting (one-shot init containers exit 0; give the pipeline ~60s)."
+	@echo "    Front door (landing):   http://localhost:8888"
+	@echo "    Inbox scanner (users):  http://localhost:8090"
+	@echo "    Analyst console:        http://localhost:8089   (analyst@demo.cybersiren / analyst-demo-2026)"
+	@echo "    Watch readiness:        $(DOCKER_COMPOSE) --profile full ps"
+
+## full-down: Stop the full containerised stack (preserves volumes; -v to wipe).
+full-down:
+	$(DOCKER_COMPOSE) --profile full down
+
 ## demo-dash: Rebuild + restart ONLY the dashboard (infra + pipeline keep running).
 ##            Use after editing demo/dashboard. Tip: DEMO_DEV=1 make demo-dash
 ##            serves web/ from disk so later UI edits need only a browser refresh.

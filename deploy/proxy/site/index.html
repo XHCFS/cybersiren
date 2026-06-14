@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>CyberSiren — Phishing Detection</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none'%3E%3Cpath d='M12 2l8 3v6c0 5-3.4 8.5-8 11-4.6-2.5-8-6-8-11V5l8-3z' stroke='%232ee6c4' stroke-width='1.5' stroke-linejoin='round'/%3E%3Cpath d='M12 7v6M12 16v0.5' stroke='%232ee6c4' stroke-width='1.6' stroke-linecap='round'/%3E%3C/svg%3E" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=Outfit:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<style>
+  :root{
+    --ink:#f4f6fa; --panel:#ffffff; --panel2:#eef2f8; --line:#d4dde9;
+    --text:#0f1b2d; --muted:#586b85; --faint:#8493a8;
+    --teal:#0e9f8e; --blue:#2f6fed; --amber:#c8860b; --rose:#d92d43; --green:#1f9d57; --violet:#7c5cff;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0}
+  body{
+    background:var(--ink); color:var(--text);
+    font-family:'Outfit',system-ui,sans-serif; line-height:1.5; min-height:100vh;
+  }
+  body::before{
+    content:""; position:fixed; inset:0; z-index:-1;
+    background:
+      radial-gradient(900px 560px at 12% -8%, rgba(14,159,142,.08), transparent 60%),
+      radial-gradient(760px 540px at 100% 0%, rgba(47,111,237,.07), transparent 55%);
+  }
+  a{color:inherit; text-decoration:none}
+  .wrap{max-width:1040px; margin:0 auto; padding:64px 24px 80px}
+
+  .brand{display:flex; align-items:center; gap:14px; margin-bottom:40px}
+  .sigil{width:46px; height:46px; border-radius:13px; display:grid; place-items:center;
+    background:linear-gradient(150deg,#eafaf6,#dceee9); border:1px solid var(--line);
+    box-shadow:0 6px 18px rgba(14,159,142,.14)}
+  .brand h1{font-family:'Fraunces',serif; font-weight:600; font-size:24px; margin:0; letter-spacing:.2px}
+  .brand .sub{color:var(--muted); font-size:13px; margin-top:1px}
+
+  .hero{margin-bottom:44px; max-width:680px}
+  .hero h2{font-family:'Fraunces',serif; font-weight:600; font-size:40px; line-height:1.12; margin:0 0 14px}
+  .hero h2 .accent{color:var(--teal)}
+  .hero p{color:var(--muted); font-size:16px; margin:0}
+
+  .doors{display:grid; grid-template-columns:1fr 1fr; gap:20px}
+  @media(max-width:760px){ .doors{grid-template-columns:1fr} }
+  .door{display:block; background:var(--panel); border:1px solid var(--line);
+    border-radius:18px; padding:26px; transition:border-color .2s, transform .2s; box-shadow:0 8px 24px rgba(15,27,45,.06)}
+  .door:hover{border-color:var(--teal); transform:translateY(-2px)}
+  .door .ic{width:48px; height:48px; border-radius:13px; display:grid; place-items:center; font-size:23px;
+    background:var(--panel2); border:1px solid var(--line); margin-bottom:16px}
+  .door h3{font-family:'Fraunces',serif; font-weight:600; font-size:21px; margin:0 0 7px}
+  .door p{color:var(--muted); font-size:14px; margin:0 0 16px}
+  .door .go{display:inline-flex; align-items:center; gap:7px; font-weight:600; font-size:14px; color:var(--teal)}
+  .door.user{border-top:2px solid var(--teal)}
+  .door.analyst{border-top:2px solid var(--blue)}
+
+  .how{margin-top:46px; display:flex; gap:26px; flex-wrap:wrap; color:var(--muted); font-size:13.5px}
+  .how .step{display:flex; align-items:center; gap:9px}
+  .how .n{width:24px; height:24px; border-radius:50%; display:grid; place-items:center; font-family:'JetBrains Mono',monospace;
+    font-size:12px; color:var(--ink); background:var(--teal); font-weight:600}
+  .foot{margin-top:54px; color:var(--faint); font-size:12px}
+  .foot code{font-family:'JetBrains Mono',monospace; color:var(--muted)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="brand">
+    <div class="sigil">
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="none"><path d="M12 2l8 3v6c0 5-3.4 8.5-8 11-4.6-2.5-8-6-8-11V5l8-3z" stroke="#0e9f8e" stroke-width="1.5" stroke-linejoin="round"/><path d="M12 7v6M12 16v0.5" stroke="#0e9f8e" stroke-width="1.6" stroke-linecap="round"/></svg>
+    </div>
+    <div>
+      <h1>CyberSiren</h1>
+      <div class="sub">Real-time phishing detection</div>
+    </div>
+  </div>
+
+  <div class="hero">
+    <h2>Catch phishing <span class="accent">before</span> it reaches you.</h2>
+    <p>CyberSiren scans email through a multi-stage pipeline — URL threat-intelligence &amp; ML, sender authentication, language analysis, and attachment inspection — and turns it into a clear verdict. Pick how you want in.</p>
+  </div>
+
+  <div class="doors">
+    <a class="door user" href="http://localhost:8090">
+      <div class="ic">📥</div>
+      <h3>Scan my inbox</h3>
+      <p>Connect your Gmail and get a plain-English <b>Safe · Suspicious · Dangerous</b> verdict — with the reasons — on every message.</p>
+      <span class="go">Open the inbox scanner →</span>
+    </a>
+    <a class="door analyst" href="http://localhost:8089">
+      <div class="ic">🛡️</div>
+      <h3>Analyst console</h3>
+      <p>The SOC view: every scanned email, the full module-by-module breakdown, threat-intel &amp; campaign stats, and detection rules.</p>
+      <span class="go">Open the console →</span>
+    </a>
+  </div>
+
+  <div class="how">
+    <div class="step"><span class="n">1</span> Connect Gmail or submit an email</div>
+    <div class="step"><span class="n">2</span> The pipeline scores it in seconds</div>
+    <div class="step"><span class="n">3</span> You get a verdict — and the why</div>
+  </div>
+
+  <div class="foot">
+    The inbox scanner and the analyst console are two faces of the same detection pipeline, reading the same results.
+  </div>
+</div>
+</body>
+</html>

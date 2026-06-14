@@ -1,0 +1,25 @@
+# Slim the build context (the repo root is the context for every image build).
+# Keep what images actually COPY: go sources, services/svc-03 ml/ + static/,
+# services/svc-06 nlp/ (incl. its onnx), fusion_export/fusion_kit/*.mmdb,
+# web/svc-10-dashboard/ (package*.json + src), deploy/.
+.git
+.github
+.smoke-logs
+.verify-logs
+.pytest_cache
+**/node_modules
+web/*/dist
+# Duplicate 66MB LFS ONNX source — the nlp image COPYs the runtime copy under
+# services/svc-06-nlp/nlp/onnx (populated by `make check-nlp-model`), not this.
+python/
+# Large notebooks / datasets not needed in any image.
+*.ipynb
+benchmark/
+test-emails/
+# Stray local build artifact (go build ./demo/dashboard with no -o).
+/dashboard
+# Local env files (compose passes env explicitly; images don't need these).
+.env
+**/.env
+**/.gmail-token
+**/.scans.json

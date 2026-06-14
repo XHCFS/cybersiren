@@ -30,6 +30,32 @@
 
 # All env vars are sourced from deploy/compose/.env (copy .env.example first).
 
+# ── Shared env for the in-compose pipeline (the `full` profile) ──────────────
+# Endpoints use in-network DNS names (kafka:29092 internal listener, postgres,
+# valkey:6379, minio:9000, jaeger). Per-service blocks merge this and add their
+# own extras. Mirrors scripts/dev/run_pipeline.sh COMMON_ENV, translated to DNS.
+x-pipeline-env: &pipeline-env
+  CYBERSIREN_ENV: development
+  CYBERSIREN_LOG__LEVEL: info
+  CYBERSIREN_LOG__PRETTY: "false"
+  CYBERSIREN_DB__HOST: postgres
+  CYBERSIREN_DB__PORT: "5432"
+  CYBERSIREN_DB__NAME: ${POSTGRES_DB:-cybersiren}
+  CYBERSIREN_DB__USER: ${POSTGRES_USER:-postgres}
+  CYBERSIREN_DB__PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+  CYBERSIREN_DB__SSL_MODE: disable
+  CYBERSIREN_VALKEY__ADDR: valkey:6379
+  CYBERSIREN_AUTH__JWT_SECRET: demo-secret-not-for-production-use!!
+  CYBERSIREN_KAFKA__BROKERS: kafka:29092
+  CYBERSIREN_JAEGER_ENDPOINT: http://jaeger:4318
+  CYBERSIREN_METRICS_PORT: "9090"
+  CYBERSIREN_STORAGE__ENDPOINT: minio:9000
+  CYBERSIREN_STORAGE__BUCKET: ${MINIO_BUCKET:-cybersiren-attachments}
+  CYBERSIREN_STORAGE__REGION: us-east-1
+  CYBERSIREN_STORAGE__ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+  CYBERSIREN_STORAGE__SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+  CYBERSIREN_STORAGE__USE_SSL: "false"
+
 networks:
   cybersiren:
     driver: bridge
@@ -46,7 +72,7 @@ services:
   # Primary relational store for all services that need persistence.
   postgres:
     image: postgres:15-alpine
-    profiles: ["postgres", "demo"]
+    profiles: ["postgres", "demo", "full"]
     container_name: cybersiren-postgres
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-cybersiren}
@@ -69,7 +95,7 @@ services:
   # Used for rate-limiting, caching TI lookups, and deduplication.
   valkey:
     image: valkey/valkey:7-alpine
-    profiles: ["valkey", "demo"]
+    profiles: ["valkey", "demo", "full"]
     container_name: cybersiren-valkey
     ports:
       - "${VALKEY_PORT:-6379}:6379"
@@ -91,7 +117,7 @@ services:
   # Makefile/profile name "kafka" stays meaningful.
   kafka:
     image: redpandadata/redpanda:v24.2.7
-    profiles: ["kafka", "demo"]
+    profiles: ["kafka", "demo", "full"]
     container_name: cybersiren-redpanda
     hostname: kafka
     command:
@@ -130,7 +156,7 @@ services:
   # retention/cleanup/compression then exits. Idempotent.
   kafka-init:
     image: redpandadata/redpanda:v24.2.7
-    profiles: ["kafka", "demo"]
+    profiles: ["kafka", "demo", "full"]
     container_name: cybersiren-redpanda-init
     depends_on:
       kafka:
@@ -152,7 +178,7 @@ services:
   # console on :9001.
   minio:
     image: minio/minio:RELEASE.2025-04-08T15-41-24Z
-    profiles: ["postgres", "valkey", "kafka", "minio", "demo"]
+    profiles: ["postgres", "valkey", "kafka", "minio", "demo", "full"]
     container_name: cybersiren-minio
     command: server /data --console-address ":9001"
     environment:
@@ -185,7 +211,7 @@ services:
     # SERVER stays in the core profiles (it is healthchecked); the bucket is
     # created here under the minio/demo profiles, and otherwise lazily by
     # shared/objectstore on first use.
-    profiles: ["minio", "demo"]
+    profiles: ["minio", "demo", "full"]
     container_name: cybersiren-minio-init
     depends_on:
       minio:
@@ -210,7 +236,7 @@ services:
   # Runs automatically when any service profile is activated.
   demo-seed:
     image: postgres:15-alpine
-    profiles: ["demo", "svc-03", "svc-04", "svc-06", "svc-11", "smoke"]
+    profiles: ["demo", "svc-03", "svc-04", "svc-06", "svc-11", "smoke", "full"]
     depends_on:
       postgres:
         condition: service_healthy
@@ -247,6 +273,8 @@ services:
         # show up later as svc-01 401s and a downstream timeout.
         echo "Seeding organisations..."
         psql -v ON_ERROR_STOP=1 -f /seeds/organisations_seed.sql
+        echo "Seeding console login user..."
+        psql -v ON_ERROR_STOP=1 -f /seeds/users_seed.sql
         echo "Seeding demo API key..."
         psql -v ON_ERROR_STOP=1 -f /seeds/api_key_demo_seed.sql
         echo "Seeding feeds..."
@@ -316,7 +344,7 @@ services:
     build:
       context: ../..
       dockerfile: deploy/docker/Dockerfile.fusion_sidecar
-    profiles: ["demo", "svc-03"]
+    profiles: ["demo", "svc-03", "full"]
     ports:
       - "8765:8765"
     environment:
@@ -346,7 +374,7 @@ services:
     build:
       context: ../..
       dockerfile: deploy/docker/Dockerfile.header_analysis
-    profiles: ["svc-04"]
+    profiles: ["svc-04", "full"]
     depends_on:
       demo-seed:
         condition: service_completed_successfully
@@ -463,7 +491,7 @@ services:
     build:
       context: ../..
       dockerfile: deploy/docker/Dockerfile.nlp
-    profiles: ["nlp-inference", "smoke"]
+    profiles: ["nlp-inference", "smoke", "full"]
     container_name: cybersiren-nlp-inference
     working_dir: /app/nlp
     entrypoint: ["python", "app.py"]
@@ -525,7 +553,7 @@ services:
   # No persistence — traces are lost on restart.
   jaeger:
     image: jaegertracing/all-in-one:latest
-    profiles: ["observability", "demo"]
+    profiles: ["observability", "demo", "full"]
     container_name: cybersiren-jaeger
     environment:
       COLLECTOR_OTLP_ENABLED: "true"
@@ -627,4 +655,184 @@ services:
         condition: service_healthy
     networks:
       - cybersiren
+    restart: unless-stopped
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # FULL PROFILE — entire pipeline + both frontends + landing, all containerised.
+  #   make full-up   →  docker compose --profile full up -d --build
+  # In-compose DNS env comes from the x-pipeline-env anchor at the top.
+  # ════════════════════════════════════════════════════════════════════════════
+
+  # ── svc-01-ingestion (HTTP /api/v1/scan → emails.raw) ────────────────────────
+  svc-01-ingestion:
+    build: { context: ../.., dockerfile: deploy/docker/Dockerfile.ingestion }
+    profiles: ["full"]
+    depends_on:
+      demo-seed: { condition: service_completed_successfully }
+      kafka-init: { condition: service_completed_successfully }
+      valkey: { condition: service_healthy }
+      postgres: { condition: service_healthy }
+    ports: ["8081:8081"]
+    environment:
+      <<: *pipeline-env
+    networks: [cybersiren]
+    restart: unless-stopped
+
+  # ── svc-02-parser (emails.raw → analysis.*; attachments → MinIO) ─────────────
+  svc-02-parser:
+    build: { context: ../.., dockerfile: deploy/docker/Dockerfile.parser }
+    profiles: ["full"]
+    depends_on:
+      demo-seed: { condition: service_completed_successfully }
+      kafka-init: { condition: service_completed_successfully }
+      minio-init: { condition: service_completed_successfully }
+      postgres: { condition: service_healthy }
+    environment:
+      <<: *pipeline-env
+    networks: [cybersiren]
+    restart: unless-stopped
+
+  # ── svc-03-url-pipeline (analysis.urls → scores.url; ML + GeoIP + sidecar) ───
+  svc-03-url-pipeline:
+    build: { context: ../.., dockerfile: deploy/docker/Dockerfile.url_pipeline }
+    profiles: ["full"]
+    depends_on:
+      demo-seed: { condition: service_completed_successfully }
+      kafka-init: { condition: service_completed_successfully }
+      valkey: { condition: service_healthy }
+      fusion-sidecar: { condition: service_healthy }
+    environment:
+      <<: *pipeline-env
+      CYBERSIREN_ML__URL_MODEL_PATH: /app/ml/inference_script.py
+      CYBERSIREN_ML__URL_MODEL_POOL_SIZE: "2"
+      CYBERSIREN_PHISHING__SIDECAR_URL: http://fusion-sidecar:8765
+      CYBERSIREN_PHISHING__GEOIP_DIR: /app/geoip
+    networks: [cybersiren]
+    restart: unless-stopped
+
+  # ── svc-05-attachment-analysis (analysis.attachments → scores.attachment) ────
+  svc-05-attachment-analysis:
+    build: { context: ../.., dockerfile: deploy/docker/Dockerfile.attachment_analysis }
+    profiles: ["full"]
+    depends_on:
+      demo-seed: { condition: service_completed_successfully }
+      kafka-init: { condition: service_completed_successfully }
+      minio-init: { condition: service_completed_successfully }
+      postgres: { condition: service_healthy }
+    environment:
+      <<: *pipeline-env
+    networks: [cybersiren]
+    restart: unless-stopped
+
+  # ── svc-06-nlp-pipeline (analysis.text → scores.nlp; calls nlp-inference) ────
+  svc-06-nlp-pipeline:
+    build: { context: ../.., dockerfile: deploy/docker/Dockerfile.nlp_pipeline }
+    profiles: ["full"]
+    depends_on:
+      demo-seed: { condition: service_completed_successfully }
+      kafka-init: { condition: service_completed_successfully }
+      nlp-inference: { condition: service_healthy }
+    environment:
+      <<: *pipeline-env
+      CYBERSIREN_ML__NLP_SERVICE_URL: http://nlp-inference:8001
+    networks: [cybersiren]
+    restart: unless-stopped
+
+  # ── svc-07-aggregator (scores.* + analysis.plans → emails.scored) ────────────
+  svc-07-aggregator:
+    build: { context: ../.., dockerfile: deploy/docker/Dockerfile.aggregator }
+    profiles: ["full"]
+    depends_on:
+      demo-seed: { condition: service_completed_successfully }
+      kafka-init: { condition: service_completed_successfully }
+      valkey: { condition: service_healthy }
+      postgres: { condition: service_healthy }
+    environment:
+      <<: *pipeline-env
+    networks: [cybersiren]
+    restart: unless-stopped
+
+  # ── svc-08-decision (emails.scored → emails.verdict) ─────────────────────────
+  svc-08-decision:
+    build: { context: ../.., dockerfile: deploy/docker/Dockerfile.decision }
+    profiles: ["full"]
+    depends_on:
+      demo-seed: { condition: service_completed_successfully }
+      kafka-init: { condition: service_completed_successfully }
+      valkey: { condition: service_healthy }
+      postgres: { condition: service_healthy }
+    environment:
+      <<: *pipeline-env
+    networks: [cybersiren]
+    restart: unless-stopped
+
+  # ── svc-09-notification (emails.verdict → threshold gate + channels) ─────────
+  svc-09-notification:
+    build: { context: ../.., dockerfile: deploy/docker/Dockerfile.notification }
+    profiles: ["full"]
+    depends_on:
+      demo-seed: { condition: service_completed_successfully }
+      kafka-init: { condition: service_completed_successfully }
+      valkey: { condition: service_healthy }
+      postgres: { condition: service_healthy }
+    environment:
+      <<: *pipeline-env
+    networks: [cybersiren]
+    restart: unless-stopped
+
+  # ── svc-10-api (read API + JWT login + scan-forward, :8088) ──────────────────
+  svc-10-api:
+    build: { context: ../.., dockerfile: deploy/docker/Dockerfile.api_dashboard }
+    profiles: ["full"]
+    depends_on:
+      demo-seed: { condition: service_completed_successfully }
+      postgres: { condition: service_healthy }
+      svc-01-ingestion: { condition: service_started }
+    ports: ["8088:8088"]
+    environment:
+      <<: *pipeline-env
+      CYBERSIREN_SVC10__SVC01_BASE_URL: http://svc-01-ingestion:8081
+      CYBERSIREN_SVC10__SVC01_API_KEY: cs_demokey000000000000000000000DEMO
+    networks: [cybersiren]
+    restart: unless-stopped
+
+  # ── svc-10-web (analyst console SPA, nginx; /api → svc-10-api) ───────────────
+  svc-10-web:
+    build: { context: ../.., dockerfile: web/svc-10-dashboard/Dockerfile }
+    profiles: ["full"]
+    depends_on:
+      svc-10-api: { condition: service_started }
+    ports: ["8089:80"]
+    networks: [cybersiren]
+    restart: unless-stopped
+
+  # ── portal (consumer inbox scanner; forwards to the in-compose svc-01) ───────
+  # Same image as demo-dashboard, wired to svc-01 over the compose network
+  # (demo-dashboard targets host.docker.internal for the native `make demo-up`).
+  portal:
+    build: { context: ../.., dockerfile: deploy/docker/Dockerfile.demo_dashboard }
+    profiles: ["full"]
+    depends_on:
+      svc-01-ingestion: { condition: service_started }
+    ports: ["8090:8090"]
+    environment:
+      DEMO_ADDR: ":8090"
+      KAFKA_BROKERS: kafka:29092
+      SVC01_SCAN_URL: http://svc-01-ingestion:8081/api/v1/scan
+      DEMO_API_KEY: cs_demokey000000000000000000000DEMO
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      GOOGLE_REDIRECT_URL: ${GOOGLE_REDIRECT_URL:-http://localhost:8090/oauth/callback}
+    networks: [cybersiren]
+    restart: unless-stopped
+
+  # ── proxy (branded unified landing; the single front door, :8888) ────────────
+  proxy:
+    image: caddy:2-alpine
+    profiles: ["full"]
+    ports: ["8888:80"]
+    volumes:
+      - ../proxy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ../proxy/site:/srv:ro
+    networks: [cybersiren]
     restart: unless-stopped
