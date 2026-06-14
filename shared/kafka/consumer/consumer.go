@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -50,6 +51,12 @@ const maxHandlerRetries = 8
 // after a handler error, so a fast-failing poison record does not spin the poll
 // loop while it burns through its retry budget.
 const retryBackoff = 200 * time.Millisecond
+
+// commitEvery bounds how many successfully-processed records accumulate before
+// the consumer commits, so draining a large backlog cannot spend minutes in a
+// single poll batch without advancing the committed offset (which would leave
+// the consumer reprocessing the same records and never making durable progress).
+const commitEvery = 200
 
 // Handler processes a single Kafka message and returns nil on success.
 //
@@ -142,6 +149,10 @@ func New(cfg Config, log zerolog.Logger, reg *prometheus.Registry) (*Consumer, e
 		kgo.ConsumeTopics(cfg.Topic),
 		kgo.DisableAutoCommit(),
 		kgo.WithHooks(k.Hooks()...),
+		// Surface franz-go's own group-coordination / commit problems (rebalances,
+		// commit failures) which are otherwise invisible. WARN keeps it quiet in
+		// steady state.
+		kgo.WithLogger(kgo.BasicLogger(os.Stderr, kgo.LogLevelWarn, nil)),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("kafka consumer: %w", err)
@@ -310,6 +321,17 @@ func (c *Consumer) Run(ctx context.Context, handler Handler) error {
 				c.observeProcessingLatency(c.cfg.Topic, c.cfg.GroupID, time.Since(start))
 				toCommit = append(toCommit, rec)
 				span.End()
+
+				// Commit incrementally so a single large poll batch (e.g. when
+				// draining a backlog) cannot process for minutes without ever
+				// advancing the committed offset. Without this, the offset only
+				// moves once the WHOLE batch finishes, so a big backlog leaves the
+				// consumer reprocessing the same records on every restart and never
+				// makes durable progress.
+				if len(toCommit) >= commitEvery {
+					c.commitBatch(ctx, toCommit)
+					toCommit = toCommit[:0]
+				}
 			}
 		})
 
@@ -323,17 +345,24 @@ func (c *Consumer) Run(ctx context.Context, handler Handler) error {
 		}
 
 		if len(toCommit) > 0 {
-			// Commit only the successfully-processed records, on a shutdown-
-			// independent context so the final batch is not dropped when ctx is
-			// already cancelled by SIGTERM (a dropped commit reprocesses the batch on
-			// the next restart).
-			commitCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			if err := c.client.CommitRecords(commitCtx, toCommit...); err != nil {
-				c.observeError(c.cfg.Topic, c.cfg.GroupID, "commit")
-				c.log.Error().Err(err).Msg("commit offsets failed")
-			}
-			cancel()
+			c.commitBatch(ctx, toCommit)
 		}
+	}
+}
+
+// commitBatch synchronously commits the given successfully-processed records on
+// a shutdown-independent context so the batch is not dropped when ctx is already
+// cancelled by SIGTERM (a dropped commit reprocesses the batch on the next
+// restart). Commit failures are logged + metered but not fatal.
+func (c *Consumer) commitBatch(_ context.Context, recs []*kgo.Record) {
+	if len(recs) == 0 {
+		return
+	}
+	commitCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := c.client.CommitRecords(commitCtx, recs...); err != nil {
+		c.observeError(c.cfg.Topic, c.cfg.GroupID, "commit")
+		c.log.Error().Err(err).Msg("commit offsets failed")
 	}
 }
 
