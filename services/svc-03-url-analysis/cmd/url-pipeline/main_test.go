@@ -4,11 +4,13 @@ package main
 // These run without any external services.
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 
 	urlpkg "github.com/saif/cybersiren/services/svc-03-url-analysis/internal/url"
+	contracts "github.com/saif/cybersiren/shared/contracts/kafka"
 )
 
 func TestPipelineClassifyLabel(t *testing.T) {
@@ -118,6 +120,90 @@ func TestPhishingScore(t *testing.T) {
 			gotScore, gotProb := phishingScore(tc.label, tc.inScore, tc.inProb)
 			assert.Equal(t, tc.wantScore, gotScore)
 			assert.InDelta(t, tc.wantProb, gotProb, 1e-9)
+		})
+	}
+}
+
+func extractedURLs(urls ...string) []contracts.ExtractedURL {
+	out := make([]contracts.ExtractedURL, len(urls))
+	for i, u := range urls {
+		out[i] = contracts.ExtractedURL{URL: u}
+	}
+	return out
+}
+
+func TestDedupAndCapURLs(t *testing.T) {
+	t.Parallel()
+
+	t.Run("dedups by normalized form, keeps first occurrence", func(t *testing.T) {
+		t.Parallel()
+		// These normalize to the same canonical form (trailing slash / case).
+		in := extractedURLs(
+			"https://example.com",
+			"https://example.com/",
+			"https://EXAMPLE.com",
+			"https://other.com/path",
+		)
+		kept, deduped, truncated := dedupAndCapURLs(in)
+		assert.Equal(t, []string{"https://example.com", "https://other.com/path"}, kept)
+		assert.Equal(t, 2, deduped)
+		assert.Equal(t, 0, truncated)
+	})
+
+	t.Run("caps at maxURLsPerEmail after dedup", func(t *testing.T) {
+		t.Parallel()
+		var urls []string
+		for i := 0; i < maxURLsPerEmail+5; i++ {
+			urls = append(urls, fmt.Sprintf("https://distinct-%d.example.com/", i))
+		}
+		kept, deduped, truncated := dedupAndCapURLs(extractedURLs(urls...))
+		assert.Len(t, kept, maxURLsPerEmail)
+		assert.Equal(t, 0, deduped)
+		assert.Equal(t, 5, truncated)
+		// Cap keeps the FIRST N in order.
+		assert.Equal(t, "https://distinct-0.example.com/", kept[0])
+	})
+
+	t.Run("unnormalizable URLs are kept and deduped on raw form", func(t *testing.T) {
+		t.Parallel()
+		in := extractedURLs("not a url", "not a url", "also::bad")
+		kept, deduped, _ := dedupAndCapURLs(in)
+		// "not a url" appears twice → one drop; the distinct bad one survives.
+		assert.Equal(t, 1, deduped)
+		assert.Contains(t, kept, "not a url")
+	})
+
+	t.Run("empty input", func(t *testing.T) {
+		t.Parallel()
+		kept, deduped, truncated := dedupAndCapURLs(nil)
+		assert.Empty(t, kept)
+		assert.Zero(t, deduped)
+		assert.Zero(t, truncated)
+	})
+}
+
+func TestL1Confident(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name   string
+		score  int
+		routed bool
+		ti     urlpkg.TIResult
+		want   bool
+	}{
+		{"clearly phishing → confident, skip L2", l1ConfidentPhishingScore, false, urlpkg.TIResult{}, true},
+		{"clearly benign → confident, skip L2", l1ConfidentBenignScore, false, urlpkg.TIResult{}, true},
+		{"just below phishing cut → uncertain", l1ConfidentPhishingScore - 1, false, urlpkg.TIResult{}, false},
+		{"just above benign cut → uncertain", l1ConfidentBenignScore + 1, false, urlpkg.TIResult{}, false},
+		{"mid-band → uncertain, run L2", 50, false, urlpkg.TIResult{}, false},
+		{"routed always uncertain even if benign-scored", l1ConfidentBenignScore, true, urlpkg.TIResult{}, false},
+		{"any TI match keeps it uncertain", l1ConfidentPhishingScore, false, urlpkg.TIResult{Matched: true, RiskScore: 50}, false},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tc.want, l1Confident(tc.score, tc.routed, tc.ti))
 		})
 	}
 }

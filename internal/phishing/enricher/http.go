@@ -46,8 +46,11 @@ var (
 	// private, loopback, link-local, or otherwise non-public address.
 	errBlockedAddress = errors.New("blocked: non-public IP address")
 
+	// httpFetchTimeout caps the whole fetch (connect + headers + the capped body
+	// read). Lowered from 5s so the HTTP leg can't dominate the per-URL tail; the
+	// enricher's overall cap is ~2s.
 	httpClient = &http.Client{
-		Timeout: 5 * time.Second,
+		Timeout: 1500 * time.Millisecond,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) >= 10 {
 				return http.ErrUseLastResponse
@@ -61,7 +64,7 @@ var (
 			return nil
 		},
 		Transport: &http.Transport{
-			ResponseHeaderTimeout: 5 * time.Second,
+			ResponseHeaderTimeout: 1500 * time.Millisecond,
 			DialContext:           safeDialContext,
 		},
 	}
@@ -136,6 +139,12 @@ func blockNonPublicControl(_, address string, _ syscall.RawConn) error {
 
 const browserUA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
 
+// httpBodyReadCap bounds how much of the response body FetchHTTP reads. The
+// lightweight HTML signals we extract live in the <head> and early body, so
+// 32 KB is enough while keeping the transfer (and thus the per-URL latency)
+// bounded.
+const httpBodyReadCap = 32 * 1024
+
 // FetchHTTP fetches rawURL and parses relevant fields from the HTML body.
 // Returns zero-value HTTPResult (StatusCode=0) on error, including refusal
 // to fetch non-http(s) schemes and non-public IPs (SSRF guard).
@@ -167,8 +176,14 @@ func FetchHTTP(ctx context.Context, rawURL string) HTTPResult {
 
 	finalURL := resp.Request.URL.String()
 
-	// Read at most 512 KB to avoid memory issues on large pages.
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 512*1024))
+	// Read at most httpBodyReadCap. We keep a GET (not HEAD) so the lightweight
+	// HTML signals we actually use — <title>, <html lang>, the first <form
+	// action>, the favicon link, password-input and hidden-redirect markers —
+	// are still extractable; those all live in the document <head> and early
+	// body. Capping the read at 32 KB (down from 512 KB) bounds the transfer
+	// time so a large or slow-streaming page can't blow the per-URL latency
+	// budget, while still covering the head of essentially every real page.
+	body, err := io.ReadAll(io.LimitReader(resp.Body, httpBodyReadCap))
 	if err != nil {
 		return HTTPResult{StatusCode: resp.StatusCode, FinalURL: finalURL}
 	}
