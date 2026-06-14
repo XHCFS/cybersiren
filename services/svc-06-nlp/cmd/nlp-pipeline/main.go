@@ -29,6 +29,119 @@ const (
 	predictTimeout = 10 * time.Second
 )
 
+// Facet model/heuristic version strings recorded in the scores.nlp
+// model_versions envelope so downstream consumers can reason about score
+// provenance. The urgency/impersonation/deception facets are pure keyword/
+// domain heuristics (CONSTRAINT G4: no NER, no retraining). The intent label
+// is likewise a deterministic heuristic mapping (mapIntentTo5Label) layered
+// over the Python 11-class intent_labels — it does NOT retrain DistilBERT —
+// so it carries a heuristic version too. Bump these when the mapping or any
+// heuristic changes so provenance stays accurate.
+const (
+	versionUrgency       = "heuristic-1.0"
+	versionIntent        = "heuristic-1.0"
+	versionImpersonation = "heuristic-1.0"
+	versionDeception     = "heuristic-1.0"
+)
+
+// 5-label intent taxonomy (ARCH-SPEC; see contracts.NLPFacets.IntentLabel).
+const (
+	intentCredentialHarvesting = "credential_harvesting"
+	intentMalwareDelivery      = "malware_delivery"
+	intentBEC                  = "bec"
+	intentScam                 = "scam"
+	intentLegitimate           = "legitimate"
+)
+
+// intent5Priority orders the 5 spec labels from highest threat priority to
+// lowest. When a single email's Python intent_labels map onto more than one
+// spec label, the highest-priority one wins (index 0 is highest). legitimate
+// is the lowest and only surfaces when nothing else matches.
+var intent5Priority = []string{
+	intentCredentialHarvesting,
+	intentMalwareDelivery,
+	intentBEC,
+	intentScam,
+	intentLegitimate,
+}
+
+// intent11To5 maps each Python _INTENT_PATTERNS key (inference.py) onto exactly
+// one of the 5 spec labels.
+//
+//	credential_harvest, account_verification, data_exfiltration -> credential_harvesting
+//	malware_delivery                                            -> malware_delivery
+//	social_engineering, urgency_threat, impersonation          -> bec
+//	payment_fraud, prize_scam                                  -> scam
+//	marketing_spam, benign_notification                        -> legitimate
+//
+// impersonation -> bec: brand-impersonation in this corpus is overwhelmingly a
+// pretext for business-email-compromise style requests (the standalone brand
+// signal is already carried separately as impersonation_score/impersonated_brand),
+// so folding it into bec keeps scam reserved for financial-lure fraud.
+var intent11To5 = map[string]string{
+	"credential_harvest":   intentCredentialHarvesting,
+	"account_verification": intentCredentialHarvesting,
+	"data_exfiltration":    intentCredentialHarvesting,
+	"malware_delivery":     intentMalwareDelivery,
+	"social_engineering":   intentBEC,
+	"urgency_threat":       intentBEC,
+	"impersonation":        intentBEC,
+	"payment_fraud":        intentScam,
+	"prize_scam":           intentScam,
+	"marketing_spam":       intentLegitimate,
+	"benign_notification":  intentLegitimate,
+}
+
+// mapIntentTo5Label collapses the Python 11-class intent_labels into exactly
+// one of the 5 spec labels (credential_harvesting | malware_delivery | bec |
+// scam | legitimate) plus a deterministic confidence.
+//
+// Resolution:
+//   - classification=="legitimate" or no intent labels => ("legitimate", 1.0).
+//   - Otherwise map every recognised intent to its 5-label bucket and pick the
+//     highest-priority bucket (intent5Priority). Unknown Python labels are
+//     ignored.
+//   - If nothing maps (only unknown labels) => ("legitimate", 0.5).
+//
+// Confidence reflects how cleanly the winning label was chosen: it is the
+// fraction of *recognised* intents that agree with the winning bucket. A single
+// matching intent yields 1.0; competing buckets dilute it. This is fully
+// deterministic and bounded to (0, 1].
+func mapIntentTo5Label(intentLabels []string, classification string) (string, float64) {
+	if classification == intentLegitimate || len(intentLabels) == 0 {
+		return intentLegitimate, 1.0
+	}
+
+	bucketCounts := make(map[string]int)
+	recognised := 0
+	for _, lbl := range intentLabels {
+		bucket, ok := intent11To5[lbl]
+		if !ok {
+			continue
+		}
+		recognised++
+		bucketCounts[bucket]++
+	}
+
+	if recognised == 0 {
+		// Only unknown labels: classification was not "legitimate" but we have
+		// no usable signal, so fall back to legitimate with low confidence.
+		return intentLegitimate, 0.5
+	}
+
+	// Highest-priority bucket that actually matched wins.
+	winner := intentLegitimate
+	for _, candidate := range intent5Priority {
+		if bucketCounts[candidate] > 0 {
+			winner = candidate
+			break
+		}
+	}
+
+	confidence := float64(bucketCounts[winner]) / float64(recognised)
+	return winner, confidence
+}
+
 var nlpClient *nlp.Client
 
 // predictor is the narrow slice of *nlp.Client that the core handler needs.
@@ -113,8 +226,10 @@ func process(ctx context.Context, input contracts.AnalysisText, pred predictor, 
 
 	predCtx, cancel := context.WithTimeout(ctx, predictTimeout)
 	resp, status, err := pred.Predict(predCtx, nlp.PredictRequest{
-		Subject:   input.Subject,
-		BodyPlain: input.Body,
+		Subject:      input.Subject,
+		BodyPlain:    input.Body,
+		SenderName:   input.SenderName,
+		SenderDomain: input.SenderDomain,
 	})
 	cancel()
 
@@ -145,6 +260,25 @@ func process(ctx context.Context, input contracts.AnalysisText, pred predictor, 
 				"fallback":        true,
 				"fallback_reason": fallbackReason,
 				"fallback_error":  err.Error(),
+				// Neutral/empty facets so the envelope shape is identical to the
+				// success path (consumers can always read facets/model_versions).
+				// No model ran, so every facet is zero and intent is legitimate.
+				"facets": contracts.NLPFacets{
+					UrgencyScore:       0,
+					IntentLabel:        intentLegitimate,
+					IntentConfidence:   0,
+					ImpersonationScore: 0,
+					ImpersonatedBrand:  nil,
+					DeceptionScore:     0,
+				},
+				"model_versions": contracts.NLPModelVersions{
+					Urgency:       versionUrgency,
+					Intent:        versionIntent,
+					Impersonation: versionImpersonation,
+					Deception:     versionDeception,
+				},
+				"intent_label":      intentLegitimate,
+				"intent_confidence": 0.0,
 				// subject + plain_text carry the content dimension SVC-08's
 				// campaign fingerprint and SimHash near-dedup read from
 				// component_details.nlp.details (ARCH-SPEC §8.1).
@@ -153,6 +287,25 @@ func process(ctx context.Context, input contracts.AnalysisText, pred predictor, 
 			},
 		}
 	} else {
+		// Heuristic 5-label intent collapsed from the Python 11-class
+		// intent_labels. The full intent_labels list is still emitted below for
+		// SVC-08's fingerprint; intent_label/intent_confidence add the single
+		// spec-taxonomy label (also surfaced inside facets).
+		intentLabel, intentConf := mapIntentTo5Label(resp.IntentLabels, resp.Classification)
+		facets := contracts.NLPFacets{
+			UrgencyScore:       resp.UrgencyScore,
+			IntentLabel:        intentLabel,
+			IntentConfidence:   intentConf,
+			ImpersonationScore: resp.ImpersonationScore,
+			ImpersonatedBrand:  resp.ImpersonatedBrand,
+			DeceptionScore:     resp.DeceptionScore,
+		}
+		modelVersions := contracts.NLPModelVersions{
+			Urgency:       versionUrgency,
+			Intent:        versionIntent,
+			Impersonation: versionImpersonation,
+			Deception:     versionDeception,
+		}
 		out = contracts.ScoreEnvelope{ //nolint:staticcheck // G13: sanctioned legacy ScoreEnvelope producer.
 			Meta:      meta,
 			Component: contracts.ComponentNLP,
@@ -164,6 +317,16 @@ func process(ctx context.Context, input contracts.AnalysisText, pred predictor, 
 				"intent_labels":        resp.IntentLabels,
 				"urgency_score":        resp.UrgencyScore,
 				"obfuscation_detected": resp.ObfuscationDetected,
+				// Structured facet + provenance envelope (P4.2). Added ALONGSIDE
+				// the legacy keys above — the topic stays a contracts.ScoreEnvelope
+				// because svc-07's decoder decodes scores.nlp as ScoreEnvelope and
+				// svc-08's fingerprint reads intent_labels/subject/plain_text out of
+				// this Details map. NLPFacets / NLPModelVersions JSON-marshal to the
+				// spec facets{} / model_versions{} shapes.
+				"facets":            facets,
+				"model_versions":    modelVersions,
+				"intent_label":      intentLabel,
+				"intent_confidence": intentConf,
 				// subject + plain_text carry the content dimension SVC-08's
 				// campaign fingerprint and SimHash near-dedup read from
 				// component_details.nlp.details (ARCH-SPEC §8.1). Without them the

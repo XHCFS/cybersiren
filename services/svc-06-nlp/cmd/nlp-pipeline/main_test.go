@@ -177,3 +177,269 @@ func TestProcess_PublishErrorStillReturnsError(t *testing.T) {
 		t.Fatalf("expected publish error to propagate (infra failure, not a model timeout)")
 	}
 }
+
+// TestMapIntentTo5Label exercises every 5-label output, multi-intent priority
+// resolution, the empty/legitimate short-circuits and the unknown-label fall
+// back. mapIntentTo5Label must be pure and deterministic.
+func TestMapIntentTo5Label(t *testing.T) {
+	tests := []struct {
+		name           string
+		intents        []string
+		classification string
+		wantLabel      string
+		wantConf       float64
+	}{
+		{
+			name:      "credential_harvest -> credential_harvesting",
+			intents:   []string{"credential_harvest"},
+			wantLabel: intentCredentialHarvesting,
+			wantConf:  1.0,
+		},
+		{
+			name:      "account_verification -> credential_harvesting",
+			intents:   []string{"account_verification"},
+			wantLabel: intentCredentialHarvesting,
+			wantConf:  1.0,
+		},
+		{
+			name:      "data_exfiltration -> credential_harvesting",
+			intents:   []string{"data_exfiltration"},
+			wantLabel: intentCredentialHarvesting,
+			wantConf:  1.0,
+		},
+		{
+			name:      "malware_delivery -> malware_delivery",
+			intents:   []string{"malware_delivery"},
+			wantLabel: intentMalwareDelivery,
+			wantConf:  1.0,
+		},
+		{
+			name:      "social_engineering -> bec",
+			intents:   []string{"social_engineering"},
+			wantLabel: intentBEC,
+			wantConf:  1.0,
+		},
+		{
+			name:      "urgency_threat -> bec",
+			intents:   []string{"urgency_threat"},
+			wantLabel: intentBEC,
+			wantConf:  1.0,
+		},
+		{
+			name:      "impersonation -> bec",
+			intents:   []string{"impersonation"},
+			wantLabel: intentBEC,
+			wantConf:  1.0,
+		},
+		{
+			name:      "payment_fraud -> scam",
+			intents:   []string{"payment_fraud"},
+			wantLabel: intentScam,
+			wantConf:  1.0,
+		},
+		{
+			name:      "prize_scam -> scam",
+			intents:   []string{"prize_scam"},
+			wantLabel: intentScam,
+			wantConf:  1.0,
+		},
+		{
+			name:      "marketing_spam -> legitimate",
+			intents:   []string{"marketing_spam"},
+			wantLabel: intentLegitimate,
+			wantConf:  1.0,
+		},
+		{
+			name:      "benign_notification -> legitimate",
+			intents:   []string{"benign_notification"},
+			wantLabel: intentLegitimate,
+			wantConf:  1.0,
+		},
+		{
+			name:           "classification legitimate short-circuits",
+			intents:        []string{"credential_harvest"},
+			classification: "legitimate",
+			wantLabel:      intentLegitimate,
+			wantConf:       1.0,
+		},
+		{
+			name:      "no intents -> legitimate high confidence",
+			intents:   nil,
+			wantLabel: intentLegitimate,
+			wantConf:  1.0,
+		},
+		{
+			name:      "only unknown labels -> legitimate low confidence",
+			intents:   []string{"totally_unknown", "made_up"},
+			wantLabel: intentLegitimate,
+			wantConf:  0.5,
+		},
+		{
+			// credential_harvesting outranks bec & scam: priority order wins.
+			name:      "multi-intent priority picks credential_harvesting",
+			intents:   []string{"payment_fraud", "urgency_threat", "credential_harvest"},
+			wantLabel: intentCredentialHarvesting,
+			wantConf:  1.0 / 3.0,
+		},
+		{
+			// malware_delivery outranks scam.
+			name:      "multi-intent priority picks malware_delivery over scam",
+			intents:   []string{"prize_scam", "malware_delivery"},
+			wantLabel: intentMalwareDelivery,
+			wantConf:  0.5,
+		},
+		{
+			// two intents collapse to the same bucket -> full agreement.
+			name:      "two intents same bucket -> confidence 1.0",
+			intents:   []string{"credential_harvest", "account_verification"},
+			wantLabel: intentCredentialHarvesting,
+			wantConf:  1.0,
+		},
+		{
+			// unknown labels are ignored and do not dilute confidence.
+			name:      "unknown labels ignored in confidence",
+			intents:   []string{"credential_harvest", "junk_label"},
+			wantLabel: intentCredentialHarvesting,
+			wantConf:  1.0,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			gotLabel, gotConf := mapIntentTo5Label(tc.intents, tc.classification)
+			if gotLabel != tc.wantLabel {
+				t.Fatalf("label = %q, want %q", gotLabel, tc.wantLabel)
+			}
+			if diff := gotConf - tc.wantConf; diff > 1e-9 || diff < -1e-9 {
+				t.Fatalf("confidence = %v, want %v", gotConf, tc.wantConf)
+			}
+		})
+	}
+}
+
+// TestProcess_SuccessEmitsFacets proves the success path now emits the
+// structured facets{} + model_versions{} envelope (with impersonation/
+// deception/urgency/intent) INTO the Details map while STILL carrying the
+// legacy svc-07/svc-08 dependency keys (subject, plain_text, intent_labels).
+func TestProcess_SuccessEmitsFacets(t *testing.T) {
+	brand := "paypal"
+	pred := &fakePredictor{
+		resp: &nlp.PredictResponse{
+			Classification:      "phishing",
+			Confidence:          0.93,
+			PhishingProbability: 0.9,
+			ContentRiskScore:    90,
+			IntentLabels:        []string{"credential_harvest", "urgency_threat"},
+			UrgencyScore:        0.8,
+			ObfuscationDetected: true,
+			ImpersonationScore:  0.75,
+			ImpersonatedBrand:   &brand,
+			DeceptionScore:      0.6,
+		},
+		status: 200,
+	}
+	pub := &capturingPublisher{}
+	in := sampleInput()
+	in.SenderName = "PayPal Support"
+	in.SenderDomain = "paypa1-secure.example"
+
+	if err := process(context.Background(), in, pred, pub.publish); err != nil {
+		t.Fatalf("process returned error on success path: %v", err)
+	}
+
+	// Sender fields must have been forwarded to the predictor.
+	if pred.gotReq.SenderName != in.SenderName {
+		t.Fatalf("predict sender_name = %q, want %q", pred.gotReq.SenderName, in.SenderName)
+	}
+	if pred.gotReq.SenderDomain != in.SenderDomain {
+		t.Fatalf("predict sender_domain = %q, want %q", pred.gotReq.SenderDomain, in.SenderDomain)
+	}
+
+	// Decode the published Details into a typed view of the facet envelope.
+	var out struct {
+		Score   float64 `json:"score"`
+		Details struct {
+			IntentLabels  []string                   `json:"intent_labels"`
+			Subject       string                     `json:"subject"`
+			PlainText     string                     `json:"plain_text"`
+			Facets        contracts.NLPFacets        `json:"facets"`
+			ModelVersions contracts.NLPModelVersions `json:"model_versions"`
+		} `json:"details"`
+	}
+	if err := json.Unmarshal(pub.gotValue, &out); err != nil {
+		t.Fatalf("unmarshal published envelope: %v", err)
+	}
+
+	// Regression guard: svc-08 dependency keys must survive.
+	if out.Details.Subject != in.Subject {
+		t.Fatalf("details.subject = %q, want %q", out.Details.Subject, in.Subject)
+	}
+	if out.Details.PlainText != in.Body {
+		t.Fatalf("details.plain_text = %q, want %q", out.Details.PlainText, in.Body)
+	}
+	if len(out.Details.IntentLabels) != 2 {
+		t.Fatalf("details.intent_labels = %v, want the 2 raw Python labels", out.Details.IntentLabels)
+	}
+
+	// Facets must carry the injected impersonation/deception/urgency values.
+	f := out.Details.Facets
+	if f.ImpersonationScore != 0.75 {
+		t.Fatalf("facets.impersonation_score = %v, want 0.75", f.ImpersonationScore)
+	}
+	if f.ImpersonatedBrand == nil || *f.ImpersonatedBrand != brand {
+		t.Fatalf("facets.impersonated_brand = %v, want %q", f.ImpersonatedBrand, brand)
+	}
+	if f.DeceptionScore != 0.6 {
+		t.Fatalf("facets.deception_score = %v, want 0.6", f.DeceptionScore)
+	}
+	if f.UrgencyScore != 0.8 {
+		t.Fatalf("facets.urgency_score = %v, want 0.8", f.UrgencyScore)
+	}
+	// credential_harvest + urgency_threat -> credential_harvesting wins (priority).
+	if f.IntentLabel != intentCredentialHarvesting {
+		t.Fatalf("facets.intent_label = %q, want %q", f.IntentLabel, intentCredentialHarvesting)
+	}
+	if f.IntentConfidence <= 0 || f.IntentConfidence > 1 {
+		t.Fatalf("facets.intent_confidence = %v, want (0,1]", f.IntentConfidence)
+	}
+
+	// model_versions populated.
+	if out.Details.ModelVersions.Impersonation == "" || out.Details.ModelVersions.Intent == "" {
+		t.Fatalf("model_versions not populated: %+v", out.Details.ModelVersions)
+	}
+}
+
+// TestProcess_FallbackEmitsNeutralFacets proves the timeout/fallback path emits
+// the same envelope shape: neutral facets + model_versions so consumers can
+// always read them.
+func TestProcess_FallbackEmitsNeutralFacets(t *testing.T) {
+	pred := &fakePredictor{err: context.DeadlineExceeded, status: 0}
+	pub := &capturingPublisher{}
+	in := sampleInput()
+
+	if err := process(context.Background(), in, pred, pub.publish); err != nil {
+		t.Fatalf("process returned error on fallback path: %v", err)
+	}
+
+	var out struct {
+		Details struct {
+			Facets        contracts.NLPFacets        `json:"facets"`
+			ModelVersions contracts.NLPModelVersions `json:"model_versions"`
+		} `json:"details"`
+	}
+	if err := json.Unmarshal(pub.gotValue, &out); err != nil {
+		t.Fatalf("unmarshal published envelope: %v", err)
+	}
+	if out.Details.Facets.IntentLabel != intentLegitimate {
+		t.Fatalf("fallback facets.intent_label = %q, want %q", out.Details.Facets.IntentLabel, intentLegitimate)
+	}
+	if out.Details.Facets.ImpersonationScore != 0 || out.Details.Facets.DeceptionScore != 0 {
+		t.Fatalf("fallback facets must be zero-scored: %+v", out.Details.Facets)
+	}
+	if out.Details.Facets.ImpersonatedBrand != nil {
+		t.Fatalf("fallback impersonated_brand = %v, want nil", out.Details.Facets.ImpersonatedBrand)
+	}
+	if out.Details.ModelVersions.Intent == "" {
+		t.Fatalf("fallback model_versions not populated: %+v", out.Details.ModelVersions)
+	}
+}
