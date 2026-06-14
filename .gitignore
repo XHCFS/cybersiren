@@ -92,3 +92,6 @@ temp/
 
 # MaxMind GeoIP databases and trained ML model artifacts are now Git-LFS
 # tracked (see .gitattributes). Pull on demand via `make check-fusion-models`.
+
+# stray go build artifact (go build ./demo/dashboard with no -o)
+/dashboard
