@@ -1,0 +1,20 @@
+# ── svc-06-nlp (PIPELINE binary) ─────────────────────────────────────────────
+# The Spine pipeline consumer (cmd/nlp-pipeline): consumes analysis.text,
+# calls the FastAPI nlp-inference sidecar over HTTP for the DistilBERT score +
+# applies the heuristic facets, publishes scores.nlp. Plain Go — the ONNX model
+# lives in the nlp-inference sidecar image (Dockerfile.nlp), not here.
+
+# Stage 1: builder
+FROM golang:1.25-alpine AS builder
+WORKDIR /app
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" \
+    -o /bin/service ./services/svc-06-nlp/cmd/nlp-pipeline/
+
+# Stage 2: final
+FROM alpine:3.19
+RUN apk --no-cache add ca-certificates tzdata
+COPY --from=builder /bin/service /bin/service
+ENTRYPOINT ["/bin/service"]
