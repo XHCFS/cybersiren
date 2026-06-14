@@ -1,62 +1,35 @@
-// STUB: replace with real implementation. Consumes emails.verdict for the
-// future WebSocket feed (not wired in v0) and exposes /healthz on metrics
-// port. Existing internal/handlers/* remain unwired in v0.
+// svc-10-api-dashboard is the read-mostly analyst-console BACKEND (MVP-7). It is
+// HTTP-ONLY: a JWT login + a persisted read API over the email/verdict/rule
+// tables, the 5 materialized-view stats dashboards, a read-only rules list, and
+// a scan-submission proxy to svc-01. There is NO Kafka consumer and NO WebSocket
+// feed — P6.2 (the emails.verdict live feed) is DROPPED for the MVP, so the old
+// consumer + ring buffer are gone.
+//
+// Every read against an RLS-forced table runs inside a tenant-scoped transaction
+// keyed by the authenticated JWT claim OrgID (G10). MVP-1 freezes a single org.
 package main
 
 import (
-	"context"
-	"encoding/json"
-	"fmt"
 	"os"
-	"sync"
 
 	"github.com/rs/zerolog"
 
-	contracts "github.com/saif/cybersiren/shared/contracts/kafka"
-	kafkaconsumer "github.com/saif/cybersiren/shared/kafka/consumer"
 	"github.com/saif/cybersiren/shared/svckit"
+
+	apidashboard "github.com/saif/cybersiren/services/svc-10-api-dashboard/internal"
 )
 
 const serviceName = "svc-10-api-dashboard"
 
-// ringSize bounds the in-memory verdict buffer until the WebSocket feed lands.
-const ringSize = 64
-
-var (
-	ringMu sync.Mutex
-	ring   []contracts.EmailsVerdict
-)
-
 func main() {
 	if err := svckit.Run(svckit.Spec{
-		Name:           serviceName,
-		NeedsDB:        true,
-		ConsumerTopics: []string{contracts.TopicEmailsVerdict},
-		GroupID:        contracts.GroupDashboard,
-		Handler:        handle,
+		Name:       serviceName,
+		NeedsDB:    true,
+		HTTPPort:   8088,
+		HTTPRoutes: apidashboard.RegisterRoutes,
 	}); err != nil {
 		l := zerolog.New(os.Stderr)
 		l.Error().Err(err).Send()
 		os.Exit(1)
 	}
-}
-
-func handle(ctx context.Context, msg kafkaconsumer.Message, _ svckit.Deps) error {
-	var v contracts.EmailsVerdict
-	if err := json.Unmarshal(msg.Value, &v); err != nil {
-		return fmt.Errorf("decode verdict: %w", err)
-	}
-
-	ringMu.Lock()
-	ring = append(ring, v)
-	if len(ring) > ringSize {
-		ring = ring[len(ring)-ringSize:]
-	}
-	ringMu.Unlock()
-
-	zerolog.Ctx(ctx).Info().
-		Str("email_id", v.Meta.EmailID).
-		Str("verdict", v.VerdictLabel).
-		Msg("dashboard buffered verdict")
-	return nil
 }

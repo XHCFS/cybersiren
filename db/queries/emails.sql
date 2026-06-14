@@ -91,6 +91,38 @@ WHERE internal_id = $1
   AND fetched_at = $2
   AND deleted_at IS NULL;
 
+-- name: ListEmailsByOrg :many
+-- svc-10 analyst-console list view: a page of an org's emails, newest fetched_at
+-- first, with the list-row columns plus the denormalised current verdict label
+-- (emails.current_verdict_label, kept in sync by trg_sync_email_verdict_label).
+-- The logical UUIDv7 email_id is surfaced via a LEFT JOIN to the email_identities
+-- dedup registry so the SPA can deep-link to the detail view; it is NULL for
+-- emails registered before migration 035 or with no Message-ID. emails is
+-- FORCE-RLS, so this read MUST run inside a tx that has set app.current_org_id
+-- (WithOrgTx). email_identities has NO RLS policy, so the join is constrained to
+-- the same tenant by the explicit ei.org_id predicate. LIMIT/OFFSET paginate.
+SELECT
+    e.internal_id,
+    e.fetched_at,
+    ei.email_id,
+    e.message_id,
+    e.sender_email,
+    e.sender_name,
+    e.sender_domain,
+    e.subject,
+    e.risk_score,
+    e.current_verdict_label,
+    e.sent_at
+FROM emails e
+LEFT JOIN email_identities ei
+    ON  ei.internal_id = e.internal_id
+    AND ei.fetched_at  = e.fetched_at
+    AND ei.org_id      = $1
+WHERE e.org_id = $1
+  AND e.deleted_at IS NULL
+ORDER BY e.fetched_at DESC, e.internal_id DESC
+LIMIT $2 OFFSET $3;
+
 -- name: GetEmailIdentity :one
 -- Looks up the canonical (internal_id, fetched_at) for an (org_id, message_id)
 -- pair in the cross-partition dedup registry. email_identities has NO RLS

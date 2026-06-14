@@ -23,6 +23,7 @@ MIGRATIONS_DIR="${MIGRATIONS_DIR:-${REPO_ROOT}/db/migrations}"
 FEEDS_SEED_FILE="${FEEDS_SEED_FILE:-${REPO_ROOT}/db/seeds/feeds.sql}"
 HEADER_RULES_SEED_FILE="${HEADER_RULES_SEED_FILE:-${REPO_ROOT}/db/seeds/header_rules_demo_seed.sql}"
 ORGANISATIONS_SEED_FILE="${ORGANISATIONS_SEED_FILE:-${REPO_ROOT}/db/seeds/organisations_seed.sql}"
+USERS_SEED_FILE="${USERS_SEED_FILE:-${REPO_ROOT}/db/seeds/users_seed.sql}"
 API_KEY_DEMO_SEED_FILE="${API_KEY_DEMO_SEED_FILE:-${REPO_ROOT}/db/seeds/api_key_demo_seed.sql}"
 
 # Docker compose container name for postgres
@@ -106,6 +107,28 @@ if [ "${MODE}" != "migrate-only" ]; then
                 < "${ORGANISATIONS_SEED_FILE}"
         fi
         echo "Organisations seed complete."
+    fi
+
+    # Seed the svc-10 console login user (idempotent: ON CONFLICT (org_id, email)
+    # DO NOTHING). Binds one analyst user to org_id=1 so the read-mostly analyst
+    # console (MVP-7) can authenticate POST /api/v1/auth/login. FK-depends on the
+    # organisations seed (org 1), so it runs AFTER it.
+    if [ -f "${USERS_SEED_FILE}" ]; then
+        echo "Seeding console login user (idempotent)..."
+        if command -v psql &> /dev/null; then
+            PGPASSWORD="${DB_PASSWORD}" psql \
+                -h "${DB_HOST}" \
+                -p "${DB_PORT}" \
+                -U "${DB_USER}" \
+                -d "${DB_NAME}" \
+                -v ON_ERROR_STOP=1 \
+                -f "${USERS_SEED_FILE}"
+        else
+            docker exec -i -e PGPASSWORD="${DB_PASSWORD}" "${POSTGRES_CONTAINER}" \
+                psql -U "${DB_USER}" -d "${DB_NAME}" -v ON_ERROR_STOP=1 \
+                < "${USERS_SEED_FILE}"
+        fi
+        echo "Console login user seed complete."
     fi
 
     # Seed the demo API key (idempotent: ON CONFLICT (key_hash) DO NOTHING).

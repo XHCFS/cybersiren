@@ -275,6 +275,91 @@ func (q *Queries) InsertEmail(ctx context.Context, arg InsertEmailParams) (Inser
 	return i, err
 }
 
+const listEmailsByOrg = `-- name: ListEmailsByOrg :many
+SELECT
+    e.internal_id,
+    e.fetched_at,
+    ei.email_id,
+    e.message_id,
+    e.sender_email,
+    e.sender_name,
+    e.sender_domain,
+    e.subject,
+    e.risk_score,
+    e.current_verdict_label,
+    e.sent_at
+FROM emails e
+LEFT JOIN email_identities ei
+    ON  ei.internal_id = e.internal_id
+    AND ei.fetched_at  = e.fetched_at
+    AND ei.org_id      = $1
+WHERE e.org_id = $1
+  AND e.deleted_at IS NULL
+ORDER BY e.fetched_at DESC, e.internal_id DESC
+LIMIT $2 OFFSET $3
+`
+
+type ListEmailsByOrgParams struct {
+	OrgID  int64 `db:"org_id" json:"org_id"`
+	Limit  int32 `db:"limit" json:"limit"`
+	Offset int32 `db:"offset" json:"offset"`
+}
+
+type ListEmailsByOrgRow struct {
+	InternalID          int64              `db:"internal_id" json:"internal_id"`
+	FetchedAt           pgtype.Timestamptz `db:"fetched_at" json:"fetched_at"`
+	EmailID             pgtype.UUID        `db:"email_id" json:"email_id"`
+	MessageID           pgtype.Text        `db:"message_id" json:"message_id"`
+	SenderEmail         pgtype.Text        `db:"sender_email" json:"sender_email"`
+	SenderName          pgtype.Text        `db:"sender_name" json:"sender_name"`
+	SenderDomain        pgtype.Text        `db:"sender_domain" json:"sender_domain"`
+	Subject             pgtype.Text        `db:"subject" json:"subject"`
+	RiskScore           pgtype.Int4        `db:"risk_score" json:"risk_score"`
+	CurrentVerdictLabel pgtype.Text        `db:"current_verdict_label" json:"current_verdict_label"`
+	SentAt              pgtype.Timestamptz `db:"sent_at" json:"sent_at"`
+}
+
+// svc-10 analyst-console list view: a page of an org's emails, newest fetched_at
+// first, with the list-row columns plus the denormalised current verdict label
+// (emails.current_verdict_label, kept in sync by trg_sync_email_verdict_label).
+// The logical UUIDv7 email_id is surfaced via a LEFT JOIN to the email_identities
+// dedup registry so the SPA can deep-link to the detail view; it is NULL for
+// emails registered before migration 035 or with no Message-ID. emails is
+// FORCE-RLS, so this read MUST run inside a tx that has set app.current_org_id
+// (WithOrgTx). email_identities has NO RLS policy, so the join is constrained to
+// the same tenant by the explicit ei.org_id predicate. LIMIT/OFFSET paginate.
+func (q *Queries) ListEmailsByOrg(ctx context.Context, arg ListEmailsByOrgParams) ([]ListEmailsByOrgRow, error) {
+	rows, err := q.db.Query(ctx, listEmailsByOrg, arg.OrgID, arg.Limit, arg.Offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListEmailsByOrgRow
+	for rows.Next() {
+		var i ListEmailsByOrgRow
+		if err := rows.Scan(
+			&i.InternalID,
+			&i.FetchedAt,
+			&i.EmailID,
+			&i.MessageID,
+			&i.SenderEmail,
+			&i.SenderName,
+			&i.SenderDomain,
+			&i.Subject,
+			&i.RiskScore,
+			&i.CurrentVerdictLabel,
+			&i.SentAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const registerEmailIdentity = `-- name: RegisterEmailIdentity :one
 INSERT INTO email_identities (org_id, message_id, internal_id, fetched_at, email_id)
 VALUES ($1, $2, $3, $4, $5)
