@@ -672,7 +672,7 @@ services:
       kafka-init: { condition: service_completed_successfully }
       valkey: { condition: service_healthy }
       postgres: { condition: service_healthy }
-    ports: ["8081:8081", "9101:9090"]
+    ports: ["8081:8081"]
     environment:
       <<: *pipeline-env
     networks: [cybersiren]
@@ -687,7 +687,6 @@ services:
       kafka-init: { condition: service_completed_successfully }
       minio-init: { condition: service_completed_successfully }
       postgres: { condition: service_healthy }
-    ports: ["9102:9090"]
     environment:
       <<: *pipeline-env
     networks: [cybersiren]
@@ -702,7 +701,6 @@ services:
       kafka-init: { condition: service_completed_successfully }
       valkey: { condition: service_healthy }
       fusion-sidecar: { condition: service_healthy }
-    ports: ["9103:9090"]
     environment:
       <<: *pipeline-env
       CYBERSIREN_ML__URL_MODEL_PATH: /app/ml/inference_script.py
@@ -721,7 +719,6 @@ services:
       kafka-init: { condition: service_completed_successfully }
       minio-init: { condition: service_completed_successfully }
       postgres: { condition: service_healthy }
-    ports: ["9105:9090"]
     environment:
       <<: *pipeline-env
     networks: [cybersiren]
@@ -735,7 +732,6 @@ services:
       demo-seed: { condition: service_completed_successfully }
       kafka-init: { condition: service_completed_successfully }
       nlp-inference: { condition: service_healthy }
-    ports: ["9106:9090"]
     environment:
       <<: *pipeline-env
       CYBERSIREN_ML__NLP_SERVICE_URL: http://nlp-inference:8001
@@ -751,7 +747,6 @@ services:
       kafka-init: { condition: service_completed_successfully }
       valkey: { condition: service_healthy }
       postgres: { condition: service_healthy }
-    ports: ["9107:9090"]
     environment:
       <<: *pipeline-env
     networks: [cybersiren]
@@ -766,7 +761,6 @@ services:
       kafka-init: { condition: service_completed_successfully }
       valkey: { condition: service_healthy }
       postgres: { condition: service_healthy }
-    ports: ["9108:9090"]
     environment:
       <<: *pipeline-env
     networks: [cybersiren]
@@ -781,7 +775,6 @@ services:
       kafka-init: { condition: service_completed_successfully }
       valkey: { condition: service_healthy }
       postgres: { condition: service_healthy }
-    ports: ["9109:9090"]
     environment:
       <<: *pipeline-env
     networks: [cybersiren]
@@ -795,7 +788,7 @@ services:
       demo-seed: { condition: service_completed_successfully }
       postgres: { condition: service_healthy }
       svc-01-ingestion: { condition: service_started }
-    ports: ["8088:8088", "9110:9090"]
+    ports: ["8088:8088"]
     environment:
       <<: *pipeline-env
       CYBERSIREN_SVC10__SVC01_BASE_URL: http://svc-01-ingestion:8081
