@@ -23,9 +23,22 @@ import (
 	"github.com/saif/cybersiren/shared/observability/tracing"
 )
 
+// FusionMode selects which Blender combines the per-component scores.
+const (
+	// FusionWeightedAverage is the v1 weighted mean (design brief §3.4).
+	FusionWeightedAverage = "weighted_average"
+	// FusionNoisyOR is the reliability-weighted noisy-OR (see noisyor_blender.go):
+	// never dilutes a confident channel, structurally distrusts the unreliable URL.
+	FusionNoisyOR = "noisy_or"
+)
+
 // Config holds the runtime knobs for the decision engine.
 type Config struct {
+	// FusionMode selects the Blender. Empty defaults to FusionWeightedAverage so
+	// existing callers keep v1 behaviour; the service sets FusionNoisyOR explicitly.
+	FusionMode           string
 	BlendWeights         BlendWeights
+	Reliabilities        Reliabilities
 	Shrinkage            campaign.Shrinkage
 	SimHashThreshold     int
 	PublishRetryAttempts int
@@ -34,8 +47,14 @@ type Config struct {
 
 // Defaults applies the v1 starting parameters from the design brief.
 func (c Config) Defaults() Config {
+	if c.FusionMode == "" {
+		c.FusionMode = FusionWeightedAverage
+	}
 	if c.BlendWeights.URL+c.BlendWeights.Header+c.BlendWeights.NLP+c.BlendWeights.Attachment <= 0 {
 		c.BlendWeights = DefaultWeights()
+	}
+	if c.Reliabilities.URL+c.Reliabilities.Header+c.Reliabilities.NLP+c.Reliabilities.Attachment <= 0 {
+		c.Reliabilities = DefaultReliabilities()
 	}
 	if c.Shrinkage.Tau <= 0 || c.Shrinkage.AlphaMax <= 0 {
 		c.Shrinkage = campaign.DefaultShrinkage()
@@ -47,6 +66,18 @@ func (c Config) Defaults() Config {
 		c.PublishRetryAttempts = 0
 	}
 	return c
+}
+
+// selectBlender returns the Blender named by cfg.FusionMode. Unknown values fall
+// back to the weighted average so a misconfiguration can never leave the engine
+// without a blender.
+func selectBlender(cfg Config) Blender {
+	switch cfg.FusionMode {
+	case FusionNoisyOR:
+		return NewReliabilityNoisyORBlender(cfg.Reliabilities)
+	default:
+		return NewWeightedAverageBlender(cfg.BlendWeights)
+	}
 }
 
 // Publisher is the producer for emails.verdict (subset of
@@ -100,7 +131,7 @@ func New(
 	cfg = cfg.Defaults()
 	return &Engine{
 		cfg:       cfg,
-		blender:   NewWeightedAverageBlender(cfg.BlendWeights),
+		blender:   selectBlender(cfg),
 		rules:     rulesCache,
 		evaluator: rules.NewEvaluator(log),
 		simhash:   simhash,

@@ -31,7 +31,23 @@ const (
 	defaultDBRetries    = 3
 	defaultPubRetries   = 3
 	defaultModelVersion = "decision-v1"
+
+	// fusionModeEnv overrides the score-fusion method. Default is the
+	// reliability-weighted noisy-OR (engine.FusionNoisyOR); set to
+	// "weighted_average" to roll back to the v1 weighted mean.
+	fusionModeEnv = "CYBERSIREN_DECISION__FUSION_MODE"
 )
+
+// fusionMode reads the fusion-method override from the environment, defaulting to
+// the reliability-weighted noisy-OR. Unknown values fall back to that default.
+func fusionMode() string {
+	switch os.Getenv(fusionModeEnv) {
+	case engine.FusionWeightedAverage:
+		return engine.FusionWeightedAverage
+	default:
+		return engine.FusionNoisyOR
+	}
+}
 
 var (
 	errNotReady          = errors.New("svc-08: engine not yet initialised")
@@ -74,7 +90,9 @@ func main() {
 
 			eng = engine.New(
 				engine.Config{
+					FusionMode:           fusionMode(),
 					BlendWeights:         engine.DefaultWeights(),
+					Reliabilities:        engine.DefaultReliabilities(),
 					Shrinkage:            campaign.DefaultShrinkage(),
 					SimHashThreshold:     campaign.SimHashThreshold,
 					PublishRetryAttempts: defaultPubRetries,
@@ -90,6 +108,7 @@ func main() {
 
 			deps.Log.Info().
 				Str("model_version", defaultModelVersion).
+				Str("fusion_mode", fusionMode()).
 				Int("simhash_threshold", campaign.SimHashThreshold).
 				Msg("decision engine ready")
 			return nil

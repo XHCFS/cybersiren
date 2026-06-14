@@ -236,17 +236,52 @@ Produces to `emails.verdict` (7-day retention).
 
 Receives `url_score`, `header_score`, `attachment_score` (nullable), `nlp_score` (nullable) from SVC-07.
 
-**Current stub:** simple average — `sum / len(component_scores)`.
+SVC-08 supports two fusion methods, selected by `CYBERSIREN_DECISION__FUSION_MODE`
+(`internal/engine`, the `Blender` interface). **Default: `noisy_or`.** `weighted_average`
+is kept for rollback.
 
-**Required:** Configurable weighted blend. Starting weights (equal by default, env-var overrides):
-- `url_weight` = 0.35 (URL is usually the strongest signal)
-- `header_weight` = 0.30
-- `nlp_weight` = 0.25
-- `attachment_weight` = 0.10
+#### `noisy_or` — reliability-weighted noisy-OR (default)
 
-**Null components:** If `partial_analysis: true` in emails.scored, some scores may be missing. The blender must handle null scores gracefully — divide by the sum of weights of **present** components only, not total. Flag this condition in the output (`partial_analysis: true` passes through).
+For each **present** component `c` with score `sₑ ∈ [0,100]` and reliability `rₑ ∈ [0,1]`,
+let the per-channel phishing contribution be `pₑ = rₑ · sₑ/100`. The fused risk is:
 
-**Explainability invariant:** Individual component scores must be preserved in the `emails.verdict` message and in the `emails` DB UPDATE regardless of the blending method.
+$$\text{risk} \;=\; 100\cdot\Big(1 \;-\!\!\prod_{c\,\in\,\text{present}}\!\!\big(1 - r_c\,\tfrac{s_c}{100}\big)\Big)$$
+
+Read probabilistically: `pₑ` = P(channel *c* signals phishing); the product = P(*all*
+channels quiet); `1 −` that = **P(at least one channel correctly fires)**.
+
+**Reliabilities** (`engine.DefaultReliabilities`) come from each channel's *measured
+precision* on the fusion benchmark, not hand-tuning:
+
+| Channel | `rₑ` | Why |
+|---|---|---|
+| NLP | **1.00** | Strongest, best-calibrated signal |
+| Header | **0.78** | Strong when SPF/DKIM/DMARC/typosquat fire |
+| Attachment | **0.60** | Specific when it fires |
+| URL | **0.22** | Lexical-only URL score is unreliable (legit links score high). A high URL score *alone* tops out at 22 → below threshold → **defers to SVC-03's allowlist + operational model**. Raise once SVC-03's full stack runs. |
+
+**Why not a weighted average.** A weighted average *dilutes* a confident channel: a
+text-only BEC (NLP=100, header=0) blends to `0.25·100/(0.25+0.30) = 45` → **missed**.
+Formally, with threshold `θ` and two present channels, catching text-only needs
+`w_nlp/(w_nlp+w_header) > θ/100` and header-only needs the reverse — the two fractions
+sum to 1, so both hold only if `θ < 50`; for any `θ ≥ 50` **no weights work**. The
+noisy-OR has a single-channel floor `risk ≥ 100·maxₑ pₑ` (a clean channel contributes a
+factor of 1, i.e. nothing), so it catches both. It is monotonic, bounded to [0,100], and
+pure arithmetic (no model artifact / sidecar). Measured: weighted-avg 63% → noisy-OR
+**92% recall @ 1% FPR** on the fusion benchmark, holding **89% cross-distribution** with
+**zero false positives** on the legit-noisy-URL trap.
+
+#### `weighted_average` — v1 weighted mean (rollback)
+
+`risk = Σ wₑ·sₑ / Σ wₑ` over present components, weights `url=0.35, header=0.30, nlp=0.25,
+attachment=0.10` (`engine.DefaultWeights`).
+
+**Null components:** both blenders combine **present** components only — a missing
+component never shifts the result. `partial_analysis: true` passes through.
+
+**Explainability invariant:** Individual component scores are preserved in the
+`emails.verdict` message and the `emails` DB UPDATE regardless of the blending method;
+both blenders also return per-component `Contributions` for `analysis_metadata`.
 
 ### 3.5 Rule Engine (Step ii)
 
@@ -553,12 +588,17 @@ Study this as the canonical pattern for a decision-service processor. Key patter
 
 These questions are flagged in the spec as "under research" or have trade-offs that require deliberate choices. Answers from research in §6 should inform the design.
 
-### Q1 — Score Blending Method
-**Status:** Spec says "combination method is under research — must be explainable."  
-**Current stub:** simple average.  
-**Constraint:** Individual component scores must be preserved (not lossy).  
-**Options:** weighted average (simplest, explainable), log-odds blending (Bayesian, less interpretable), max-score (conservative, high recall), rank aggregation, calibrated ensemble.  
-**Decision needed:** Which method to implement first, and how to make it configurable for future A/B testing?
+### Q1 — Score Blending Method — ✅ RESOLVED (see §3.4)
+**Decision:** reliability-weighted **noisy-OR** is the default (`FusionMode=noisy_or`); the
+weighted average is kept as a config rollback. Of the options considered (weighted average,
+log-odds, max-score, rank aggregation, calibrated ensemble), the noisy-OR is the log-odds
+family member that (a) never dilutes a confident channel — a weighted average provably
+cannot catch both text-only and header-only threats at threshold ≥ 50 — (b) encodes
+per-channel reliability so the unreliable lexical-URL channel defers rather than
+false-positives, and (c) is pure arithmetic, preserving full explainability. A learnable
+meta-classifier (gradient boosting) was prototyped and **rejected**: it overfit the
+benchmark and false-positived on legit links, whereas the structural noisy-OR generalised
+(89% recall cross-distribution). Configurable via `CYBERSIREN_DECISION__FUSION_MODE`.
 
 ### Q2 — SimHash for Campaign Near-Deduplication
 **Status:** Spec says "SimHash near-duplicate detection (per-org scoped via Redis)."  
@@ -584,23 +624,24 @@ Use these as literal web search queries (Google Scholar, arXiv, Semantic Scholar
 
 ---
 
-### 6.1 Score Blending / Ensemble Combination Methods for Security Classifiers
+### 6.1 Score Blending / Ensemble Combination Methods — ✅ RESOLVED
 
-**Search prompt 1 (academic):**
-> "ensemble score combination methods phishing detection explainability weighted average versus log-odds calibration precision recall"
+Findings that drove the §3.4 / Q1 decision:
+- **Log-odds (noisy-OR) beats weighted average** for different-modality detectors: a
+  weighted mean dilutes a confident channel and provably cannot catch both single-channel
+  threat types at threshold ≥ 50; the noisy-OR has a single-channel floor and does.
+- **Calibration matters as per-channel *reliability*.** Raw 0–100 scores are not equally
+  trustworthy across modalities — the lexical-URL channel is unreliable (legit links score
+  high). Encoding reliability per channel (from measured precision) lets the URL channel
+  *defer* instead of false-positiving, without per-email calibration machinery.
+- **A learnable meta-classifier is *not* appropriate here (yet).** A gradient-boosted
+  stacker was prototyped; it overfit the (synthetic-heavy) fusion benchmark and
+  false-positived on legitimate links, while the structural noisy-OR generalised
+  (92% in-dist, 89% cross-dist recall @ 1% FPR). A learned layer becomes appropriate once a
+  *real* full-email multi-channel corpus exists.
 
-**Search prompt 2 (applied):**
-> "multi-classifier email threat scoring fusion method calibrated probability combination site:arxiv.org OR site:usenix.org"
-
-**Search prompt 3 (tooling):**
-> "scikit-learn VotingClassifier soft voting weighted average vs stacking ensemble explainability phishing URL"
-
-**What to find:**
-- Whether log-odds blending or weighted average gives better AUC for binary phishing classification when individual classifiers are of different modality (URL features vs. text vs. headers)
-- Whether calibration (Platt scaling, isotonic regression) is needed before blending when classifiers output raw scores (0–100 int) rather than calibrated probabilities
-- Whether a learnable blending layer (trained meta-classifier) is appropriate, or whether a simple configurable weighted average with equal initial weights is sufficient for a first implementation
-
-**Decision this informs:** §3.4 score blending algorithm, and whether the blending weights should be static (config) or learned.
+**Outcome:** static, config-selectable structural fusion (`noisy_or` default,
+`weighted_average` rollback). See §3.4 and `internal/engine/noisyor_blender.go`.
 
 ---
 
@@ -714,8 +755,10 @@ services/svc-08-decision/
 │   ├── engine/
 │   │   ├── engine.go               (orchestrator: blend → rules → verdict → campaign → DB)
 │   │   ├── engine_test.go
-│   │   ├── blender.go              (weighted score combination)
+│   │   ├── blender.go              (Blender interface + weighted_average blender)
 │   │   ├── blender_test.go
+│   │   ├── noisyor_blender.go      (reliability-weighted noisy-OR — default, §3.4)
+│   │   ├── noisyor_blender_test.go
 │   │   ├── confidence.go           (confidence formula)
 │   │   └── confidence_test.go
 │   ├── campaign/
