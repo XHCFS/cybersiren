@@ -268,39 +268,63 @@ func TestL1Confident(t *testing.T) {
 func TestIsUncorroboratedHighL1(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
-		name      string
-		label     string
-		ti        urlpkg.TIResult
-		mlVerdict string
-		mlOpP     float64
-		want      bool
+		name       string
+		label      string
+		ti         urlpkg.TIResult
+		mlVerdict  string
+		mlOpP      float64
+		mlDegraded bool
+		want       bool
 	}{
-		{"non-phishing label is never de-escalated", "suspicious", urlpkg.TIResult{}, "", 0, false},
-		{"benign label is never de-escalated", "legitimate", urlpkg.TIResult{}, "", 0, false},
-		{"phishing from L1 only (no L2) is uncorroborated", "phishing", urlpkg.TIResult{}, "", 0, true},
+		{"non-phishing label is never de-escalated", "suspicious", urlpkg.TIResult{}, "", 0, false, false},
+		{"benign label is never de-escalated", "legitimate", urlpkg.TIResult{}, "", 0, false, false},
+		{
+			// No L2 verdict (errored / timed out / no sidecar): there is nothing
+			// to correct L1 with, so the L1 phishing call must STAND — recall is
+			// not silently dropped when L2 is unavailable.
+			"phishing from L1 only (no L2 verdict) stands — not de-escalated",
+			"phishing", urlpkg.TIResult{}, "", 0, false, false,
+		},
 		{
 			"phishing with operationally-backed L2 is corroborated",
-			"phishing", urlpkg.TIResult{}, "phishing", 0.10, false,
+			"phishing", urlpkg.TIResult{}, "phishing", 0.10, false, false,
 		},
 		{
 			// The benign-FP case: L2 says phishing but purely on URL-structure
 			// (op_p ~ 0), so it is a structural echo of L1, not corroboration.
 			"phishing with L2 op_p below floor is uncorroborated",
-			"phishing", urlpkg.TIResult{}, "phishing", 0.0006, true,
+			"phishing", urlpkg.TIResult{}, "phishing", 0.0006, false, true,
 		},
 		{
 			"phishing with L2 op_p exactly at floor is corroborated",
-			"phishing", urlpkg.TIResult{}, "phishing", l2OpSignalFloor, false,
+			"phishing", urlpkg.TIResult{}, "phishing", l2OpSignalFloor, false, false,
 		},
-		{"phishing raised by TI>=80 is corroborated", "phishing", urlpkg.TIResult{Matched: true, RiskScore: 90}, "", 0, false},
-		{"phishing with low-conf TI<80 stays uncorroborated", "phishing", urlpkg.TIResult{Matched: true, RiskScore: 50}, "", 0, true},
-		{"phishing with L2 benign verdict is uncorroborated", "phishing", urlpkg.TIResult{}, "benign", 0, true},
+		{"phishing raised by TI>=80 is corroborated", "phishing", urlpkg.TIResult{Matched: true, RiskScore: 90}, "", 0, false, false},
+		{
+			// Low-confidence TI gives no corroboration, but there is also no L2
+			// verdict to de-escalate with, so the L1 call stands.
+			"phishing with low-conf TI<80 and no L2 stands",
+			"phishing", urlpkg.TIResult{Matched: true, RiskScore: 50}, "", 0, false, false,
+		},
+		{
+			// L2 benign would normally make classifyLabel return legitimate; if it
+			// ever reaches here it is not a phishing echo, so do not de-escalate.
+			"phishing with L2 benign verdict stands",
+			"phishing", urlpkg.TIResult{}, "benign", 0, false, false,
+		},
+		{
+			// Breaker-open: L2 returns a degraded fail-open benign with no signal.
+			// classifyLabel keeps the high L1 as phishing; de-escalation must NOT
+			// fire — recall is preserved during a network outage.
+			"degraded L2 (breaker open) does not de-escalate high L1",
+			"phishing", urlpkg.TIResult{}, "benign", 0, true, false,
+		},
 	}
 	for _, tc := range cases {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			assert.Equal(t, tc.want, isUncorroboratedHighL1(tc.label, tc.ti, tc.mlVerdict, tc.mlOpP))
+			assert.Equal(t, tc.want, isUncorroboratedHighL1(tc.label, tc.ti, tc.mlVerdict, tc.mlOpP, tc.mlDegraded))
 		})
 	}
 }

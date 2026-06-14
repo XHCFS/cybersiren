@@ -225,8 +225,16 @@ func (d *Detector) scoreViaFeatures(ctx context.Context, rawURL string) (phclien
 	// degraded-network window trip it OPEN (and a clean run closes a half-open
 	// probe). Done here, immediately after the call, so only the network leg's
 	// health drives the breaker — not the sidecar /score-features call.
+	//
+	// Enrich degrades gracefully and returns a nil error even when DNS cannot be
+	// reached (it just produces empty features), so a network outage would never
+	// trip the breaker on enrichErr alone. eu.DNSNetworkError surfaces a
+	// network-level resolution failure (timeout/SERVFAIL, NOT a clean NXDOMAIN),
+	// which is the signal that a degraded-network window is in progress. Without
+	// it the breaker never opens during an outage and a high L1 score is silently
+	// de-escalated instead of standing as Degraded.
 	if d.breaker != nil {
-		if enrichErr != nil {
+		if enrichErr != nil || eu.DNSNetworkError {
 			d.breaker.Failure()
 		} else {
 			d.breaker.Success()

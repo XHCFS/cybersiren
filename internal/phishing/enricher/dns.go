@@ -2,6 +2,7 @@ package enricher
 
 import (
 	"context"
+	"errors"
 	"net"
 	"time"
 
@@ -50,13 +51,29 @@ var globalDNSCache = newDNSCache()
 // ResolveIP resolves hostname to an IPv4 address (preferred) or IPv6 address.
 // Results are cached in-process for the binary lifetime. Returns empty string on failure.
 func ResolveIP(ctx context.Context, hostname string) string {
+	ip, _ := resolveIPStatus(ctx, hostname)
+	return ip
+}
+
+// resolveIPStatus is ResolveIP plus a signal of whether a failed lookup was a
+// network-level error (timeout / SERVFAIL — the resolver could not be reached)
+// as opposed to a clean negative answer (NXDOMAIN / no addresses — the host
+// genuinely does not exist while the network is healthy).
+//
+// The distinction matters for the L2 circuit breaker: a sustained run of
+// network errors means enrichment cannot run and the breaker should trip
+// (fail-open + Degraded so recall is preserved), whereas a deregistered/dead
+// domain is a normal, expected negative that must NOT trip the breaker — those
+// benign dead-domain URLs are exactly what the de-escalation path is meant to
+// clear. A cache hit reports netErr=false (cached negatives are clean answers).
+func resolveIPStatus(ctx context.Context, hostname string) (ip string, netErr bool) {
 	ctx, span := enricherTracer.Start(ctx, "enricher.dns.ResolveIP")
 	defer span.End()
 	span.SetAttributes(attribute.String("enricher.hostname", hostname))
 
 	if ip, ok := globalDNSCache.get(hostname); ok {
 		span.SetAttributes(attribute.Bool("enricher.cache_hit", true), attribute.String("enricher.ip", ip))
-		return ip
+		return ip, false
 	}
 	span.SetAttributes(attribute.Bool("enricher.cache_hit", false))
 
@@ -67,9 +84,11 @@ func ResolveIP(ctx context.Context, hostname string) string {
 	if err != nil || len(addrs) == 0 {
 		if err != nil {
 			span.RecordError(err)
+			netErr = isDNSNetworkError(err)
+			span.SetAttributes(attribute.Bool("enricher.dns_network_error", netErr))
 		}
 		globalDNSCache.set(hostname, "", dnsNegativeTTL)
-		return ""
+		return "", netErr
 	}
 
 	var result string
@@ -89,5 +108,22 @@ func ResolveIP(ctx context.Context, hostname string) string {
 
 	globalDNSCache.set(hostname, result, dnsCacheTTL)
 	span.SetAttributes(attribute.String("enricher.ip", result))
-	return result
+	return result, false
+}
+
+// isDNSNetworkError reports whether a resolver error indicates the network/DNS
+// infrastructure could not be reached (timeout, SERVFAIL, connection refused),
+// as opposed to a definitive NXDOMAIN ("no such host"). NXDOMAIN means the host
+// does not exist but the network is healthy, so it is NOT a network error.
+func isDNSNetworkError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		// IsNotFound == NXDOMAIN: a clean negative, network is fine.
+		return !dnsErr.IsNotFound
+	}
+	// Non-DNSError (e.g. context deadline exceeded): treat as a network error.
+	return true
 }
