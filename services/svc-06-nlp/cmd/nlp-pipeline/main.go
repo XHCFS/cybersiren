@@ -30,6 +30,19 @@ const (
 
 var nlpClient *nlp.Client
 
+// predictor is the narrow slice of *nlp.Client that the core handler needs.
+// Extracting it lets tests inject a fake that returns context.DeadlineExceeded
+// (or any failure) without standing up the real FastAPI service.
+type predictor interface {
+	Predict(ctx context.Context, req nlp.PredictRequest) (*nlp.PredictResponse, int, error)
+}
+
+// publishFunc abstracts the scores.nlp emit so tests can capture the published
+// bytes instead of talking to a real Kafka producer. deps.Producers holds the
+// concrete *kafkaproducer.Producer, so handle() closes over it here and the
+// extracted core logic only depends on this function.
+type publishFunc func(ctx context.Context, key, value []byte) error
+
 func main() {
 	if err := svckit.Run(svckit.Spec{
 		Name:           serviceName,
@@ -70,60 +83,105 @@ func handle(ctx context.Context, msg kafkaconsumer.Message, deps svckit.Deps) er
 		return fmt.Errorf("decode analysis.text: %w", err)
 	}
 
-	log := zerolog.Ctx(ctx).With().Str("email_id", input.Meta.EmailID).Logger()
-
-	predCtx, cancel := context.WithTimeout(ctx, predictTimeout)
-	resp, status, err := nlpClient.Predict(predCtx, nlp.PredictRequest{
-		Subject:   input.Subject,
-		BodyPlain: input.Body,
-	})
-	cancel()
-	if err != nil {
-		return fmt.Errorf("nlp predict (status=%d): %w", status, err)
+	// Resolve the scores.nlp producer up front: a missing producer is an infra
+	// misconfiguration (not a model timeout) and must surface as an error.
+	prod, ok := deps.Producers[contracts.TopicScoresNLP]
+	if !ok {
+		return fmt.Errorf("svc-06: producer for %s not configured", contracts.TopicScoresNLP)
 	}
+	publish := func(ctx context.Context, key, value []byte) error {
+		return prod.Publish(ctx, key, value, 1) // +1 kafka retry
+	}
+
+	return process(ctx, input, nlpClient, publish)
+}
+
+// process is the testable core of the handler: it predicts a content risk
+// score (falling back to a neutral 50 on any predict failure/timeout) and
+// publishes the scores.nlp envelope. It depends only on the predictor and
+// publishFunc abstractions so tests can drive it without a live FastAPI
+// service or real Kafka.
+func process(ctx context.Context, input contracts.AnalysisText, pred predictor, publish publishFunc) error {
+	log := zerolog.Ctx(ctx).With().Str("email_id", input.Meta.EmailID).Logger()
 
 	ft := input.Meta.FetchedAt
 	if ft.IsZero() {
 		ft = time.Now().UTC()
 	}
-	out := contracts.ScoreEnvelope{ //nolint:staticcheck // G13: sanctioned legacy ScoreEnvelope producer.
-		Meta:      contracts.NewMetaWithFetched(input.Meta.EmailID, input.Meta.OrgID, ft),
-		Component: contracts.ComponentNLP,
-		Score:     float64(resp.ContentRiskScore),
-		Details: map[string]interface{}{
-			"classification":       resp.Classification,
-			"phishing_probability": resp.PhishingProbability,
-			"confidence":           resp.Confidence,
-			"intent_labels":        resp.IntentLabels,
-			"urgency_score":        resp.UrgencyScore,
-			"obfuscation_detected": resp.ObfuscationDetected,
-			// subject + plain_text carry the content dimension SVC-08's
-			// campaign fingerprint and SimHash near-dedup read from
-			// component_details.nlp.details (ARCH-SPEC §8.1). Without them the
-			// fingerprint's subject dimension collapses to SHA256("") and
-			// SimHash never runs. Body is the HTML-stripped clean plain text
-			// (spec field: plain_text).
-			"subject":    input.Subject,
-			"plain_text": input.Body,
-		},
+	meta := contracts.NewMetaWithFetched(input.Meta.EmailID, input.Meta.OrgID, ft)
+
+	predCtx, cancel := context.WithTimeout(ctx, predictTimeout)
+	resp, status, err := pred.Predict(predCtx, nlp.PredictRequest{
+		Subject:   input.Subject,
+		BodyPlain: input.Body,
+	})
+	cancel()
+
+	var out contracts.ScoreEnvelope //nolint:staticcheck // G13: sanctioned legacy ScoreEnvelope producer.
+	if err != nil {
+		// Spec §6 fallback: a slow/unreachable/non-2xx model must NOT NACK the
+		// message and stall the partition (head-of-line blocking). Emit the
+		// neutral score of 50 and commit the offset. subject + plain_text are
+		// still carried so SVC-08's fingerprint/SimHash keep working.
+		log.Warn().
+			Err(err).
+			Int("status", status).
+			Str("email_id", input.Meta.EmailID).
+			Msg("nlp predict failed/timed out; emitting fallback content_risk_score=50")
+		out = contracts.ScoreEnvelope{ //nolint:staticcheck // G13: sanctioned legacy ScoreEnvelope producer.
+			Meta:      meta,
+			Component: contracts.ComponentNLP,
+			Score:     50,
+			Details: map[string]interface{}{
+				"classification":  "unknown",
+				"fallback":        true,
+				"fallback_reason": "nlp_predict_timeout",
+				"fallback_error":  err.Error(),
+				// subject + plain_text carry the content dimension SVC-08's
+				// campaign fingerprint and SimHash near-dedup read from
+				// component_details.nlp.details (ARCH-SPEC §8.1).
+				"subject":    input.Subject,
+				"plain_text": input.Body,
+			},
+		}
+	} else {
+		out = contracts.ScoreEnvelope{ //nolint:staticcheck // G13: sanctioned legacy ScoreEnvelope producer.
+			Meta:      meta,
+			Component: contracts.ComponentNLP,
+			Score:     float64(resp.ContentRiskScore),
+			Details: map[string]interface{}{
+				"classification":       resp.Classification,
+				"phishing_probability": resp.PhishingProbability,
+				"confidence":           resp.Confidence,
+				"intent_labels":        resp.IntentLabels,
+				"urgency_score":        resp.UrgencyScore,
+				"obfuscation_detected": resp.ObfuscationDetected,
+				// subject + plain_text carry the content dimension SVC-08's
+				// campaign fingerprint and SimHash near-dedup read from
+				// component_details.nlp.details (ARCH-SPEC §8.1). Without them the
+				// fingerprint's subject dimension collapses to SHA256("") and
+				// SimHash never runs. Body is the HTML-stripped clean plain text
+				// (spec field: plain_text).
+				"subject":    input.Subject,
+				"plain_text": input.Body,
+			},
+		}
 	}
 
 	body, err := json.Marshal(out)
 	if err != nil {
 		return fmt.Errorf("marshal scores.nlp: %w", err)
 	}
-	prod, ok := deps.Producers[contracts.TopicScoresNLP]
-	if !ok {
-		return fmt.Errorf("svc-06: producer for %s not configured", contracts.TopicScoresNLP)
-	}
-	if err := prod.Publish(ctx, []byte(input.Meta.EmailID), body, 1); err != nil { // +1 kafka retry
+	if err := publish(ctx, []byte(input.Meta.EmailID), body); err != nil {
 		return fmt.Errorf("publish scores.nlp: %w", err)
 	}
 
-	log.Info().
-		Int("content_risk_score", resp.ContentRiskScore).
-		Str("classification", resp.Classification).
-		Float64("phishing_probability", resp.PhishingProbability).
-		Msg("scored email text")
+	if resp != nil {
+		log.Info().
+			Int("content_risk_score", resp.ContentRiskScore).
+			Str("classification", resp.Classification).
+			Float64("phishing_probability", resp.PhishingProbability).
+			Msg("scored email text")
+	}
 	return nil
 }
