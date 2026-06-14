@@ -54,10 +54,29 @@
     }
   },
   "onnx": {
-    "format": "fp32 (faithful)",
-    "size_mb": 265.6,
-    "pytorch_vs_onnx_max_logit_diff": 0.0,
-    "note": "INT8 quantization abandoned: it destroyed fidelity (max|logit-diff| ~82). FP16 produced an unloadable graph. fp32 is exact."
+    "shipped": "fp32 (faithful)",
+    "fp32": {
+      "size_mb": 265.6,
+      "pytorch_vs_onnx_max_logit_diff": 0.0,
+      "cpu_latency_ms": {"p50": 9.8, "p95": 11.3}
+    },
+    "quantization_evaluation": {
+      "summary": "fp32 shipped for score integrity. Dynamic INT8 is a measured size/latency option with borderline-case jitter; static INT8 is unusable.",
+      "dynamic_int8": {
+        "size_mb": 66.8,
+        "size_reduction_pct": 74.8,
+        "cpu_latency_ms": {"p50": 5.4, "p95": 6.7},
+        "speedup_p50": 1.83,
+        "confident_cases": "identical (delta content_risk_score = 0; clear phish=100, legit=0 unchanged)",
+        "borderline_cases": "max |delta crs| = 77 across gate cases; 2/54 classification flips in the red-team pool, concentrated on the soft/ambiguous class (calm-secret, soft-delivery, benefits-lock)",
+        "batteries": "metamorphic all held; red-team battery-2 0/0; novel probe 0 FN / 0 FP; zero false positives",
+        "verdict": "optional — acceptable only if the deployment tolerates crs jitter on cases already deferred to SVC-03/04"
+      },
+      "static_int8_qdq": {
+        "size_mb": 67.1,
+        "result": "REJECTED — max |delta crs| = 100; confident phishing (100) collapses to 0-14 on 28/48 cases"
+      }
+    }
   },
   "training_augmentation": {
     "char_noise_phish": 16628,

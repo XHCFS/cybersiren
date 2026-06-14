@@ -358,6 +358,23 @@ adjacent-symbol leet bombs) are handled on the training side by char-noise + lee
   </div>
 </div>
 
+<h3>2.8 v2 Training Matrix (cycle-12)</h3>
+<div class="note"><strong>Same real sources, rebuilt for generalization.</strong> v1 used the corpora above but
+overfit to corpus artifacts (0.8% recall on held-out real phishing). v2 keeps every real source and changes
+<em>how</em> they are assembled. Synthetic data is <strong>augmentation only — never the primary signal and never
+the evaluation</strong>; the real corpora remain the base and the honest metric is held-out real-phishing recall.</div>
+<table class="compact-table">
+  <tr><th>v2 change</th><th>What &amp; why</th></tr>
+  <tr><td class="svc">Real phishing &rarr; training</td><td>Nazario (D6n) + Nigerian-419 (D6f) moved ~85% into training with a <strong>15% held-out real-test split</strong> (n=369) used as the honest generalization metric. This is the single biggest lever — it lifted real-phishing recall 0.8% &rarr; 87.3%.</td></tr>
+  <tr><td class="svc">Per-corpus cap</td><td>Every source dataset is capped (SRC_CAP) so no single corpus's style/tokens dominate the gradient — the direct fix for the corpus-overfit failure mode.</td></tr>
+  <tr><td class="svc">Paired contrastive synthetic buckets</td><td>For every hard <em>phishing</em> pattern there is a near-identical <em>legit twin</em>, forcing the model to learn the distinguishing intent cue rather than a surface phrase. Families: BEC (giftcard/payroll/wire/M&amp;A/vendor-bank), credential/helpdesk-reverse, TOAD callback, quishing, MFA-fatigue, OAuth-consent, brand-impersonation, shared-doc, delivery, extortion, crypto, classic scams (lottery/advance-fee/tax/inheritance/tech-support), soft/calm-framed, notification-lure, calm-secret-reveal; plus terse/marketing/security-notice/transactional/real-Enron-corporate/OTP/calendar legit, and <strong>"meta-phish" legit</strong> (security-awareness emails that talk <em>about</em> phishing).</td></tr>
+  <tr><td class="svc">Adversarial augmentation</td><td>Char-noise (insert/delete/substitute/transpose) on ~25% of phish + ~8% of legit, and leetspeak substitution on ~15% of phish — robustness the inference-time canonicalization (§2.4) cannot provide (arbitrary typos, adjacent-symbol leet bombs). Plus FGM adversarial training (§4.2).</td></tr>
+  <tr><td class="svc">Export name</td><td><code>cybersiren_nlp_dataset_v2</code>; ~188K training rows after augmentation. Built by the v2 training notebook (<code>nlp-cybersiren-finetune-v2</code>); preprocessing is the canonical <code>nlp/text_preprocess.py</code> shared with serving.</td></tr>
+</table>
+<div class="note"><strong>URL/sender removed from the text.</strong> Unlike v1, v2 strips URLs and bare emails before
+tokenization (§2.4 step 2) — their reputation is scored by SVC-03/SVC-04 and combined at the aggregator. This is
+also <em>why</em> the residual errors land on a text-only Pareto frontier (§11.4).</div>
+
 
 <!-- ============================================================ -->
 <h2 class="page-break">3. Model Architecture</h2>
@@ -741,7 +758,7 @@ real phishing and its INT8 export was unfaithful (max|logit-diff| ≈ 82). v2 sh
 <div class="pipeline-step">
   <div class="step-header">
     <div class="step-num">2</div>
-    <div class="step-content"><strong>(Attempted) INT8 / FP16 quantization — ABANDONED for v2.</strong> [12] predicted DistilBERT 255 MB &rarr; 132 MB, but on <em>this</em> model dynamic INT8 destroyed fidelity (max|logit-diff| &asymp; 82, agreement collapsed) and FP16 produced an unloadable graph. The quantization robustness [12] reports is for word-level synonym attacks in sentiment classification and did not transfer. <strong>v2 ships faithful fp32</strong> instead — correctness over size for a security classifier.</div>
+    <div class="step-content"><strong>Quantization — evaluated, fp32 shipped.</strong> An early INT8/FP16 attempt failed (max|logit-diff| &asymp; 82) due to an export-path bug. We re-ran it cleanly on cycle-12 and measured the full performance impact (see <strong>&sect;8.5</strong>): dynamic INT8 is 4&times; smaller and 1.8&times; faster and identical on confident cases, but jitters borderline scores by up to 77 crs; static INT8 is unusable. <strong>v2 ships faithful fp32</strong> — the security score must stay stable on borderline emails.</div>
   </div>
 </div>
 <div class="pipeline-step">
@@ -797,11 +814,30 @@ real phishing and its INT8 export was unfaithful (max|logit-diff| ≈ 82). v2 sh
 <h3>8.4 Exported Artifacts</h3>
 <table class="compact-table">
   <tr><th>File</th><th>Est. Size</th><th>Contents</th></tr>
-  <tr><td class="svc"><code>model_int8.onnx</code></td><td>~266 MB</td><td><strong>fp32</strong> DistilBERT (faithful, max|logit-diff|=0). LFS-tracked at <code>python/svc-06-nlp/onnx/</code>; copied to the service onnx dir on demand. Filename keeps the legacy <code>_int8</code> suffix for path/Makefile stability (INT8 abandoned — see §8.1).</td></tr>
+  <tr><td class="svc"><code>model_int8.onnx</code></td><td>~266 MB</td><td><strong>fp32</strong> DistilBERT (faithful, max|logit-diff|=0). LFS-tracked at <code>python/svc-06-nlp/onnx/</code>; copied to the service onnx dir on demand. Filename keeps the legacy <code>_int8</code> suffix for path/Makefile stability (INT8 evaluated but not shipped — see §8.5).</td></tr>
   <tr><td class="svc"><code>tokenizer/</code></td><td>~1 MB</td><td>HuggingFace tokenizer files (vocab.txt, tokenizer_config.json).</td></tr>
   <tr><td class="svc"><code>config.json</code></td><td>&lt; 1 KB</td><td>Model metadata, thresholds, label maps, intent taxonomy.</td></tr>
   <tr><td class="svc"><code>metrics.json</code></td><td>&lt; 1 KB</td><td>Test set performance metrics for monitoring.</td></tr>
 </table>
+
+<h3>8.5 Quantization Evaluation (v2, cycle-12)</h3>
+<div class="note">The original v2 INT8/FP16 attempt failed (max|logit-diff| ≈ 82) — that was an <em>export-path bug</em>, not
+inherent. We re-ran quantization cleanly on the cycle-12 fp32 model and <strong>measured the performance impact on the
+full battery</strong> (gate axes, red-team, novel probe, latency). Findings below; <strong>fp32 remains the shipped
+default</strong> because the <code>content_risk_score</code> feeds the SVC-07 aggregator and must be stable on
+borderline emails.</div>
+<table class="compact-table">
+  <tr><th>Variant</th><th>Size</th><th>CPU p50 / p95</th><th>Confident cases (clear phish/legit)</th><th>Borderline / razor's-edge cases</th><th>Verdict</th></tr>
+  <tr><td class="svc"><strong>fp32 (shipped)</strong></td><td>266 MB</td><td>9.8 / 11.3 ms</td><td>exact (max|logit-diff| = 0)</td><td>exact</td><td><strong>Ship.</strong> Score integrity.</td></tr>
+  <tr><td class="svc">Dynamic INT8</td><td>66.8 MB (−75%)</td><td>5.4 / 6.7 ms (1.83&times;)</td><td><strong>identical</strong> (Δcrs = 0; clear phish=100, legit=0 unchanged)</td><td><strong>degrades:</strong> max|Δcrs| = 77 across gate cases, 2/54 classification flips in the red-team pool — concentrated on the soft/ambiguous class (calm-secret, soft-delivery, benefits-lock)</td><td>Optional size/latency trade. Acceptable only if the deployment tolerates ±crs jitter on the very cases already deferred to SVC-03/04.</td></tr>
+  <tr><td class="svc">Static INT8 (QDQ + calibration)</td><td>67.1 MB</td><td>—</td><td><strong>broken</strong></td><td>max|Δcrs| = 100; confident phishing (100) collapses to 0–14 on 28/48 cases</td><td><strong>Rejected.</strong> Unusable on this architecture.</td></tr>
+</table>
+<div class="note"><strong>Quality summary.</strong> Dynamic INT8 is loss-less on confident predictions and equivalent on the
+batteries that matter (metamorphic: all held; red-team battery-2: 0/0; novel probe: 0 FN/0 FP; zero false positives),
+but a ~2-point logit wobble swings the score by up to 77 points on the razor's-edge cases — exactly where calibration
+matters most for a security score. The 4&times; size / 1.8&times; latency win is real; the cost is borderline-case
+stability. For a classifier whose output feeds an aggregated verdict we keep fp32; INT8 is documented as a measured,
+reproducible option (a one-line <code>quantize_dynamic</code> on the fp32 artifact), not the default.</div>
 
 
 <!-- ============================================================ -->
@@ -1046,7 +1082,7 @@ shipped checkpoint. Further single-axis tuning oscillates without net gain; the 
 <div class="doc-meta" style="margin-top: 14px; text-align: center;">
   <span><strong>End of NLP-SPEC-v1.0</strong></span>
   <span><strong>All 15 literature papers verified from full-text PDF reading.</strong></span>
-  <span><strong>Status:</strong> Training Complete — Model deployed to <code>python/svc-06-nlp/</code>. Dataset: 149,998 rows (D1+D2+D4+D6n+D6f+D7), 40/40/20 balance. Test: MCC 0.9804, macro-F1 0.9869, phishing recall 0.9860, legit FPR 0.0078. ONNX INT8: 66.8 MB (74.9% reduction), p50 latency 80.7 ms. Trained: 2026-04-13.</span>
+  <span><strong>Status (v2.0, cycle-12):</strong> Shipped to <code>python/svc-06-nlp/onnx/</code> via Git LFS. Real sources D1+D2+D4+D6n+D6f+D7 rebuilt as <code>cybersiren_nlp_dataset_v2</code> (real phishing moved into training, per-corpus cap, paired contrastive + adversarial augmentation, ~188K train rows). Test: MCC 0.969, macro-F1 0.979, phishing recall 0.978, legit FPR 0.0118. <strong>Held-out REAL-phishing recall 87.3%</strong> (v1: 0.8%). 64-axis deployability gate PASS; adversarial battery 0 evasions. ONNX: faithful fp32 (max|logit-diff|=0), ~266 MB. Trained: 2026-06-14.</span>
 </div>
 
 </body>
