@@ -32,21 +32,21 @@ const (
 	defaultPubRetries   = 3
 	defaultModelVersion = "decision-v1"
 
-	// fusionModeEnv overrides the score-fusion method. Default is the
-	// reliability-weighted noisy-OR (engine.FusionNoisyOR); set to
-	// "weighted_average" to roll back to the v1 weighted mean.
+	// fusionModeEnv selects the score-fusion method. Default is the v1 weighted
+	// average; set to "noisy_or" to opt into the probabilistic-OR fusion, which
+	// runs in shadow (decision_fusion_shadow_disagree_total) until its verdict-band
+	// recalibration lands — see design brief §3.4/§3.6.
 	fusionModeEnv = "CYBERSIREN_DECISION__FUSION_MODE"
 )
 
-// fusionMode reads the fusion-method override from the environment, defaulting to
-// the reliability-weighted noisy-OR. Unknown values fall back to that default.
+// fusionMode reads the fusion-method selector from the environment, defaulting to
+// the weighted average. Only the explicit value "noisy_or" opts into the
+// probabilistic-OR fusion; anything else (incl. unset) uses the weighted average.
 func fusionMode() string {
-	switch os.Getenv(fusionModeEnv) {
-	case engine.FusionWeightedAverage:
-		return engine.FusionWeightedAverage
-	default:
+	if os.Getenv(fusionModeEnv) == engine.FusionNoisyOR {
 		return engine.FusionNoisyOR
 	}
+	return engine.FusionWeightedAverage
 }
 
 var (

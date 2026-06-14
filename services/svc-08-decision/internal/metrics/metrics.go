@@ -17,6 +17,10 @@ type Metrics struct {
 	RulesFiredTotal    *prometheus.CounterVec // labels: rule_id
 	ProcessingDuration prometheus.Histogram
 	SimhashLookupIndex prometheus.Histogram // SMEMBERS size per lookup
+	// FusionShadowDisagree counts emails where the non-active fusion method would
+	// land in a different verdict band — lets the impact of switching the blender
+	// be measured before it is enabled. Labels: active_band, shadow_band.
+	FusionShadowDisagree *prometheus.CounterVec
 }
 
 // New registers all SVC-08 metrics on reg and returns the holder.
@@ -87,6 +91,14 @@ func New(reg *prometheus.Registry) *Metrics {
 				0, 1, 2, 3, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096,
 			},
 		},
+	))
+
+	m.FusionShadowDisagree = registerCounterVec(reg, prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "decision_fusion_shadow_disagree_total",
+			Help: "Emails where the non-active fusion method would land in a different verdict band (shadow comparison).",
+		},
+		[]string{"active_band", "shadow_band"},
 	))
 
 	return m

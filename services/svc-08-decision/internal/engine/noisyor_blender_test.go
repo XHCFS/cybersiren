@@ -7,100 +7,89 @@ import (
 
 func iptr(v int) *int { return &v }
 
-// blendScore is a tiny helper: build the noisy-OR blender with default
-// reliabilities and return the rounded fused score for the given components.
-func blendScore(t *testing.T, c Components) int {
-	t.Helper()
-	b := NewReliabilityNoisyORBlender(DefaultReliabilities())
-	return Round(b.Blend(c).Score)
+func noisyOR() *ReliabilityNoisyORBlender {
+	return NewReliabilityNoisyORBlender(DefaultReliabilities())
 }
+func blendScore(c Components) int  { return Round(noisyOR().Blend(c).Score) }
+func blendBand(c Components) Label { return LabelFor(blendScore(c)) }
 
-// TestNoisyOR_NoDilution is the core fix: a confident channel must NOT be pulled
-// below threshold by clean channels (the weighted-average bug).
-func TestNoisyOR_NoDilution(t *testing.T) {
-	// text-only BEC: NLP=100, header clean. Weighted average gives 45 (missed);
-	// noisy-OR must keep it high.
-	got := blendScore(t, Components{NLP: iptr(100), Header: iptr(0)})
-	if got <= 50 {
-		t.Fatalf("text-only threat diluted by clean header: got %d, want > 50", got)
-	}
-	// header-only spoof: header high, text clean — must still fire.
-	got = blendScore(t, Components{NLP: iptr(3), Header: iptr(88)})
-	if got <= 50 {
-		t.Fatalf("header-only threat not caught: got %d, want > 50", got)
-	}
-}
-
-// TestNoisyOR_AdversarialBattery encodes the fusion decisions that separate a
-// good aggregator from a bad one. Phishing must clear 50; legit must stay under.
-func TestNoisyOR_AdversarialBattery(t *testing.T) {
+// TestNoisyOR_ConfirmedSignalsSurvive is the regression test for review B1/B2:
+// a single CONFIRMED channel that SVC-03/05 pinned to a high score must reach the
+// high band — the OR-floor (risk >= max score at reliability 1.0) guarantees it.
+// The old weighted average DILUTED these (a TI-confirmed URL with clean text
+// scored ~28-41 -> "suspicious"); the OR keeps them in the malware band.
+func TestNoisyOR_ConfirmedSignalsSurvive(t *testing.T) {
 	cases := []struct {
-		name  string
-		c     Components
-		phish bool
+		name string
+		c    Components
 	}{
-		{"text-only phish (BEC)", Components{NLP: iptr(92), Header: iptr(5)}, true},
-		{"header-only phish", Components{NLP: iptr(3), Header: iptr(88)}, true},
-		{"multi-channel phish", Components{NLP: iptr(85), URL: iptr(90), Header: iptr(80)}, true},
-		{"soft multi-channel", Components{NLP: iptr(55), Header: iptr(60)}, true},
-		{"malicious attachment alone", Components{NLP: iptr(5), Attachment: iptr(95)}, true},
-		// legit traps — must NOT fire:
-		{"legit + one noisy url", Components{NLP: iptr(3), URL: iptr(92), Header: iptr(3)}, false},
-		{"legit + many noisy urls (max~97)", Components{NLP: iptr(4), URL: iptr(97), Header: iptr(3)}, false},
-		{"legit forwarded (header 45)", Components{NLP: iptr(3), Header: iptr(45)}, false},
-		{"legit security-notice text (nlp 35)", Components{NLP: iptr(35), Header: iptr(3)}, false},
-		{"all clean", Components{NLP: iptr(3), URL: iptr(2), Header: iptr(2)}, false},
+		{"TI/guard URL=100 alone", Components{URL: iptr(100)}},
+		{"TI URL=100 + clean text + clean header", Components{URL: iptr(100), NLP: iptr(3), Header: iptr(3)}},
+		{"confirmed-malware attachment=95 alone", Components{Attachment: iptr(95)}},
+		{"confirmed-malware attachment=90 + clean text", Components{Attachment: iptr(90), NLP: iptr(3)}},
 	}
 	for _, tc := range cases {
-		got := blendScore(t, tc.c)
-		fired := got > 50
-		if fired != tc.phish {
-			t.Errorf("%s: score=%d fired=%v, want phish=%v", tc.name, got, fired, tc.phish)
+		score := blendScore(tc.c)
+		if score < 90 {
+			t.Errorf("%s: confirmed signal diluted to %d (want >= its pinned score)", tc.name, score)
+		}
+		if band := LabelFor(score); band != LabelMalware {
+			t.Errorf("%s: band %q, want %q (score=%d)", tc.name, band, LabelMalware, score)
 		}
 	}
 }
 
-// TestNoisyOR_URLDistrust documents the structural distrust of the lexical URL
-// channel: a high URL score ALONE must not clear threshold (it defers to SVC-03),
-// but URL corroborated by another channel must.
-func TestNoisyOR_URLDistrust(t *testing.T) {
-	alone := blendScore(t, Components{NLP: iptr(0), URL: iptr(95), Header: iptr(0)})
-	if alone > 50 {
-		t.Fatalf("uncorroborated URL should defer (<=50), got %d", alone)
+// TestNoisyOR_NoDilution: a confident channel is never pulled below threshold by
+// clean channels (the core defect of the weighted average).
+func TestNoisyOR_NoDilution(t *testing.T) {
+	// text-only BEC: NLP=100, clean header. Weighted average -> 45 (missed).
+	if got := blendScore(Components{NLP: iptr(100), Header: iptr(0)}); got < 100 {
+		t.Fatalf("text-only threat diluted by clean header: got %d, want 100", got)
 	}
-	corroborated := blendScore(t, Components{NLP: iptr(0), URL: iptr(95), Header: iptr(80)})
-	if corroborated <= 50 {
-		t.Fatalf("corroborated URL should fire (>50), got %d", corroborated)
-	}
-}
-
-// TestNoisyOR_MissingComponents: a nil component is simply absent from the
-// product; the blender must not panic or divide by zero, and an all-nil input
-// yields 0.
-func TestNoisyOR_MissingComponents(t *testing.T) {
-	// only NLP present
-	if got := blendScore(t, Components{NLP: iptr(90)}); got <= 50 {
-		t.Fatalf("NLP-only high score should fire, got %d", got)
-	}
-	// nothing present
-	b := NewReliabilityNoisyORBlender(DefaultReliabilities())
-	res := b.Blend(Components{})
-	if res.Score != 0 || res.WeightSum != 0 {
-		t.Fatalf("empty components: got score=%v weightSum=%v, want 0/0", res.Score, res.WeightSum)
+	// header-only spoof.
+	if got := blendScore(Components{NLP: iptr(3), Header: iptr(88)}); got <= 50 {
+		t.Fatalf("header-only threat not caught: got %d", got)
 	}
 }
 
-// TestNoisyOR_FloorAndMonotonicity checks two provable properties: the fused
-// score is >= the strongest single-channel contribution (no dilution floor), and
-// raising any component score never lowers the result.
+// TestNoisyOR_FourBandCharacterization PINS the verdict band for representative
+// inputs. The probabilistic OR shifts the score distribution UP relative to the
+// weighted mean; this table makes that shift explicit (it is the input for the
+// §3.6 band recalibration that gates enabling this mode by default). If a value
+// changes, this test fails on purpose so the distribution change is reviewed.
+func TestNoisyOR_FourBandCharacterization(t *testing.T) {
+	cases := []struct {
+		name string
+		c    Components
+		want Label
+	}{
+		// clearly legit -> low bands
+		{"all clean", Components{NLP: iptr(3), URL: iptr(2), Header: iptr(2)}, LabelBenign},
+		{"legit forwarded (header 45)", Components{NLP: iptr(3), Header: iptr(45)}, LabelSuspicious},
+		{"single moderate channel (nlp 40)", Components{NLP: iptr(40)}, LabelSuspicious},
+		// the OR's known up-shift: two correlated moderate signals reach phishing.
+		// Documented, not endorsed — see the independence caveat in §3.4.
+		{"two moderate channels (nlp 40 + header 40)", Components{NLP: iptr(40), Header: iptr(40)}, LabelPhishing},
+		// confirmed / strong -> malware band
+		{"confirmed URL=100", Components{URL: iptr(100)}, LabelMalware},
+		{"strong multi-channel", Components{NLP: iptr(85), URL: iptr(90), Header: iptr(80)}, LabelMalware},
+	}
+	for _, tc := range cases {
+		if got := blendBand(tc.c); got != tc.want {
+			t.Errorf("%s: band %q, want %q (score=%d)", tc.name, got, tc.want, blendScore(tc.c))
+		}
+	}
+}
+
+// TestNoisyOR_FloorAndMonotonicity: provable properties.
 func TestNoisyOR_FloorAndMonotonicity(t *testing.T) {
-	b := NewReliabilityNoisyORBlender(DefaultReliabilities())
-	// floor: risk >= 100 * max_c (r_c * s_c/100). With NLP=70 (r=1.0) the floor is 70.
+	b := noisyOR()
+	// OR-floor: risk >= max single-channel contribution (= max score at rel 1.0).
 	res := b.Blend(Components{NLP: iptr(70), URL: iptr(10), Header: iptr(10)})
 	if res.Score < 70-1e-9 {
 		t.Fatalf("floor violated: score %v < 70", res.Score)
 	}
-	// monotonicity: increasing header never lowers the score.
+	// monotone: raising a component never lowers the score.
 	prev := math.Inf(-1)
 	for h := 0; h <= 100; h += 10 {
 		s := b.Blend(Components{NLP: iptr(40), Header: iptr(h)}).Score
@@ -111,17 +100,28 @@ func TestNoisyOR_FloorAndMonotonicity(t *testing.T) {
 	}
 }
 
-// TestNoisyOR_DefaultsGuard: an all-zero reliability set must fall back to
-// defaults rather than producing an always-benign blender.
+// TestNoisyOR_MissingComponents: nil components are absent from the product; an
+// all-nil input yields 0 without panicking or dividing by zero.
+func TestNoisyOR_MissingComponents(t *testing.T) {
+	if got := blendScore(Components{NLP: iptr(90)}); got < 90 {
+		t.Fatalf("NLP-only high score should reach 90, got %d", got)
+	}
+	res := noisyOR().Blend(Components{})
+	if res.Score != 0 || res.WeightSum != 0 {
+		t.Fatalf("empty components: got score=%v weightSum=%v, want 0/0", res.Score, res.WeightSum)
+	}
+}
+
+// TestNoisyOR_DefaultsGuard: an all-zero reliability set falls back to defaults.
 func TestNoisyOR_DefaultsGuard(t *testing.T) {
 	b := NewReliabilityNoisyORBlender(Reliabilities{})
-	if got := Round(b.Blend(Components{NLP: iptr(95)}).Score); got <= 50 {
+	if got := Round(b.Blend(Components{NLP: iptr(95)}).Score); got < 90 {
 		t.Fatalf("zero-reliability config should fall back to defaults, got %d", got)
 	}
 }
 
-// TestSelectBlender wires the config switch: noisy_or selects the noisy-OR,
-// everything else (incl. empty) selects the weighted average.
+// TestSelectBlender / TestShadowBlender wire the config switch and the shadow
+// (the shadow is always the *other* method).
 func TestSelectBlender(t *testing.T) {
 	if _, ok := selectBlender(Config{FusionMode: FusionNoisyOR}.Defaults()).(*ReliabilityNoisyORBlender); !ok {
 		t.Fatal("FusionNoisyOR did not select the noisy-OR blender")
@@ -131,5 +131,15 @@ func TestSelectBlender(t *testing.T) {
 	}
 	if _, ok := selectBlender(Config{FusionMode: "bogus"}.Defaults()).(*WeightedAverageBlender); !ok {
 		t.Fatal("unknown fusion mode should fall back to weighted average")
+	}
+}
+
+func TestShadowBlender(t *testing.T) {
+	// shadow is the opposite of the active method
+	if _, ok := shadowBlender(Config{FusionMode: FusionNoisyOR}.Defaults()).(*WeightedAverageBlender); !ok {
+		t.Fatal("with noisy_or active, shadow should be the weighted average")
+	}
+	if _, ok := shadowBlender(Config{FusionMode: FusionWeightedAverage}.Defaults()).(*ReliabilityNoisyORBlender); !ok {
+		t.Fatal("with weighted_average active, shadow should be the noisy-OR")
 	}
 }

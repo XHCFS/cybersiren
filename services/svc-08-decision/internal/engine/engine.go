@@ -27,8 +27,9 @@ import (
 const (
 	// FusionWeightedAverage is the v1 weighted mean (design brief §3.4).
 	FusionWeightedAverage = "weighted_average"
-	// FusionNoisyOR is the reliability-weighted noisy-OR (see noisyor_blender.go):
-	// never dilutes a confident channel, structurally distrusts the unreliable URL.
+	// FusionNoisyOR is the probabilistic-OR blender (see noisyor_blender.go): never
+	// dilutes a confident channel and preserves a confirmed single-channel signal
+	// (OR-floor). Opt-in/shadow until the §3.6 bands are recalibrated for it.
 	FusionNoisyOR = "noisy_or"
 )
 
@@ -80,6 +81,16 @@ func selectBlender(cfg Config) Blender {
 	}
 }
 
+// shadowBlender returns the *other* fusion method, computed alongside the active
+// one purely to emit a band-disagreement metric so the verdict-distribution impact
+// of switching can be measured before it is enabled. It never affects the verdict.
+func shadowBlender(cfg Config) Blender {
+	if cfg.FusionMode == FusionNoisyOR {
+		return NewWeightedAverageBlender(cfg.BlendWeights)
+	}
+	return NewReliabilityNoisyORBlender(cfg.Reliabilities)
+}
+
 // Publisher is the producer for emails.verdict (subset of
 // kafkaproducer.Producer). retries is the number of *extra* attempts after
 // the first ProduceSync (same contract as shared/kafka/producer.Producer.Publish).
@@ -108,6 +119,7 @@ type simhashComputer interface {
 type Engine struct {
 	cfg       Config
 	blender   Blender
+	shadow    Blender // the non-active fusion, computed for comparison only (never gates)
 	rules     ruleGetter
 	evaluator *rules.Evaluator
 	simhash   simhashComputer
@@ -132,6 +144,7 @@ func New(
 	return &Engine{
 		cfg:       cfg,
 		blender:   selectBlender(cfg),
+		shadow:    shadowBlender(cfg),
 		rules:     rulesCache,
 		evaluator: rules.NewEvaluator(log),
 		simhash:   simhash,
@@ -196,6 +209,16 @@ func (e *Engine) Handle(ctx context.Context, msg kafkaconsumer.Message) error {
 	components := ComponentsFrom(scored)
 	blendOut := e.blender.Blend(components)
 	source := SourceFor(components)
+
+	// Shadow: compute the non-active fusion and record band disagreement so the
+	// verdict-distribution impact of switching is observable. This never gates.
+	if e.shadow != nil && e.metrics != nil && components.HasAnyML() {
+		activeBand := LabelFor(Round(blendOut.Score))
+		shadowBand := LabelFor(Round(e.shadow.Blend(components).Score))
+		if activeBand != shadowBand {
+			e.metrics.FusionShadowDisagree.WithLabelValues(string(activeBand), string(shadowBand)).Inc()
+		}
+	}
 
 	// 2. Compute fingerprint and (optionally) SimHash. SimHash override
 	// hijacks the fingerprint to an existing campaign so the UPSERT
