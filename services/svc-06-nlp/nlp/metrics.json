@@ -33,7 +33,7 @@
     "covers": "simple/obvious sanity (hi/ok/thanks must score 0) + every FP class (terse, marketing, security-notice, transactional, incident, real Enron corporate, OTP, calendar, shared-doc, meta-phish) + every FN class (BEC/giftcard/payroll/wire, credential, TOAD, quishing, MFA-fatigue, OAuth, brand, extortion, crypto, classic scams, soft/calm-framed, notification-lure, calm-secret-reveal)."
   },
   "adversarial_robustness": {
-    "harness": "scratch_build/metamorphic_robustness.py (invariant/metamorphic: a semantics-preserving transform of caught phishing must not evade)",
+    "harness": "nlp/adversarial_robustness.py (invariant/metamorphic: a semantics-preserving transform of caught phishing must not evade)",
     "transforms_tested": 12,
     "evasions": 0,
     "held": ["homoglyph", "leetspeak", "char_swap (typos)", "zero_width", "letter_spacing", "whitespace_noise", "benign_dilution (prefix/suffix/wrap)", "uppercase", "strip_punct"],
