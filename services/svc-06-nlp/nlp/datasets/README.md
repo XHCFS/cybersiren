@@ -37,3 +37,29 @@ The merged, cleaned, and balanced dataset is exported as:
 - `cybersiren_nlp_dataset_v1.parquet` / `cybersiren_nlp_dataset_v1.csv`
 
 These are the training artefacts consumed by `nlp-cybersiren-finetune.ipynb`.
+
+## v2 (cycle-12) — generalization hardening
+
+v1 used the real corpora above but **overfit to corpus artifacts** (0.8% recall on
+held-out real phishing). v2 keeps the same real sources and adds, in the training
+notebook (`nlp-cybersiren-finetune-v2`):
+
+- **Real phishing moved into training.** Nazario + Nigerian-419 are now ~85% in
+  training (15% held out as an honest real-world recall test), and **every source
+  corpus is capped** so no single dataset's style dominates. This is what lifted
+  held-out real-phishing recall to **87.3%**.
+- **Paired synthetic contrastive buckets** (augmentation only, never the primary
+  signal): for every hard phishing pattern (BEC/giftcard/payroll/wire, credential,
+  TOAD, quishing, MFA-fatigue, OAuth, brand, extortion, crypto, soft/calm-framed,
+  notification-lure, calm-secret-reveal) there is a near-identical **legit twin**,
+  forcing the model to learn the distinguishing *intent cue* rather than a surface
+  phrase. Plus security-awareness "meta-phish" legit (emails that *talk about*
+  phishing) to kill that false-positive class.
+- **Adversarial augmentation:** char-noise (insert/delete/substitute/transpose) and
+  leetspeak substitution on a fraction of phishing rows, for robustness the
+  inference-time canonicalization can't provide (arbitrary typos, leet bombs).
+
+The v2 training matrix is exported as `cybersiren_nlp_dataset_v2`. Preprocessing is
+the canonical `../text_preprocess.py` (URL/sender stripped, homoglyph/leet/space
+folded) — imported by both training and serving so there is no train/serve skew.
+

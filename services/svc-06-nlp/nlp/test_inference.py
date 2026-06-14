@@ -1,30 +1,36 @@
 """
-Unit tests for NLPInferenceEngine — python/svc-06-nlp/inference.py.
+Unit tests for NLPInferenceEngine — services/svc-06-nlp/nlp/inference.py (v2).
 
-All tests run without the real ONNX model or a network download.
-The tokenizer and ONNX session are replaced with lightweight mocks,
-so the suite is suitable for CI (make test-short equivalent for Go).
+All tests run without the real ONNX model or a network download. The tokenizer
+and ONNX session are replaced with lightweight mocks, so the suite is suitable
+for CI.
+
+v2 notes:
+  - ALL preprocessing lives in text_preprocess.py (single source of truth, no
+    train/serve skew). Preprocessing tests exercise that module directly,
+    including the adversarial canonicalization defenses (homoglyph / leet /
+    letter-spacing folding).
+  - Scoring: content_risk_score = round(P(phishing) * 100). Spam is a distinct,
+    NON-threat class — it does NOT collapse into phishing and does NOT inflate
+    the risk score.
 
 Run:
-    cd python/svc-06-nlp
+    cd services/svc-06-nlp/nlp
     pytest test_inference.py -v
 """
 
 import json
 import math
-import re
 import tempfile
-import unicodedata
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
 
-# We import the module under test — not the engine constructor directly so that
-# individual static methods and module-level constants can also be exercised.
-import inference as inf
+import inference as inf  # noqa: F401  (kept for parity with module-level imports)
 from inference import NLPInferenceEngine
+import text_preprocess as tp
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -32,14 +38,7 @@ from inference import NLPInferenceEngine
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _make_engine(config_overrides: dict | None = None) -> NLPInferenceEngine:
-    """
-    Build an NLPInferenceEngine without touching the filesystem or network.
-
-    The tokenizer is replaced with a mock that encodes text as a fixed-length
-    sequence of token-ids (one per word character, capped at 512).  The ONNX
-    session is left as None so model_ready == False; tests that need inference
-    set session and model_ready themselves.
-    """
+    """Build an NLPInferenceEngine without touching the filesystem or network."""
     base_cfg = {
         "max_length": 256,
         "head_tokens": 64,
@@ -61,11 +60,9 @@ def _make_engine(config_overrides: dict | None = None) -> NLPInferenceEngine:
         cfg_path = Path(tmp) / "config.json"
         cfg_path.write_text(json.dumps(base_cfg))
 
-        # Patch _load_tokenizer and _load_model so the constructor returns fast.
         mock_tok = MagicMock()
         mock_tok.cls_token_id = 101
         mock_tok.sep_token_id = 102
-        # encode() returns one id per non-space character (predictable length).
         mock_tok.encode = lambda text, **kw: list(range(len(text.replace(" ", ""))))
 
         with (
@@ -79,68 +76,69 @@ def _make_engine(config_overrides: dict | None = None) -> NLPInferenceEngine:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 1. Module-level regex constants
+# 1+2. Canonical preprocessing (text_preprocess.py — shared by train & serve)
 # ─────────────────────────────────────────────────────────────────────────────
 
-class TestZwsRegex:
-    def test_matches_zero_width_space(self):
-        assert inf._ZWS_RE.search("\u200b")
-
-    def test_matches_zwnj(self):
-        assert inf._ZWS_RE.search("\u200c")
-
-    def test_matches_bom(self):
-        assert inf._ZWS_RE.search("\ufeff")
-
-    def test_matches_soft_hyphen(self):
-        assert inf._ZWS_RE.search("\u00ad")
-
-    def test_does_not_match_regular_space(self):
-        assert not inf._ZWS_RE.search(" ")
-
-    def test_does_not_match_ascii(self):
-        assert not inf._ZWS_RE.search("hello world")
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 2. Static preprocessing methods
-# ─────────────────────────────────────────────────────────────────────────────
-
-class TestStripHtml:
+class TestStripHtmlAndUrls:
     def test_strips_tags(self):
-        result = NLPInferenceEngine._strip_html("<p>Hello <b>world</b></p>")
-        assert "Hello" in result
-        assert "world" in result
-        assert "<" not in result
+        result = tp.strip_html("<p>Hello <b>world</b></p>")
+        assert "Hello" in result and "world" in result and "<" not in result
 
     def test_empty_string(self):
-        assert NLPInferenceEngine._strip_html("") == ""
+        assert tp.strip_html("") == ""
 
-    def test_plain_text_unchanged(self):
-        text = "No HTML here"
-        assert NLPInferenceEngine._strip_html(text) == text
+    def test_strips_urls(self):
+        # URLs are SVC-03's job — removed entirely before tokenization.
+        assert "http" not in tp.strip_urls("see https://evil.example.com/login now")
 
-    def test_decodes_html_entities(self):
-        result = NLPInferenceEngine._strip_html("<p>caf&eacute;</p>")
-        assert "café" in result or "caf" in result  # BS4 decodes entities
+    def test_strips_bare_email(self):
+        assert "@" not in tp.strip_urls("contact admin@evil.example.com today")
 
 
 class TestNormalize:
     def test_nfkc_applied(self):
-        # fi ligature (U+FB01) → "fi"
-        assert NLPInferenceEngine._normalize("\uFB01le") == "file"
+        assert tp.normalize("ﬁle") == "file"          # fi ligature -> "fi"
 
     def test_strips_zero_width_space(self):
-        assert NLPInferenceEngine._normalize("hel\u200blo") == "hello"
+        assert tp.normalize("hel​lo") == "hello"
 
     def test_collapses_whitespace(self):
-        assert NLPInferenceEngine._normalize("a   b\t\nc") == "a b c"
+        assert tp.normalize("a   b\t\nc") == "a b c"
 
     def test_strips_leading_trailing_whitespace(self):
-        assert NLPInferenceEngine._normalize("  hello  ") == "hello"
+        assert tp.normalize("  hello  ") == "hello"
 
     def test_empty_string(self):
-        assert NLPInferenceEngine._normalize("") == ""
+        assert tp.normalize("") == ""
+
+
+class TestAdversarialCanonicalization:
+    """v2 defenses: map adversarial surface forms back to the clean distribution."""
+
+    def test_homoglyph_folded(self):
+        # Cyrillic 'a' (U+0430) -> Latin 'a' so the model sees the brand it knows.
+        assert tp.normalize("pаypаl") == "paypal"
+
+    def test_leetspeak_folded_interior(self):
+        # Y0ur -> Your, p@ssword -> password, w1ll -> will.
+        assert tp.normalize("Y0ur p@ssword w1ll") == "Your password will"
+
+    def test_leet_leaves_legit_alphanumerics(self):
+        # Office365 / B2B must NOT be mangled (digit has a digit/boundary neighbor).
+        assert tp.normalize("Office365 B2B") == "Office365 B2B"
+
+    def test_letter_spacing_rejoined(self):
+        assert tp.normalize("a c c o u n t suspended") == "account suspended"
+
+    def test_letter_spacing_leaves_short_acronyms(self):
+        # "U S A" (3 single chars) is below the >=4 rejoin threshold.
+        assert tp.normalize("U S A today") == "U S A today"
+
+    def test_detect_obfuscation_flags_homoglyph(self):
+        assert tp.detect_obfuscation("pаypal", "verify") is True
+
+    def test_detect_obfuscation_clean_is_false(self):
+        assert tp.detect_obfuscation("Normal subject", "Normal body") is False
 
 
 class TestPreprocess:
@@ -165,13 +163,16 @@ class TestPreprocess:
         text, _ = self.engine._preprocess("Subj", "Plain", "<p>HTML</p>")
         assert "Plain" in text
 
+    def test_urls_stripped_from_body(self):
+        text, _ = self.engine._preprocess("Subj", "login at https://evil.example.com now", "")
+        assert "http" not in text and "evil.example.com" not in text
+
     def test_obfuscation_detected_zws(self):
-        _, flag = self.engine._preprocess("Hello\u200b", "Body", "")
+        _, flag = self.engine._preprocess("Hello​", "Body", "")
         assert flag is True
 
     def test_obfuscation_detected_homoglyph(self):
-        # '\uFB01' (fi ligature) differs from its NFKC form "fi"
-        _, flag = self.engine._preprocess("\uFB01rst", "body", "")
+        _, flag = self.engine._preprocess("pаypal", "body", "")
         assert flag is True
 
     def test_no_obfuscation_for_clean_text(self):
@@ -188,25 +189,23 @@ class TestHeadTailEncode:
         self.engine = _make_engine()
 
     def _encode_n_tokens(self, n: int) -> dict:
-        """Produce an engine where encode() always returns n token ids."""
         self.engine.tokenizer.encode = lambda text, **kw: list(range(n))
         return self.engine._head_tail_encode("dummy text")
 
     def test_short_text_no_truncation(self):
         result = self._encode_n_tokens(10)
-        # 10 content + CLS + SEP = 12
         assert len(result["input_ids"]) == 12
-        assert result["input_ids"][0] == 101   # CLS
-        assert result["input_ids"][-1] == 102  # SEP
+        assert result["input_ids"][0] == 101
+        assert result["input_ids"][-1] == 102
 
     def test_exact_keep_boundary_no_truncation(self):
-        keep = self.engine.max_length - 2  # 254
+        keep = self.engine.max_length - 2
         result = self._encode_n_tokens(keep)
-        assert len(result["input_ids"]) == keep + 2  # 256
+        assert len(result["input_ids"]) == keep + 2
 
     def test_truncation_fires_above_keep(self):
         result = self._encode_n_tokens(300)
-        assert len(result["input_ids"]) == self.engine.max_length  # 256
+        assert len(result["input_ids"]) == self.engine.max_length
 
     def test_attention_mask_all_ones(self):
         result = self._encode_n_tokens(100)
@@ -217,41 +216,33 @@ class TestHeadTailEncode:
         assert len(result["input_ids"]) == len(result["attention_mask"])
 
     def test_head_tail_preserves_head_ids(self):
-        """First head_tokens ids in the encoded output should match original head."""
         n = 300
         self.engine.tokenizer.encode = lambda text, **kw: list(range(n))
         result = self.engine._head_tail_encode("dummy")
-        head = self.engine.head_tokens  # 64
-        # ids[1 : 1+head] (skip CLS) must be range(0, head)
+        head = self.engine.head_tokens
         assert result["input_ids"][1 : 1 + head] == list(range(head))
 
     def test_head_tail_preserves_tail_ids(self):
-        """Last tail_tokens ids (before SEP) should match original tail."""
         n = 300
-        keep = self.engine.max_length - 2  # 254
-        head = self.engine.head_tokens      # 64
-        tail = keep - head                  # 190
+        keep = self.engine.max_length - 2
+        head = self.engine.head_tokens
+        tail = keep - head
         self.engine.tokenizer.encode = lambda text, **kw: list(range(n))
         result = self.engine._head_tail_encode("dummy")
         expected_tail_ids = list(range(n))[-tail:]
         assert result["input_ids"][1 + head : -1] == expected_tail_ids
 
     def test_edge_case_head_equals_keep(self):
-        """head_tokens == keep → tail == 0 → no tail slice, just head."""
         engine = _make_engine({"max_length": 66, "head_tokens": 64, "tail_tokens": 0})
-        n = 200
-        engine.tokenizer.encode = lambda text, **kw: list(range(n))
+        engine.tokenizer.encode = lambda text, **kw: list(range(200))
         result = engine._head_tail_encode("dummy")
-        keep = 66 - 2  # 64
-        assert len(result["input_ids"]) == 66  # CLS + 64 + SEP
+        assert len(result["input_ids"]) == 66
 
     def test_edge_case_head_exceeds_keep(self):
-        """head_tokens > keep: falls back to ids[:keep] only."""
         engine = _make_engine({"max_length": 10, "head_tokens": 200, "tail_tokens": 0})
-        n = 300
-        engine.tokenizer.encode = lambda text, **kw: list(range(n))
+        engine.tokenizer.encode = lambda text, **kw: list(range(300))
         result = engine._head_tail_encode("dummy")
-        assert len(result["input_ids"]) == 10  # CLS + 8 + SEP
+        assert len(result["input_ids"]) == 10
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -263,8 +254,7 @@ class TestDetectIntent:
         self.engine = _make_engine()
 
     def test_legitimate_always_returns_benign(self):
-        result = self.engine._detect_intent("anything", "legitimate")
-        assert result == ["benign_notification"]
+        assert self.engine._detect_intent("anything", "legitimate") == ["benign_notification"]
 
     def test_credential_harvest_keywords(self):
         result = self.engine._detect_intent(
@@ -291,13 +281,6 @@ class TestDetectIntent:
         assert "payment_fraud" in result
 
     def test_no_match_phishing_defaults_to_credential_harvest(self):
-        result = self.engine._detect_intent("completely benign words", "phishing")
-        assert result == ["credential_harvest"]
-
-    def test_no_match_unknown_classification_defaults_to_credential_harvest(self):
-        # spam classification was removed (collapsed into phishing); the
-        # generic "no keyword matched" fallback now always returns
-        # credential_harvest for any non-legitimate verdict.
         result = self.engine._detect_intent("completely benign words", "phishing")
         assert result == ["credential_harvest"]
 
@@ -328,18 +311,14 @@ class TestComputeUrgency:
             "action required suspended terminated verify now "
             "within 24 hours failure to your account will"
         )
-        score = self.engine._compute_urgency(text)
-        assert score == 1.0
+        assert self.engine._compute_urgency(text) == 1.0
 
     def test_five_hits_gives_1(self):
-        # 5 distinct urgency keywords → score = min(1.0, 5/5) = 1.0
         text = "urgent immediately expires deadline act now"
-        score = self.engine._compute_urgency(text)
-        assert score == 1.0
+        assert self.engine._compute_urgency(text) == 1.0
 
     def test_score_rounded_to_4dp(self):
         score = self.engine._compute_urgency("urgent immediately")
-        # 2 hits / 5 = 0.4 exactly — still tests rounding is applied
         assert score == round(score, 4)
 
 
@@ -349,24 +328,19 @@ class TestComputeUrgency:
 
 class TestSoftmax:
     def test_output_sums_to_one(self):
-        x = np.array([1.0, 2.0, 3.0])
-        result = NLPInferenceEngine._softmax(x)
+        result = NLPInferenceEngine._softmax(np.array([1.0, 2.0, 3.0]))
         assert abs(result.sum() - 1.0) < 1e-7
 
     def test_all_equal_gives_uniform(self):
-        x = np.array([1.0, 1.0, 1.0])
-        result = NLPInferenceEngine._softmax(x)
+        result = NLPInferenceEngine._softmax(np.array([1.0, 1.0, 1.0]))
         assert all(abs(v - 1 / 3) < 1e-7 for v in result)
 
     def test_large_logit_dominates(self):
-        x = np.array([100.0, 0.0, 0.0])
-        result = NLPInferenceEngine._softmax(x)
+        result = NLPInferenceEngine._softmax(np.array([100.0, 0.0, 0.0]))
         assert result[0] > 0.999
 
     def test_numeric_stability_large_values(self):
-        # Without the x - x.max() trick, exp(1000) overflows; must not produce nan
-        x = np.array([1000.0, 1001.0, 999.0])
-        result = NLPInferenceEngine._softmax(x)
+        result = NLPInferenceEngine._softmax(np.array([1000.0, 1001.0, 999.0]))
         assert not any(math.isnan(v) for v in result)
         assert abs(result.sum() - 1.0) < 1e-7
 
@@ -376,17 +350,9 @@ class TestSoftmax:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _engine_with_logits(logits: list[float]) -> NLPInferenceEngine:
-    """Return a ready engine whose ONNX session always emits the given logits.
-
-    predict() accesses the output as: session.run(...)[0][0]
-      - run() returns a list of arrays: [output_array]
-      - [0] → output_array with shape (batch, num_classes) = (1, 3)
-      - [0] → 1-D array of shape (3,)
-    So run() must return [np.array([logits])] (shape 1×3 inside a list).
-    """
+    """Return a ready engine whose ONNX session always emits the given logits."""
     engine = _make_engine()
     mock_session = MagicMock()
-    # shape (1, 3) inside a list — mirrors real ORT output for batch=1
     mock_session.run.return_value = [np.array([logits])]
     engine.session = mock_session
     engine.model_ready = True
@@ -395,24 +361,22 @@ def _engine_with_logits(logits: list[float]) -> NLPInferenceEngine:
 
 class TestPredict:
     def test_phishing_classification(self):
-        # logits strongly favour class 2 (phishing) and prob > 0.8 threshold
         engine = _engine_with_logits([0.0, 0.0, 10.0])
         result = engine.predict("Verify your account now", "Click here to login")
         assert result["classification"] == "phishing"
         assert result["phishing_probability"] > 0.8
         assert result["confidence"] == result["phishing_probability"]
 
-    def test_spam_logit_collapses_into_phishing(self):
-        # The model's class 1 (spam) logit is collapsed post-hoc into the
-        # phishing verdict. A strong spam signal must therefore classify
-        # as "phishing", and "spam" must never appear in the response.
+    def test_spam_is_distinct_and_not_a_threat(self):
+        # v2: spam is its OWN class (not collapsed into phishing) and its
+        # content_risk_score stays low because risk = P(phishing) alone.
         engine = _engine_with_logits([0.0, 5.0, 0.0])
         result = engine.predict("Special offer", "Limited time discount unsubscribe")
-        assert result["classification"] == "phishing"
-        assert "spam_probability" not in result
+        assert result["classification"] == "spam"
+        assert result["spam_probability"] > 0.9
+        assert result["content_risk_score"] < 50
 
     def test_legitimate_classification(self):
-        # logits favour class 0 (legitimate)
         engine = _engine_with_logits([5.0, 0.0, 0.0])
         result = engine.predict("Your order has shipped", "Tracking number: 12345")
         assert result["classification"] == "legitimate"
@@ -423,19 +387,17 @@ class TestPredict:
         assert 0 <= result["content_risk_score"] <= 100
 
     def test_content_risk_score_formula(self):
-        # content_risk_score = round(phishing_probability * 100)
         engine = _engine_with_logits([0.0, 0.0, 10.0])
         result = engine.predict("s", "b")
         assert result["content_risk_score"] == round(result["phishing_probability"] * 100)
 
     def test_top_tokens_always_empty(self):
         engine = _engine_with_logits([2.0, 1.0, 0.0])
-        result = engine.predict("s", "b")
-        assert result["top_tokens"] == []
+        assert engine.predict("s", "b")["top_tokens"] == []
 
     def test_obfuscation_detected_in_result(self):
         engine = _engine_with_logits([5.0, 0.0, 0.0])
-        result = engine.predict("Hello\u200bworld", "body")
+        result = engine.predict("Hello​world", "body")
         assert result["obfuscation_detected"] is True
 
     def test_no_obfuscation_for_clean_input(self):
@@ -445,7 +407,6 @@ class TestPredict:
 
     def test_raises_when_model_not_ready(self):
         engine = _make_engine()
-        # model_ready is False by default in _make_engine()
         with pytest.raises(RuntimeError, match="not ready"):
             engine.predict("s", "b")
 
@@ -454,7 +415,7 @@ class TestPredict:
         result = engine.predict("subject", "body")
         expected_keys = {
             "classification", "confidence", "phishing_probability",
-            "content_risk_score", "intent_labels",
+            "spam_probability", "content_risk_score", "intent_labels",
             "urgency_score", "obfuscation_detected", "top_tokens",
         }
         assert set(result.keys()) == expected_keys
@@ -462,8 +423,7 @@ class TestPredict:
     def test_confidence_bounds(self):
         for logits in [[5.0, 0.0, 0.0], [0.0, 5.0, 0.0], [0.0, 0.0, 5.0]]:
             engine = _engine_with_logits(logits)
-            result = engine.predict("s", "b")
-            assert 0.0 <= result["confidence"] <= 1.0
+            assert 0.0 <= engine.predict("s", "b")["confidence"] <= 1.0
 
     def test_urgency_score_bounds(self):
         engine = _engine_with_logits([0.0, 0.0, 10.0])
@@ -473,42 +433,35 @@ class TestPredict:
     def test_html_body_processed_when_plain_empty(self):
         engine = _engine_with_logits([5.0, 0.0, 0.0])
         result = engine.predict("subj", "", "<p>HTML content</p>")
-        assert result["classification"] in ("legitimate", "phishing")
+        assert result["classification"] in ("legitimate", "spam", "phishing")
 
     def test_temperature_scaling_applied(self):
-        """T=2 should push probabilities toward uniform vs T=1."""
         logits_arr = [0.0, 0.0, 5.0]
         engine_t1 = _engine_with_logits(logits_arr)
         engine_t2 = _engine_with_logits(logits_arr)
         engine_t2.temperature = 2.0
-
         r1 = engine_t1.predict("s", "b")
         r2 = engine_t2.predict("s", "b")
-        # Higher temperature → phishing probability is lower
         assert r1["phishing_probability"] > r2["phishing_probability"]
 
-    def test_threshold_applied_between_half_and_config(self):
-        """The tuned phish_threshold (spec §5.4) must gate the verdict, not an
-        implicit 0.5 argmax. logits [0.0, 0.5, 0.0] yield threat_prob≈0.726:
-        above 0.5 (so the old `threat_prob > leg_prob` rule said "phishing")
-        but below the configured 0.8 operating point, so the verdict is now
-        "legitimate"."""
-        engine = _engine_with_logits([0.0, 0.5, 0.0])  # default phish_threshold=0.8
+    def test_threshold_promotes_borderline_phishing(self):
+        """The tuned phish_threshold is a PROMOTE floor: P(phishing) >= threshold
+        classifies as phishing even when another class is the bare argmax. Here
+        legit is the argmax but P(phish) clears the lowered threshold."""
+        engine = _engine_with_logits([0.5, 0.0, 0.4])  # argmax = legitimate
+        engine.phish_threshold = 0.30
         result = engine.predict("s", "b")
-        assert 0.5 < result["phishing_probability"] < 0.8
-        assert result["classification"] == "legitimate"
-        # confidence reports the legitimate prob when below threshold
-        assert result["confidence"] < 0.5
-
-    def test_lower_threshold_flips_borderline_to_phishing(self):
-        """The same borderline logits classify as phishing once the threshold
-        is lowered below the phishing probability, proving the config knob is
-        live."""
-        engine = _engine_with_logits([0.0, 0.5, 0.0])
-        engine.phish_threshold = 0.6
-        result = engine.predict("s", "b")
+        assert result["phishing_probability"] > 0.30
         assert result["classification"] == "phishing"
         assert result["confidence"] == result["phishing_probability"]
+
+    def test_below_threshold_uses_argmax(self):
+        """When P(phishing) is below the threshold AND not the argmax, the verdict
+        falls back to the 3-class argmax (here, legitimate)."""
+        engine = _engine_with_logits([5.0, 0.0, 0.0])  # default phish_threshold=0.8
+        result = engine.predict("s", "b")
+        assert result["phishing_probability"] < 0.8
+        assert result["classification"] == "legitimate"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -526,12 +479,10 @@ class TestConfigLoading:
                 return NLPInferenceEngine(base_dir=tmp)
 
     def test_custom_threshold_loaded(self):
-        engine = self._engine_with_config({"phish_threshold": 0.7})
-        assert engine.phish_threshold == 0.7
+        assert self._engine_with_config({"phish_threshold": 0.7}).phish_threshold == 0.7
 
     def test_custom_temperature_loaded(self):
-        engine = self._engine_with_config({"temperature": 1.5})
-        assert engine.temperature == 1.5
+        assert self._engine_with_config({"temperature": 1.5}).temperature == 1.5
 
     def test_label_map_int_keys(self):
         engine = self._engine_with_config({
@@ -551,5 +502,4 @@ class TestConfigLoading:
         assert engine.head_tokens == 64
         assert engine.tail_tokens == 190
         assert engine.temperature == 1.0
-        # Default phish_threshold is 0.5 (spec default in code)
-        assert engine.phish_threshold == 0.5
+        assert engine.phish_threshold == 0.5  # spec default in code

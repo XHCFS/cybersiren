@@ -1,40 +1,40 @@
 """
 CyberSiren NLP Inference Engine — SVC-06
 =========================================
-Loads the INT8 ONNX model exported by nlp-cybersiren-finetune.ipynb and runs
-inference per the preprocessing pipeline specified in NLP-SPEC-v1.0.
+Loads the fp32 ONNX model (cycle-12, generalization-hardened) and runs inference
+per the canonical preprocessing pipeline in NLP-SPEC-v2.0.
 
-Expected artifacts (relative to service root, matching notebook Cell 14 output):
-    onnx/model_int8.onnx   INT8-quantised DistilBERT, opset 14  (~66-132 MB)
+Expected artifacts (relative to service root):
+    onnx/model_int8.onnx   fp32 DistilBERT, faithful (max|logit-diff|=0). The
+                           filename keeps the legacy _int8 suffix for path /
+                           Makefile stability; INT8 quantization was abandoned
+                           because it destroyed fidelity (see model spec §8).
     tokenizer/             HuggingFace DistilBertTokenizerFast files
-    config.json            Thresholds, label map, intent taxonomy
+    config.json            Thresholds (T, phish_threshold), label map, intent taxonomy
+
+Scoring (v2): content_risk_score = round(P(phishing) * 100). Spam is a distinct,
+NON-threat class and never inflates the risk score. URLs are stripped before
+tokenization — their reputation is SVC-03's job (combined at the aggregator).
+ALL preprocessing is delegated to the canonical text_preprocess.preprocess_email
+so the serving path is byte-identical to training (no train/serve skew).
 
 Spec references kept inline so every decision is traceable:
-    §2.4  Text preprocessing
-    §3.6  Input representation + head-tail truncation (64 head + 190 tail)
-    §3.5  Intent taxonomy (11 labels, rule-based best-effort)
-    §5.4  Phishing threshold optimisation
-    §8.3  Production endpoint response schema
+    §2.4  Text preprocessing            §3.6  Head-tail truncation (64 head + 190 tail)
+    §3.5  Intent taxonomy (rule-based)  §5.4  Phishing threshold     §8.3  Response schema
 """
 
 import json
 import logging
 import os
 import re
-import unicodedata
 from pathlib import Path
 from typing import Optional
 
 import numpy as np
 
-logger = logging.getLogger(__name__)
+from text_preprocess import preprocess_email
 
-# ── Zero-width / invisible characters to strip (spec §2.4 step 3) ──────────
-_ZWS_RE = re.compile(
-    r"[\u200b\u200c\u200d\ufeff\u00ad"
-    r"\ufe00\ufe01\ufe02\ufe03\ufe04\ufe05\ufe06\ufe07"
-    r"\ufe08\ufe09\ufe0a\ufe0b\ufe0c\ufe0d\ufe0e\ufe0f]"
-)
+logger = logging.getLogger(__name__)
 
 # ── Keyword patterns for rule-based intent detection (spec §3.5) ────────────
 # The training notebook implements only the classification head; intent/urgency
@@ -302,24 +302,6 @@ class NLPInferenceEngine:
 
     # ── Preprocessing (spec §2.4) ─────────────────────────────────────────
 
-    @staticmethod
-    def _strip_html(text: str) -> str:
-        """BeautifulSoup HTML → plain text (spec §2.4 step 1)."""
-        if not text:
-            return ""
-        try:
-            from bs4 import BeautifulSoup  # type: ignore
-            return BeautifulSoup(text, "html.parser").get_text(separator=" ")
-        except Exception:
-            return re.sub(r"<[^>]+>", " ", text)
-
-    @staticmethod
-    def _normalize(text: str) -> str:
-        """NFKC + zero-width removal + whitespace collapse (spec §2.4 steps 2-4)."""
-        text = unicodedata.normalize("NFKC", text)
-        text = _ZWS_RE.sub("", text)
-        return re.sub(r"\s+", " ", text).strip()
-
     def _preprocess(
         self,
         subject: str,
@@ -329,21 +311,14 @@ class NLPInferenceEngine:
         """
         Returns (preprocessed_text, obfuscation_detected).
 
-        Obfuscation flag fires when the raw text differs from its NFKC form or
-        contains zero-width characters — signals homoglyph / ZWS injection
-        (spec §2.4 step 7, [3] §3.2.2).
+        Delegates to the canonical text_preprocess.preprocess_email so the
+        serving path is byte-identical to training (URL/email stripping, NFKC,
+        zero-width removal, whitespace collapse, template composition). URLs are
+        stripped entirely — their reputation is SVC-03's job (scored separately
+        and combined at the aggregator). Phone numbers are kept (callback/TOAD
+        phishing is a language signal).
         """
-        if not body_plain.strip() and body_html:
-            body_plain = self._strip_html(body_html)
-
-        raw = f"Subject: {subject}\n\nBody: {body_plain}"
-        obfuscation_detected = (
-            unicodedata.normalize("NFKC", raw) != raw
-            or bool(_ZWS_RE.search(raw))
-        )
-
-        text = f"Subject: {self._normalize(subject)}\n\nBody: {self._normalize(body_plain)}"
-        return text, obfuscation_detected
+        return preprocess_email(subject, body_plain, body_html)
 
     # ── Head-tail tokenisation (spec §3.6, notebook Cell 4) ───────────────
 
@@ -458,35 +433,32 @@ class NLPInferenceEngine:
             {"input_ids": input_ids, "attention_mask": attention_mask},
         )[0][0]
 
-        # 4. Temperature scaling + softmax (notebook Cell 11)
+        # 4. Temperature scaling + softmax. Logits are [P(legit), P(spam), P(phish)].
         probs = self._softmax(logits / self.temperature)
         leg_prob = float(probs[0])
-        # The model has 3 output classes (legitimate / spam / phishing) but the
-        # INT8-quantised checkpoint mis-routes most phishing samples into the
-        # "spam" bucket, making "spam" indistinguishable from "phishing" at
-        # inference time. Until a calibrated checkpoint exists, we collapse
-        # spam + phishing into a single "phishing" verdict by summing their
-        # probabilities. This is mathematically equivalent to argmax over
-        # (legitimate, ¬legitimate) and is a strictly post-hoc transform —
-        # the model weights are unchanged.
-        threat_prob = float(probs[1]) + float(probs[2])
+        spam_prob = float(probs[1])
+        phish_prob = float(probs[2])
 
-        # 5. Two-class decision: legitimate vs phishing. Apply the tuned
-        #    operating point from config (spec §5.4: phish_threshold fitted for
-        #    recall >= 0.96 at minimum FPR) rather than an implicit 0.5 argmax,
-        #    so the published verdict tracks the documented threshold.
-        if threat_prob > self.phish_threshold:
-            classification = "phishing"
-            confidence = threat_prob
-        else:
-            classification = "legitimate"
-            confidence = leg_prob
-
-        # 6. Round probabilities first, then derive content_risk_score from the
-        #    rounded phishing_probability so the response is self-consistent
-        #    (spec §8.3: content_risk_score == round(phishing_probability * 100)).
-        phish_prob_rounded = round(threat_prob, 4)
+        # 5. Scoring scheme (v2): spam != threat. The CONTENT RISK is the
+        #    phishing probability ALONE — spam is inbox noise, not a phishing/
+        #    malware threat, so it must not inflate the risk score. (The old
+        #    checkpoint collapsed spam+phish into the risk because its phishing
+        #    class was dead; the v2 model has a live phishing class, so the
+        #    collapse is retired.) URL maliciousness is scored separately by
+        #    SVC-03 and combined at the aggregator.
+        phish_prob_rounded = round(phish_prob, 4)
         content_risk_score = round(phish_prob_rounded * 100)
+
+        # 6. Label: phishing if P(phish) clears the tuned operating point
+        #    (phish_threshold, fitted for recall target at min FPR); otherwise
+        #    the 3-class argmax (legitimate / spam / phishing).
+        if phish_prob >= self.phish_threshold:
+            classification = "phishing"
+            confidence = phish_prob
+        else:
+            idx = int(np.argmax(probs))
+            classification = self.label_map.get(idx, "legitimate")
+            confidence = float(probs[idx])
 
         # 7. Intent + urgency (rule-based best effort)
         intent_labels = self._detect_intent(text, classification)
@@ -496,6 +468,7 @@ class NLPInferenceEngine:
             "classification": classification,
             "confidence": round(confidence, 4),
             "phishing_probability": phish_prob_rounded,
+            "spam_probability": round(spam_prob, 4),
             "content_risk_score": content_risk_score,
             "intent_labels": intent_labels,
             "urgency_score": urgency_score,

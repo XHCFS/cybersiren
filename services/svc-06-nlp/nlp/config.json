@@ -1,7 +1,7 @@
 {
   "model_name": "distilbert-base-uncased",
-  "model_version": "NLP-SPEC-v1.0",
-  "trained_on": "cybersiren_nlp_dataset_v1 (149,998 rows)",
+  "model_version": "NLP-SPEC-v2.0",
+  "trained_on": "cybersiren_nlp_dataset_v2 (cycle-12, generalization-hardened)",
   "label_map": {
     "0": "legitimate",
     "1": "spam",
@@ -24,7 +24,8 @@
   "head_tokens": 64,
   "tail_tokens": 190,
   "input_format": "Subject: {subject}\n\nBody: {body_plain}",
-  "temperature": 1.0,
-  "phish_threshold": 0.8,
-  "runtime": "onnxruntime INT8"
+  "temperature": 0.937,
+  "phish_threshold": 0.24,
+  "scoring": "content_risk_score=round(P(phishing)*100); spam!=threat; URLs stripped (SVC-03 scores their reputation, SVC-04 scores sender)",
+  "runtime": "onnxruntime fp32 (faithful, max|logit-diff|=0 vs PyTorch; INT8 quantization abandoned because it destroyed fidelity, see model spec section 8). Filename retains _int8 suffix for path/Makefile stability."
 }
