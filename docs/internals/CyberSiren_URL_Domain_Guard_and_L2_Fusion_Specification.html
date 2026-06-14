@@ -114,8 +114,8 @@
 
 <h1>CYBERSIREN — URL DOMAIN GUARD &amp; L2 FUSION SPECIFICATION</h1>
 <div class="doc-meta">
-  <span><strong>Document:</strong> URL-L2-SPEC-v1.0</span>
-  <span><strong>Date:</strong> 2026-05-19</span>
+  <span><strong>Document:</strong> URL-L2-SPEC-v2.0</span>
+  <span><strong>Date:</strong> 2026-06-14 (v2.0: v3 model update; original v1.0: 2026-05-19)</span>
   <span><strong>Scope:</strong> SVC-03 URL Analysis — Domain Guard fast-path + L2 fusion sidecar (<code>fusion_export/</code>)</span>
   <span><strong>Classification:</strong> Internal / Graduation Project</span>
 </div>
@@ -281,7 +281,7 @@
 
 <table>
   <tr><th>Aspect</th><th>Value</th></tr>
-  <tr><td>Tokenizer</td><td>Char n-grams over normalized URL string (scheme + host + path + query), n in [3, 5]. HashingVectorizer with fixed feature dimensionality &mdash; no fitted vocabulary, so the model is stateless across data drift.</td></tr>
+  <tr><td>Tokenizer</td><td>Char n-grams over normalized URL string (scheme + host + path + query), n in [2, 4]. HashingVectorizer with 2<sup>18</sup> buckets &mdash; no fitted vocabulary, so the model is stateless across data drift.</td></tr>
   <tr><td>Normalization</td><td>ASCII lowercase; percent-decoded path; punycode-decoded host. Implementation: <code>fusion_export/fusion_kit/url_normalize.py</code>.</td></tr>
   <tr><td>Classifier</td><td><code>sklearn.linear_model.LogisticRegression</code> with L2 regularization. Calibrated via cross-validated Platt scaling [D] so <code>url_p</code> behaves as a probability.</td></tr>
   <tr><td>Artifact</td><td><code>fusion_export/models/url_char_lr.joblib</code>. Compressed joblib; load on sidecar start.</td></tr>
@@ -452,29 +452,49 @@
   <tr><td>Apex extraction (PSL)</td><td>~&lt; 1 &micro;s/op</td><td><code>BenchmarkApexFromURL</code></td></tr>
 </table>
 
-<h3>9.2 End-to-end sidecar benchmark</h3>
+<h3>9.2 End-to-end sidecar benchmark — v3 model (2026-05-18)</h3>
 
-<div class="metric-block">
-  <div class="metric-header">OpenPhish 2026-05-18 &mdash; n=300 &mdash; threshold=0.50 (commit <code>aa5dafd</code>)</div>
-  <table class="compact-table">
-    <tr><th>Metric</th><th>Value</th><th>Notes</th></tr>
-    <tr><td>URLs scored</td><td>295 / 300</td><td>5 timeouts (sidecar &gt; 45 s wrapping context exceeded)</td></tr>
-    <tr><td>Phishing detection rate (TPR)</td><td><strong>273 / 295 = 92.5%</strong></td><td>Across 295 successfully-scored phishing URLs</td></tr>
-    <tr><td>Benign FPR (control sample)</td><td><strong>0 / 32 = 0.0%</strong></td><td>32 known-benign URLs sampled from the Cisco top-10K (deep paths)</td></tr>
-  </table>
-  <p style="margin-top:4px;font-size:10px;"><strong>Note:</strong> This live-benchmark TPR supersedes the offline &quot;FNR 1.64%&quot; figure cited in PR #140's original description. The live number reflects the rebalanced fusion zones from commits <code>aa5dafd</code> and <code>4c8b112</code> and is the more relevant production metric.</p>
+<div class="note">
+  <strong>v3 model:</strong> <code>url_char_lr.joblib</code> retrained on 304,181 rows (299K LegitPhish+PhiUSIIL base + 3,000 fresh OpenPhish ×10 + 1,875 hard-benign ×3), C=2.0. Val AUC 0.974, benign FPR@0.50 0.6%. Previous v1 model had AUC 0.757 (overfit: 625 benign ×200 + 317 phishing ×150 augmentation) and data leakage (phishing augmentation = benchmark test set). All numbers below are <strong>sidecar-only</strong> — the production Domain Guard allowlist (top-10K) is not applied.
 </div>
 
-<h3>9.3 Per-model metrics</h3>
+<div class="metric-block">
+  <div class="metric-header">Detection Rate — 6 phishing corpora &mdash; threshold=0.50, 8 workers, 25s timeout</div>
+  <table class="compact-table">
+    <tr><th>Corpus</th><th>Scored</th><th>Caught</th><th>DR</th><th>Notes</th></tr>
+    <tr><td>Fresh OpenPhish 2026-05-18 (unseen at training)</td><td>286 / 300</td><td>286</td><td><strong>100.0%</strong></td><td>14 timeouts; 0 misses on scored</td></tr>
+    <tr><td>Mixed phishing (OpenPhish + PhishTank + manual)</td><td>307</td><td>299</td><td><strong>97.5%</strong></td><td></td></tr>
+    <tr><td><code>live_phishing_urls.txt</code> (repo ground truth)</td><td>75</td><td>74</td><td><strong>98.5%</strong></td><td></td></tr>
+    <tr><td>Subdomain-chain adversarial</td><td>321</td><td>287</td><td><strong>89.4%</strong></td><td></td></tr>
+    <tr><td>LegitPhish/PhiUSIIL phishing (subtle, generic domains)</td><td>150</td><td>112</td><td><strong>74.7%</strong></td><td>Worst case — no brand in URL</td></tr>
+    <tr><td>Error-analysis FNs (previously identified misses)</td><td>61</td><td>10</td><td>16.4%</td><td>Honest; old 43.4% was data leakage</td></tr>
+  </table>
+</div>
 
-<p>Per-class FPR / FNR / AUC for <code>url_p</code> and <code>op_p</code> are stored alongside each artifact in:</p>
+<div class="metric-block">
+  <div class="metric-header">False Positive Rate — 4 benign corpora &mdash; threshold=0.50</div>
+  <table class="compact-table">
+    <tr><th>Corpus</th><th>Scored</th><th>FPs</th><th>FPR</th><th>Notes</th></tr>
+    <tr><td>LegitPhish/PhiUSIIL benign test split</td><td>150</td><td>2</td><td><strong>1.3%</strong></td><td>Clean held-out benign</td></tr>
+    <tr><td>Hard-benign (platform deployments, diverse legit)</td><td>627</td><td>154</td><td>24.6%</td><td>Mostly top-10K; allowlisted in prod</td></tr>
+    <tr><td><code>live_benign_urls.txt</code> (repo ground truth)</td><td>46</td><td>12</td><td>26.1%</td><td>Mostly top-10K; allowlisted in prod</td></tr>
+    <tr><td>Error-analysis FPs</td><td>19</td><td>6</td><td>31.6%</td><td>Mostly top-10K; allowlisted in prod</td></tr>
+  </table>
+  <p style="margin-top:4px;font-size:10px;"><strong>Note on hard-benign FPR:</strong> The elevated FPR on the last three rows reflects the sidecar in isolation. In production the Domain Guard allowlist (9,978 Cisco Umbrella top-10K entries) short-circuits these before the sidecar is ever called — the majority of these URLs are well-known domains. The LegitPhish benign split (1.3% FPR) is a better estimate of sidecar FPR on unknown traffic.</p>
+</div>
 
-<ul style="margin: 4px 0 6px 18px;">
-  <li><code>fusion_export/models/url_char_lr.metrics.json</code></li>
-  <li><code>fusion_export/models/hgb_operational.metrics.json</code></li>
-</ul>
+<h3>9.3 Per-model component metrics</h3>
 
-<p>These files ship via Git LFS with the model bundles (see <code>make check-fusion-models</code>). Until the LFS files land in your local clone, refer to the rebalancing commit message in <code>aa5dafd</code> for the headline shift summary.</p>
+<table class="compact-table" style="width:700px;">
+  <tr><th>Model</th><th>Metric</th><th>Value</th><th>Evaluation set</th></tr>
+  <tr><td rowspan="3"><code>url_char_lr</code> v3</td><td>AUC</td><td><strong>0.974</strong></td><td>Held-out balanced 5K (2.5K each class)</td></tr>
+  <tr><td>Benign FPR @ 0.50</td><td><strong>0.6%</strong></td><td>Same held-out set</td></tr>
+  <tr><td>Training rows</td><td>304,181</td><td>Base 299K + 3K phish aug + 1.9K benign aug</td></tr>
+  <tr><td rowspan="2"><code>hgb_operational</code></td><td>Validation AUC</td><td><strong>0.99985</strong></td><td>Held-out operational split</td></tr>
+  <tr><td>Features</td><td>44</td><td>28 raw enrichment + 16 derived</td></tr>
+</table>
+
+<p style="margin-top:4px;font-size:10px;">Full per-class FPR/FNR and PR-AUC for each model are stored in <code>fusion_export/models/url_char_lr.metrics.json</code> and <code>fusion_export/models/hgb_operational.metrics.json</code> (shipped via Git LFS — run <code>make check-fusion-models</code>).</p>
 
 
 <!-- ============================================================ -->
@@ -539,9 +559,9 @@
   </tr>
   <tr>
     <td>7</td>
-    <td>Live-benchmark TPR (92.5%) was measured on 295 URLs</td>
-    <td>Sample size is small enough that the confidence interval on TPR is wide.</td>
-    <td>Rerun the benchmark on rolling 7-day OpenPhish dumps and track TPR over time; once trend is stable, narrow the CI estimate.</td>
+    <td>Live-benchmark DR (100% on fresh OpenPhish, §9.2) is measured on one snapshot (n=286 scored)</td>
+    <td>Single-run sample. DR on diverse corpora ranges 74.7%–100% depending on corpus (subtle phishing vs. active phishing kit). Confidence interval on any single corpus is wide.</td>
+    <td>Rerun on rolling 7-day OpenPhish dumps; track DR trend over time. The 74.7% on LegitPhish subtle phishing is the honest lower bound for production-like traffic.</td>
   </tr>
 </table>
 
