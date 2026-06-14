@@ -45,8 +45,8 @@ def _load_engine_background() -> None:
         else:
             logger.warning(
                 "NLP service started WITHOUT a model. "
-                "POST /predict will return 503 until onnx/model_int8.onnx is replaced "
-                "with the real model from cybersiren_nlp_out/onnx/model_int8.onnx."
+                "POST /predict will return 503 until onnx/model_int8.onnx is present. "
+                "Run `git lfs pull` (LFS source: python/svc-06-nlp/onnx/) or `make check-nlp-model`."
             )
     except Exception as exc:
         logger.error("Background engine load failed: %s", exc)
@@ -144,8 +144,8 @@ def predict(req: PredictRequest):
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=(
                 "NLP model is not loaded. "
-                "Place onnx/model_int8.onnx (from cybersiren_nlp_out/onnx/) "
-                "in the service directory and restart."
+                "Fetch it with `git lfs pull` (LFS source: python/svc-06-nlp/onnx/) "
+                "or `make check-nlp-model`, then restart."
             ),
         )
     try:

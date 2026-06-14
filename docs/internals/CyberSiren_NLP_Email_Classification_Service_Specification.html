@@ -110,8 +110,8 @@
 
 <h1>CYBERSIREN — NLP EMAIL CLASSIFICATION SERVICE SPECIFICATION</h1>
 <div class="doc-meta">
-  <span><strong>Document:</strong> NLP-SVC-SPEC-v1.0</span>
-  <span><strong>Date:</strong> 2026-04-21</span>
+  <span><strong>Document:</strong> NLP-SVC-SPEC-v2.0</span>
+  <span><strong>Date:</strong> 2026-06-14</span>
   <span><strong>Scope:</strong> SVC-06 NLP — Implemented Go Wrapper + Python Inference Service</span>
   <span><strong>Classification:</strong> Internal / Graduation Project</span>
 </div>
@@ -121,7 +121,7 @@
 </div>
 
 <div class="note">
-  <strong>Key facts:</strong> Model = DistilBERT INT8 ONNX (66.8 MB) &nbsp;|&nbsp; Output classes = {phishing, legitimate} &nbsp;|&nbsp; Post-hoc collapse: spam + phishing logits summed to form threat probability &nbsp;|&nbsp; Go wrapper port = 8086 &nbsp;|&nbsp; Python inference port = 8001 &nbsp;|&nbsp; P50 CPU latency = 80.7 ms &nbsp;|&nbsp; Phishing Recall = 98.60%
+  <strong>Key facts (v2.0, cycle-12):</strong> Model = DistilBERT fp32 ONNX (faithful, ~266 MB) &nbsp;|&nbsp; Output classes = {legitimate, spam, phishing} (3-class; v1 collapse retired) &nbsp;|&nbsp; <code>content_risk_score = round(P(phishing)·100)</code>, spam is not a threat &nbsp;|&nbsp; Go wrapper port = 8086 &nbsp;|&nbsp; Python inference port = 8001 &nbsp;|&nbsp; P50 CPU latency ≈ 10 ms &nbsp;|&nbsp; Phishing recall 97.8%, held-out real-phishing recall 87.3%
 </div>
 
 
@@ -154,7 +154,7 @@
        ├──────── SVC-05 Attachment Analysis
        └──────── SVC-06 NLP (this service)
                     │
-                    ├── Python FastAPI :8001   ← DistilBERT INT8 ONNX inference
+                    ├── Python FastAPI :8001   ← DistilBERT fp32 ONNX inference
                     └── Go HTTP wrapper :8086  ← API gateway, metrics, demo UI
                               │
                          SVC-07 Aggregator     [combines all scores → verdict]
@@ -306,7 +306,7 @@
 
 <h3>3.3 Obfuscation Detection</h3>
 <div class="note">
-  <strong>Method:</strong> Compare raw concatenated input text against the NFKC-normalized version. If <code>NFKC(raw) != raw</code> OR if zero-width characters were present in the raw text, <code>obfuscation_detected = True</code>. This flag is returned as part of the prediction response and can be used by SVC-07 to boost the risk score.
+  <strong>Method:</strong> Compare the raw concatenated input against its canonical form (<code>text_preprocess.detect_obfuscation</code>). <code>obfuscation_detected = True</code> if the raw text differs after NFKC, carries zero-width characters, uses cross-script homoglyphs, leetspeak, or letter-spacing. This flag is returned in the prediction response and can be used by SVC-07 to boost the risk score.
 </div>
 
 <h3>3.4 Input Composition</h3>
@@ -376,13 +376,12 @@
   <tr><td class="svc">Base model</td><td>distilbert-base-uncased (Hugging Face)</td></tr>
   <tr><td class="svc">Architecture</td><td>6 Transformer layers, 12 attention heads, 768 hidden dims, 66M parameters</td></tr>
   <tr><td class="svc">Training task</td><td>Fine-tuned 3-class email classification: {legitimate=0, spam=1, phishing=2}</td></tr>
-  <tr><td class="svc">Training data</td><td><code>cybersiren_nlp_dataset_v1</code> — 149,998 rows from 6 sources (D1, D2, D4, D6n, D6f, D7)</td></tr>
+  <tr><td class="svc">Training data</td><td><code>cybersiren_nlp_dataset_v2</code> (cycle-12) — real corpora (D1, D2, D4, D6n, D6f, D7) rebuilt: real phishing moved into training, per-corpus cap, paired contrastive + adversarial augmentation</td></tr>
   <tr><td class="svc">ONNX opset</td><td>14</td></tr>
-  <tr><td class="svc">Quantization</td><td>INT8 dynamic quantization (signed 8-bit integers)</td></tr>
-  <tr><td class="svc">Model file</td><td><code>nlp/onnx/model_int8.onnx</code> — tracked via Git LFS</td></tr>
+  <tr><td class="svc">Precision</td><td><strong>fp32 (faithful)</strong> — max|logit-diff| = 0 vs PyTorch. INT8/FP16 evaluated but not shipped (model spec §8.5)</td></tr>
+  <tr><td class="svc">Model file</td><td><code>nlp/onnx/model_int8.onnx</code> — tracked via Git LFS (filename keeps legacy <code>_int8</code> suffix for path stability)</td></tr>
   <tr><td class="svc">Optimized cache</td><td><code>nlp/onnx/model_int8_opt.onnx</code> — generated on first run by ORT graph optimizer</td></tr>
-  <tr><td class="svc">FP32 size</td><td>265.6 MB</td></tr>
-  <tr><td class="svc">INT8 size</td><td><strong>66.8 MB</strong> (74.9% reduction)</td></tr>
+  <tr><td class="svc">Model size</td><td><strong>~266 MB</strong> (fp32)</td></tr>
 </table>
 
 <h3>5.2 ORT Session Configuration</h3>
@@ -427,39 +426,43 @@ probs = softmax(logits / temperature)   # probs.shape = (3,), sums to 1.0
 
 
 <!-- ============================================================ -->
-<h2>6. Post-Hoc Classification Collapse</h2>
+<h2>6. Scoring &amp; Classification (v2)</h2>
 
 <div class="note">
-  <strong>Background:</strong> The deployed INT8 model has a 3-class output head (legitimate / spam / phishing). After ONNX INT8 dynamic quantization, the model's softmax probabilities are poorly calibrated between class 1 (spam) and class 2 (phishing): phishing emails reliably score higher in the spam bucket than the phishing bucket. This is a known INT8 quantization artefact — per-tensor quantization loses fine-grained calibration between adjacent classes. The correct long-term fix is retraining with calibration data. The runtime fix applied here is post-hoc class collapse.
+  <strong>v2 change — the v1 spam+phishing collapse is RETIRED.</strong> v1 summed the spam and phishing
+  logits into one "threat" score because its INT8 checkpoint had a poorly-calibrated / effectively dead phishing
+  class. The v2 model has a live, faithful 3-class head (fp32, max|logit-diff| = 0), so the API now returns the real
+  3-class verdict and <strong>spam is treated as a distinct, non-threat class</strong>: it never inflates the risk
+  score. URL/sender reputation is scored separately (SVC-03/SVC-04) and combined at the SVC-07 aggregator.
 </div>
 
-<h3>6.1 Collapse Logic</h3>
+<h3>6.1 Scoring Logic</h3>
 <pre>
-leg_prob    = probs[0]               # P(legitimate)
-threat_prob = probs[1] + probs[2]    # P(spam) + P(phishing) = P(not legitimate)
+probs = softmax(logits / temperature)          # [P(legit), P(spam), P(phish)]
+leg_prob, spam_prob, phish_prob = probs
 
-if threat_prob > leg_prob:
+content_risk_score = round(phish_prob * 100)   # 0–100 — P(phishing) ALONE; spam excluded
+
+if phish_prob &gt;= phish_threshold:              # tuned PROMOTE floor (config.json, 0.24)
     classification = "phishing"
-    confidence     = threat_prob
+    confidence     = phish_prob
 else:
-    classification = "legitimate"
-    confidence     = leg_prob
-
-phishing_probability  = threat_prob              # 0.0–1.0
-content_risk_score    = round(threat_prob * 100) # 0–100
+    idx            = argmax(probs)              # 3-class fallback
+    classification = label_map[idx]            # "legitimate" | "spam" | "phishing"
+    confidence     = probs[idx]
 </pre>
 
-<h3>6.2 Mathematical Interpretation</h3>
+<h3>6.2 Interpretation</h3>
 <table class="compact-table">
   <tr><th>Interpretation</th><th>Detail</th></tr>
-  <tr><td>Binary equivalent</td><td>Equivalent to training a binary classifier on {legitimate} vs {spam ∪ phishing}. Any "not legitimate" signal is treated as threat-positive.</td></tr>
-  <tr><td>Threshold-free</td><td>No probability threshold is applied. The decision is purely argmax({leg_prob, threat_prob}). The <code>phish_threshold</code> config key is present but unused in this implementation.</td></tr>
-  <tr><td>Confidence semantics</td><td>Confidence = max(leg_prob, threat_prob). Always &ge; 0.5 by definition. A value of 0.5 indicates maximum uncertainty between the two classes.</td></tr>
-  <tr><td>Spam references</td><td>The label "spam" does not appear in any API response. The model's internal spam class logit contributes to <code>phishing_probability</code> and <code>content_risk_score</code> but is not surfaced separately.</td></tr>
+  <tr><td>Risk = P(phishing) only</td><td><code>content_risk_score = round(P(phishing) · 100)</code>. Spam and legitimate do not contribute to risk. This is threshold-independent.</td></tr>
+  <tr><td>Threshold is a promote floor</td><td><code>phish_threshold</code> (0.24) classifies as phishing when P(phishing) clears it <em>even if</em> another class is the bare argmax — catching borderline phishing. Below it, the 3-class argmax decides.</td></tr>
+  <tr><td>Three labels surfaced</td><td><code>classification</code> can be <code>"legitimate"</code>, <code>"spam"</code>, or <code>"phishing"</code>. <code>spam_probability</code> is returned alongside <code>phishing_probability</code>.</td></tr>
+  <tr><td>Confidence semantics</td><td>Confidence = the probability of the chosen class (P(phishing) when promoted, else the argmax probability).</td></tr>
 </table>
 
 <h3>6.3 Label Map (config.json)</h3>
-<p>The <code>label_map</code> in <code>config.json</code> reflects the model's training-time 3-class schema: <code>{"0": "legitimate", "1": "spam", "2": "phishing"}</code>. This is not the API output schema — it documents the model head's class indices. The API output is always binary (phishing / legitimate).</p>
+<p>The <code>label_map</code> in <code>config.json</code> is <code>{"0": "legitimate", "1": "spam", "2": "phishing"}</code> — and in v2 it <strong>is</strong> the API output schema: all three labels can be returned.</p>
 
 
 <!-- ============================================================ -->
@@ -558,9 +561,10 @@ Content-Type: application/json
 {
   "success": true,
   "data": {
-    "classification":      "phishing"|"legitimate",
+    "classification":      "phishing"|"spam"|"legitimate",
     "confidence":          0.9234,
     "phishing_probability": 0.9234,
+    "spam_probability":    0.0041,
     "content_risk_score":  92,
     "intent_labels":       ["credential_harvest",
                             "urgency_threat"],
@@ -574,13 +578,14 @@ Content-Type: application/json
 
 <table class="compact-table">
   <tr><th>Field</th><th>Type</th><th>Description</th></tr>
-  <tr><td class="svc">classification</td><td>string</td><td>"phishing" or "legitimate". Binary; spam class collapsed into phishing (§6).</td></tr>
-  <tr><td class="svc">confidence</td><td>float [0–1]</td><td>max(leg_prob, threat_prob). Always ≥ 0.5. 4 decimal places.</td></tr>
-  <tr><td class="svc">phishing_probability</td><td>float [0–1]</td><td>threat_prob = probs[spam] + probs[phishing]. 4 decimal places.</td></tr>
-  <tr><td class="svc">content_risk_score</td><td>int [0–100]</td><td>round(phishing_probability × 100). SVC-07 aggregates this into the final risk score.</td></tr>
+  <tr><td class="svc">classification</td><td>string</td><td>"phishing", "spam", or "legitimate" (3-class; v1 collapse retired — §6).</td></tr>
+  <tr><td class="svc">confidence</td><td>float [0–1]</td><td>Probability of the chosen class (P(phishing) when promoted, else the argmax probability). 4 dp.</td></tr>
+  <tr><td class="svc">phishing_probability</td><td>float [0–1]</td><td>P(phishing) = probs[2] alone. 4 decimal places.</td></tr>
+  <tr><td class="svc">spam_probability</td><td>float [0–1]</td><td>P(spam) = probs[1]. Surfaced separately; spam is not a threat and does not feed the risk score. 4 dp.</td></tr>
+  <tr><td class="svc">content_risk_score</td><td>int [0–100]</td><td>round(P(phishing) × 100). SVC-07 aggregates this into the final risk score.</td></tr>
   <tr><td class="svc">intent_labels</td><td>[]string</td><td>Multi-label list from rule-based intent detector (§7). Always ["benign_notification"] for legitimate.</td></tr>
   <tr><td class="svc">urgency_score</td><td>float [0–1]</td><td>Urgency keyword density (§8.1). Independent of classification.</td></tr>
-  <tr><td class="svc">obfuscation_detected</td><td>bool</td><td>True if homoglyphs or zero-width characters were found in input (§8.2).</td></tr>
+  <tr><td class="svc">obfuscation_detected</td><td>bool</td><td>True if the raw text differs from its canonical form — homoglyphs, zero-width chars, leetspeak, or letter-spacing (§8.2).</td></tr>
   <tr><td class="svc">top_tokens</td><td>[]TokenScore</td><td>Always empty array. LIME-based token attribution is offline (not computed at inference time).</td></tr>
 </table>
 
@@ -670,11 +675,12 @@ type PredictRequest struct {
     BodyHTML  string `json:"body_html,omitempty"`
 }
 
-// API output — 2-class (spam logit collapsed into phishing, see §6)
+// API output — 3-class (legitimate / spam / phishing); see §6
 type PredictResponse struct {
-    Classification      string       `json:"classification"`        // "phishing"|"legitimate"
+    Classification      string       `json:"classification"`        // "phishing"|"spam"|"legitimate"
     Confidence          float64      `json:"confidence"`
     PhishingProbability float64      `json:"phishing_probability"`
+    SpamProbability     float64      `json:"spam_probability"`
     ContentRiskScore    int          `json:"content_risk_score"`
     IntentLabels        []string     `json:"intent_labels"`
     UrgencyScore        float64      `json:"urgency_score"`
@@ -736,16 +742,16 @@ type StatusResponse struct {
 <table class="compact-table">
   <tr><th>Key</th><th>Value</th><th>Description</th></tr>
   <tr><td class="svc">model_name</td><td>distilbert-base-uncased</td><td>HuggingFace model identifier. Used as fallback tokenizer source.</td></tr>
-  <tr><td class="svc">model_version</td><td>NLP-SPEC-v1.0</td><td>Training spec version that produced this model artifact.</td></tr>
-  <tr><td class="svc">trained_on</td><td>cybersiren_nlp_dataset_v1 (149,998 rows)</td><td>Training dataset identifier.</td></tr>
+  <tr><td class="svc">model_version</td><td>NLP-SPEC-v2.0</td><td>Training spec version that produced this model artifact.</td></tr>
+  <tr><td class="svc">trained_on</td><td>cybersiren_nlp_dataset_v2 (cycle-12)</td><td>Training dataset identifier.</td></tr>
   <tr><td class="svc">label_map</td><td>{"0":"legitimate","1":"spam","2":"phishing"}</td><td>Training-time 3-class label map. Describes model head output indices. NOT the API output schema.</td></tr>
   <tr><td class="svc">max_length</td><td>256</td><td>Total token budget including CLS+SEP (512 DistilBERT max; halved to reduce latency).</td></tr>
   <tr><td class="svc">head_tokens</td><td>64</td><td>Tokens kept from the beginning of the text (§4).</td></tr>
   <tr><td class="svc">tail_tokens</td><td>190</td><td>Tokens kept from the end of the text (§4).</td></tr>
   <tr><td class="svc">input_format</td><td>"Subject: {subject}\n\nBody: {body_plain}"</td><td>Composition template. Must match training preprocessing exactly.</td></tr>
   <tr><td class="svc">temperature</td><td>1.0</td><td>Logit scaling factor before softmax. 1.0 = no scaling (fitted on validation set).</td></tr>
-  <tr><td class="svc">phish_threshold</td><td>0.8</td><td>Present in config but currently unused — threshold-free collapse is used instead (§6).</td></tr>
-  <tr><td class="svc">runtime</td><td>onnxruntime INT8</td><td>Runtime identifier for logging and observability.</td></tr>
+  <tr><td class="svc">phish_threshold</td><td>0.24</td><td>Active in v2 — the promote floor that classifies as phishing when P(phishing) clears it (§6.2).</td></tr>
+  <tr><td class="svc">runtime</td><td>onnxruntime fp32</td><td>Runtime identifier for logging and observability.</td></tr>
 </table>
 
 <h3>11.4 Configuration Loading Precedence (Go)</h3>
@@ -827,7 +833,7 @@ exec /bin/service
 <h2>13. Model Performance (Deployed Artifact)</h2>
 
 <div class="note">
-  <strong>Source:</strong> Metrics from <code>nlp/metrics.json</code>. These are the actual test-set results for the deployed INT8 ONNX model. The 3-class training metrics are reported as-is; the post-hoc collapse (§6) is not separately benchmarked here — it changes only the decision boundary, not the underlying probability estimates.
+  <strong>Source:</strong> Authoritative v2.0 (cycle-12) metrics live in <code>nlp/metrics.json</code> and the model spec (§5.6 realized results, §8.5 quantization). Headline: macro-F1 0.979, phishing recall 0.978, legit FPR 1.18%, held-out real-phishing recall 87.3%, 64-axis deployability gate PASS, adversarial battery 0 evasions. Some detailed tables below retain the earlier v1 measurement layout; treat metrics.json / model spec §5.6 as canonical.
 </div>
 
 <h3>13.1 Cross-Validation (5-fold, 3-class)</h3>
@@ -865,7 +871,7 @@ exec /bin/service
 <table class="compact-table">
   <tr><td>Expected Calibration Error (ECE)</td><td>0.0043</td><td>Near-perfect probability calibration.</td></tr>
   <tr><td>Temperature</td><td>1.0</td><td>No rescaling needed (optimal temperature fitted on validation set).</td></tr>
-  <tr><td>Optimal phish threshold</td><td>0.8</td><td>At threshold 0.8: FPR = 0.005. Not used in post-hoc collapse implementation.</td></tr>
+  <tr><td>phish_threshold (v2)</td><td>0.24</td><td>Active promote floor — classifies as phishing when P(phishing) clears it (§6.2). Temperature-scaled (T=0.937).</td></tr>
 </table>
 
 <h3>13.4 Robustness Under Noise</h3>
@@ -880,19 +886,18 @@ exec /bin/service
   Phishing recall degrades more slowly than accuracy under noise — the model preferentially maintains threat detection sensitivity at the cost of increased FP rate. This is the desired behavior for a security classifier.
 </div>
 
-<h3>13.5 ONNX Quantization Impact</h3>
+<h3>13.5 ONNX Fidelity &amp; Quantization (v2)</h3>
 <table class="compact-table">
-  <tr><td>FP32 → INT8 size</td><td>265.6 MB → 66.8 MB (74.9% reduction)</td></tr>
-  <tr><td>PyTorch ↔ ONNX max logit diff</td><td>2.29 (acceptable; softmax differences &lt; 0.01)</td></tr>
-  <tr><td>PyTorch ↔ ONNX prediction agreement</td><td>99%</td></tr>
-  <tr><td>MCC difference</td><td>0.0155 (PyTorch vs ONNX INT8)</td></tr>
+  <tr><td>Shipped precision</td><td><strong>fp32</strong>, ~266 MB</td></tr>
+  <tr><td>PyTorch ↔ ONNX max logit diff</td><td><strong>0</strong> (exact — fp32 export is faithful)</td></tr>
+  <tr><td>Dynamic INT8 (evaluated, not shipped)</td><td>66.8 MB (−75%), 1.83× faster; identical on confident cases but ±77 crs on borderline cases + 2/54 class flips. See model spec §8.5.</td></tr>
+  <tr><td>Static INT8 (evaluated)</td><td>Rejected — max|Δcrs| = 100; confident phishing collapses to 0–14.</td></tr>
 </table>
 
-<h3>13.6 CPU Inference Latency (100 samples)</h3>
+<h3>13.6 CPU Inference Latency (fp32, 60 samples)</h3>
 <table class="compact-table">
-  <tr><td>P50</td><td><strong>80.7 ms</strong></td><td>Meets target &lt; 150 ms ✓</td></tr>
-  <tr><td>P95</td><td><strong>85.1 ms</strong></td><td>Meets target ✓</td></tr>
-  <tr><td>P99</td><td><strong>97.9 ms</strong></td><td>Meets target ✓</td></tr>
+  <tr><td>P50</td><td><strong>≈ 9.8 ms</strong></td><td>Meets target &lt; 150 ms ✓</td></tr>
+  <tr><td>P95</td><td><strong>≈ 11.3 ms</strong></td><td>Meets target ✓</td></tr>
 </table>
 
 
@@ -947,8 +952,8 @@ exec /bin/service
   <tr><td class="svc">Schema and response keys</td><td>3</td><td>Verifies PredictResponse contains exactly {classification, confidence, phishing_probability, content_risk_score, intent_labels, urgency_score, obfuscation_detected, top_tokens}. No spam_probability key.</td></tr>
   <tr><td class="svc">Phishing classification</td><td>5</td><td>High-logit phishing inputs return classification="phishing", confidence &gt; 0.5, content_risk_score &gt; 50.</td></tr>
   <tr><td class="svc">Legitimate classification</td><td>5</td><td>High-logit legitimate inputs return classification="legitimate", intent_labels=["benign_notification"].</td></tr>
-  <tr><td class="svc">Spam logit collapse</td><td>1</td><td><code>test_spam_logit_collapses_into_phishing</code>: when class-1 (spam) logit dominates, result is "phishing" not "spam". Validates post-hoc collapse (§6).</td></tr>
-  <tr><td class="svc">Content risk score</td><td>4</td><td>Verifies score = round(threat_prob × 100) with exact boundary values (0, 50, 99, 100).</td></tr>
+  <tr><td class="svc">Spam is a distinct class</td><td>1</td><td><code>test_spam_is_distinct_and_not_a_threat</code>: when class-1 (spam) logit dominates, result is "spam" (not "phishing"), <code>spam_probability</code> is high, and <code>content_risk_score</code> stays low (§6).</td></tr>
+  <tr><td class="svc">Content risk score</td><td>3</td><td>Verifies score = round(P(phishing) × 100) and the threshold promote/argmax logic.</td></tr>
   <tr><td class="svc">Intent detection</td><td>12</td><td>Keyword match tests for all 11 intents. Multi-label overlap. Legitimate always returns benign_notification. Unknown phishing falls back to credential_harvest.</td></tr>
   <tr><td class="svc">Urgency scoring</td><td>6</td><td>0 hits → 0.0, 5+ hits → 1.0, partial hits scale linearly. Urgency is computed for legitimate emails too.</td></tr>
   <tr><td class="svc">Obfuscation detection</td><td>8</td><td>Homoglyph inputs (Cyrillic, fullwidth), zero-width chars (ZWS, BOM, ZWNJ), clean ASCII (no flag). Before/after NFKC comparison.</td></tr>
@@ -972,8 +977,8 @@ exec /bin/service
     <td>Same pattern as SVC-03 (URL Analysis). Go handles HTTP, observability, graceful shutdown, and future Kafka integration. Python handles ML inference (ONNX Runtime, HuggingFace Transformers, scikit-learn dependencies). Separation of concerns; Go binary stays lightweight.</td>
   </tr>
   <tr>
-    <td class="svc">Post-hoc spam+phishing collapse</td>
-    <td>INT8 dynamic quantization loses calibration between adjacent classes. The deployed model's spam and phishing logits are swapped relative to FP32. Rather than modify the model (retraining required), the spam and phishing probabilities are summed into a single "threat" probability. This is mathematically equivalent to a binary classifier and requires no model changes. See §6.</td>
+    <td class="svc">Spam treated as a distinct class (v1 collapse retired)</td>
+    <td>v1 summed spam+phishing into one "threat" score because its INT8 checkpoint had a dead/miscalibrated phishing class. v2 ships a faithful fp32 3-class head, so the API returns the real verdict and <code>content_risk_score = round(P(phishing)·100)</code> — spam is surfaced separately and never inflates risk. See §6.</td>
   </tr>
   <tr>
     <td class="svc">ORT cache load fix</td>
@@ -1005,7 +1010,7 @@ exec /bin/service
   </tr>
   <tr>
     <td class="svc">max_length=256 (not 512)</td>
-    <td>Halves memory bandwidth and compute for the attention mechanism (quadratic in sequence length). At 256 tokens: head=64 + tail=190 + CLS+SEP=2. P50 latency = 80.7 ms — well within the 150 ms target. Full 512-token inference would ~4× the attention compute for marginal accuracy gain.</td>
+    <td>Halves memory bandwidth and compute for the attention mechanism (quadratic in sequence length). At 256 tokens: head=64 + tail=190 + CLS+SEP=2. P50 latency ≈ 10 ms — well within the 150 ms target. Full 512-token inference would ~4× the attention compute for marginal accuracy gain.</td>
   </tr>
 </table>
 
@@ -1017,9 +1022,9 @@ exec /bin/service
   <tr><th>#</th><th>Limitation</th><th>Impact</th><th>Mitigation / Next Step</th></tr>
   <tr>
     <td>1</td>
-    <td>Spam/phishing calibration gap in INT8 model. The 3-class probability estimates for spam and phishing are unreliable relative to each other after INT8 quantization.</td>
-    <td>Post-hoc collapse masks the issue for binary classification but the "spam" class information is lost. Multi-class reporting is not available.</td>
-    <td>Retrain with per-class quantization calibration data or export FP32 model for calibration before INT8 conversion. Post-hoc collapse is the runtime mitigation.</td>
+    <td>Text-only Pareto frontier on calm/ambiguous business lures (e.g. "sign in to view the shared doc", M&amp;A priming). Their disambiguating signal is the URL/sender, which v2 strips.</td>
+    <td>A few soft phishing cases score low from text alone — by design, not a bug.</td>
+    <td>Routed to SVC-03 (URL) + SVC-04 (sender) and combined at the SVC-07 aggregator. The same classes in non-cue-stripped phrasing are caught. See model spec §11.4.</td>
   </tr>
   <tr>
     <td>2</td>
@@ -1067,8 +1072,8 @@ exec /bin/service
   <li>Sanh, V., Debut, L., Chaumond, J., Wolf, T. "DistilBERT, a distilled version of BERT: smaller, faster, cheaper and lighter." arXiv:1910.01108 (2019). Base model architecture.</li>
   <li>Altan, I. et al. "Dual-Path Phishing Detection: Integrating Transformer-Based NLP with Structural URL Analysis." arXiv:2509.20972v1 (2025). Primary basis for DistilBERT selection: 98.9% accuracy on balanced email corpus.</li>
   <li>Sajad U P. "A Robust and Explainable Transformer-Based Framework for Phishing Email Detection." arXiv:2511.12085v2 (2026). Adversarial training (FGM ε=0.01), character-level augmentation, head-tail truncation rationale.</li>
-  <tr><li>Neshaei, S.P. et al. "The Impact of Quantization on the Robustness of Transformer-based Text Classifiers." arXiv:2403.05365v1 (2024). INT8 ONNX size reduction evidence (DistilBERT: 255 MB → 132 MB).</li>
-  <li>Toth, R. et al. "The Phish, The Spam, and The Valid." arXiv:2511.21448v5 (2025). Identifies spam↔legitimate confusion as primary 3-class failure mode; validates post-hoc collapse design.</li>
+  <li>Neshaei, S.P. et al. "The Impact of Quantization on the Robustness of Transformer-based Text Classifiers." arXiv:2403.05365v1 (2024). INT8 ONNX size reduction evidence (DistilBERT: 255 MB → 132 MB).</li>
+  <li>Toth, R. et al. "The Phish, The Spam, and The Valid." arXiv:2511.21448v5 (2025). Identifies spam↔legitimate confusion as the primary 3-class failure mode — motivates v2's dedicated spam class and contrastive training.</li>
   <li>Saka, T. et al. "Phishing Codebook: A Structured Framework for the Characterization of Phishing Emails." arXiv:2408.08967v1 (2024). Intent taxonomy basis (inter-rater κ=0.75–0.96).</li>
   <li>Ibrahim, S. et al. "The use of multi-task learning in cybersecurity applications: a systematic literature review." Neural Computing and Applications (2024). Multi-task architecture justification.</li>
   <li>Uddin, M.A. et al. "An Explainable Transformer-based Model for Phishing Email Detection." arXiv:2402.13871v2 (2025). Subject+body concatenation format; LR=2e-5; max_len=512 baseline.</li>

@@ -28,7 +28,6 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
-import inference as inf  # noqa: F401  (kept for parity with module-level imports)
 from inference import NLPInferenceEngine
 import text_preprocess as tp
 

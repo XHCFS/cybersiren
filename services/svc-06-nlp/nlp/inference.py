@@ -213,8 +213,8 @@ class NLPInferenceEngine:
         if not model_path.exists():
             self.loading_stage = "model_file_missing"
             logger.warning(
-                "onnx/model_int8.onnx not found at %s — "
-                "copy cybersiren_nlp_out/onnx/model_int8.onnx here and restart.",
+                "onnx/model_int8.onnx not found at %s — run `git lfs pull` "
+                "(LFS source: python/svc-06-nlp/onnx/) or `make check-nlp-model`, then restart.",
                 model_path,
             )
             return
@@ -223,9 +223,9 @@ class NLPInferenceEngine:
         if file_size < 1024:
             self.loading_stage = "model_file_missing"
             logger.warning(
-                "onnx/model_int8.onnx is a placeholder (%d bytes). "
-                "Replace it with the real model from the Kaggle notebook output "
-                "(cybersiren_nlp_out/onnx/model_int8.onnx, ~66-132 MB) and restart. "
+                "onnx/model_int8.onnx is a Git LFS placeholder (%d bytes). "
+                "Run `git lfs pull` (LFS source: python/svc-06-nlp/onnx/) or "
+                "`make check-nlp-model` to fetch the real fp32 model (~266 MB), then restart. "
                 "POST /predict will return 503 until then.",
                 file_size,
             )
@@ -417,8 +417,8 @@ class NLPInferenceEngine:
         """
         if not self.model_ready or self.session is None:
             raise RuntimeError(
-                "Model not ready — onnx/model_int8.onnx is a placeholder. "
-                "Replace it with cybersiren_nlp_out/onnx/model_int8.onnx and restart."
+                "Model not ready — onnx/model_int8.onnx is missing or a Git LFS "
+                "placeholder. Run `git lfs pull` or `make check-nlp-model`, then restart."
             )
 
         # 1. Preprocess (spec §2.4 + §3.6)
