@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -11,6 +13,23 @@ import (
 
 	db "github.com/saif/cybersiren/db/sqlc"
 	"github.com/saif/cybersiren/shared/postgres/pgconv"
+)
+
+// utf8Replacement is substituted for every invalid UTF-8 byte sequence found in
+// a text field before it reaches a UTF-8 Postgres column. Real-world emails
+// (and svc-02's own quoted-printable / base64 decoding into Windows-1252 bytes,
+// e.g. =97 → 0x97 em-dash) routinely produce non-UTF-8 bytes that Postgres
+// rejects with SQLSTATE 22021, NACKing the message and stalling the partition.
+const utf8Replacement = "�"
+
+// sentTimestampMin / sentTimestampMax are the inclusive bounds enforced by the
+// chk_emails_sent_timestamp_range CHECK constraint (migration 023): a raw Unix
+// epoch between 0 (1970-01-01 UTC) and 4102444800 (2100-01-01 UTC). A Date:
+// header that parses outside this window violates the constraint (SQLSTATE
+// 23514) and would otherwise stall the partition, so such values are nulled.
+const (
+	sentTimestampMin int64 = 0
+	sentTimestampMax int64 = 4102444800
 )
 
 // EmailRepository persists a parsed email and all of its child artefacts
@@ -131,6 +150,14 @@ func (r *EmailRepository) PersistParsed(ctx context.Context, orgID int64, in Per
 		return EmailKey{}, errors.New("email repository: nil pool")
 	}
 
+	// Coerce every text field to valid UTF-8 and clamp the sent timestamp into
+	// the DB's accepted range BEFORE any statement runs. This is the single
+	// chokepoint that guards every column — the parent email and all URL /
+	// attachment / recipient child rows — so no value can reach a UTF-8 column
+	// (SQLSTATE 22021) or the sent_timestamp range CHECK (SQLSTATE 23514) and
+	// wedge the partition on an un-retryable persist failure.
+	sanitizeParsed(&in)
+
 	var key EmailKey
 	err := WithOrgTx(ctx, r.pool, orgID, func(q *db.Queries) error {
 		k, err := persistParsedTx(ctx, q, orgID, in)
@@ -144,6 +171,87 @@ func (r *EmailRepository) PersistParsed(ctx context.Context, orgID int64, in Per
 		return EmailKey{}, err
 	}
 	return key, nil
+}
+
+// validUTF8 returns s with every invalid UTF-8 byte sequence replaced by the
+// Unicode replacement character. Valid input is returned unchanged (and the
+// fast path skips the allocation entirely). Content is preserved — only the
+// non-UTF-8 bytes Postgres would reject are rewritten.
+func validUTF8(s string) string {
+	if utf8.ValidString(s) {
+		return s
+	}
+	return strings.ToValidUTF8(s, utf8Replacement)
+}
+
+// sanitizeText coerces an optional text column to valid UTF-8 in place, leaving
+// NULL values untouched.
+func sanitizeText(t *pgtype.Text) {
+	if t.Valid {
+		t.String = validUTF8(t.String)
+	}
+}
+
+// sanitizeParsed coerces every text/string field destined for a UTF-8 column to
+// valid UTF-8 and forces an out-of-range (or unparseable→out-of-range) sent
+// timestamp to NULL, so the whole batch always satisfies the emails table's
+// encoding and range constraints. It mutates in place.
+func sanitizeParsed(in *PersistParsedFull) {
+	// Parent email row.
+	sanitizeText(&in.Email.SenderName)
+	sanitizeText(&in.Email.SenderEmail)
+	sanitizeText(&in.Email.SenderDomain)
+	sanitizeText(&in.Email.ReplyToEmail)
+	sanitizeText(&in.Email.ReturnPath)
+	sanitizeText(&in.Email.MessageID)
+	sanitizeText(&in.Email.MailerAgent)
+	sanitizeText(&in.Email.InReplyTo)
+	sanitizeText(&in.Email.ContentCharset)
+	sanitizeText(&in.Email.Precedence)
+	sanitizeText(&in.Email.ListID)
+	sanitizeText(&in.Email.Subject)
+	sanitizeText(&in.Email.BodyPlain)
+	sanitizeText(&in.Email.BodyHtml)
+	for i := range in.Email.ReferencesList {
+		in.Email.ReferencesList[i] = validUTF8(in.Email.ReferencesList[i])
+	}
+
+	// MessageID is also carried out-of-band for the email_identities dedup key.
+	in.MessageID = validUTF8(in.MessageID)
+
+	// Clamp/null the sent timestamp into the chk_emails_sent_timestamp_range
+	// window. NULL is the documented value for an unknown/garbage Date header.
+	if ts := in.Email.SentTimestamp; ts.Valid && (ts.Int64 < sentTimestampMin || ts.Int64 > sentTimestampMax) {
+		in.Email.SentTimestamp = pgtype.Int8{}
+	}
+
+	// URL children: enriched_threats inputs + email_urls visible_text.
+	for i := range in.URLs {
+		in.URLs[i].URL = validUTF8(in.URLs[i].URL)
+		sanitizeText(&in.URLs[i].Domain)
+		sanitizeText(&in.URLs[i].TLD)
+		sanitizeText(&in.URLs[i].VisibleText)
+	}
+
+	// Attachment children: attachment_library text + email_attachments link.
+	for i := range in.Attachments {
+		in.Attachments[i].Library.Sha256 = validUTF8(in.Attachments[i].Library.Sha256)
+		sanitizeText(&in.Attachments[i].Library.Md5)
+		sanitizeText(&in.Attachments[i].Library.Sha1)
+		sanitizeText(&in.Attachments[i].Library.ActualExtension)
+		sanitizeText(&in.Attachments[i].Library.StorageUri)
+		sanitizeText(&in.Attachments[i].Filename)
+		sanitizeText(&in.Attachments[i].ContentType)
+		sanitizeText(&in.Attachments[i].ContentID)
+		sanitizeText(&in.Attachments[i].Disposition)
+	}
+
+	// Recipient children: address + display_name + recipient_type.
+	for i := range in.Recipients {
+		in.Recipients[i].Address = validUTF8(in.Recipients[i].Address)
+		sanitizeText(&in.Recipients[i].DisplayName)
+		in.Recipients[i].RecipientType = validUTF8(in.Recipients[i].RecipientType)
+	}
 }
 
 // persistParsedTx runs the idempotent persist inside an already-open
