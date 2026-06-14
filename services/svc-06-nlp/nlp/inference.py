@@ -101,6 +101,138 @@ _URGENCY_PATTERNS = [
     r"\byour account will\b",
 ]
 
+# ── Brand-impersonation facet (heuristic, CONSTRAINT G4: NO NER) ────────────
+# A curated keyword list of frequently-impersonated brands. Each entry maps a
+# brand keyword (matched case-insensitively in subject+body) to its canonical
+# *domain token* — the substring that the brand's legitimate sending domain
+# contains (e.g. paypal.com -> "paypal", bankofamerica.com -> "bankofamerica").
+# This is a deliberately small, hand-maintained allow-list — NOT named-entity
+# recognition and NOT a model. Order does not matter; the longest/most-specific
+# textual match wins (we sort matches by phrase length so "bank of america"
+# beats a bare "bank"-like cue). Keep this a module-level constant, mirroring
+# _INTENT_PATTERNS, so it is trivially auditable and extendable.
+_BRAND_DOMAIN_TOKENS: dict[str, str] = {
+    "paypal": "paypal",
+    "amazon": "amazon",
+    "microsoft": "microsoft",
+    "office365": "microsoft",
+    "office 365": "microsoft",
+    "outlook": "microsoft",
+    "onedrive": "microsoft",
+    "windows": "microsoft",
+    "apple": "apple",
+    "icloud": "apple",
+    "itunes": "apple",
+    "appleid": "apple",
+    "apple id": "apple",
+    "google": "google",
+    "gmail": "google",
+    "netflix": "netflix",
+    "dhl": "dhl",
+    "fedex": "fedex",
+    "ups": "ups",
+    "usps": "usps",
+    "irs": "irs",
+    "bank of america": "bankofamerica",
+    "bankofamerica": "bankofamerica",
+    "bofa": "bankofamerica",
+    "chase": "chase",
+    "chase bank": "chase",
+    "wells fargo": "wellsfargo",
+    "wellsfargo": "wellsfargo",
+    "citibank": "citi",
+    "citi": "citi",
+    "docusign": "docusign",
+    "linkedin": "linkedin",
+    "facebook": "facebook",
+    "instagram": "instagram",
+    "whatsapp": "whatsapp",
+    "dropbox": "dropbox",
+    "adobe": "adobe",
+    "coinbase": "coinbase",
+    "binance": "binance",
+    "amex": "americanexpress",
+    "american express": "americanexpress",
+    "hsbc": "hsbc",
+    "barclays": "barclays",
+    "santander": "santander",
+}
+
+# Cues (beyond the bare brand name) that an email is *pretending* to act on a
+# brand's behalf — used to grant a moderate impersonation score when the sender
+# domain is unknown (empty) and we therefore cannot prove a mismatch.
+_IMPERSONATION_CUE_PATTERNS = [
+    r"\bverify your (?:account|identity|email|details|information)\b",
+    r"\bconfirm your (?:account|identity|details|payment|information)\b",
+    r"\bupdate your (?:account|billing|payment|details|information)\b",
+    r"\byour account (?:has been |is |will be )?(?:suspended|locked|limited|disabled|closed)\b",
+    r"\bunusual (?:activity|sign[\s-]?in|login|access)\b",
+    r"\bsecurity (?:alert|notice|warning)\b",
+    r"\bsign[\s-]?in to (?:your )?account\b",
+    r"\blog[\s-]?in to (?:your )?account\b",
+]
+
+# ── Deception facet (heuristic linguistic patterns, CONSTRAINT G4: NO model) ─
+# Weighted phishing-deception signals. Each signal contributes its weight when
+# any of its patterns match; the total is normalized against a saturation
+# constant. Pure rule-based — no NER, no zero-shot, no model. Mirrors the
+# _INTENT_PATTERNS style so it is auditable and extendable.
+_DECEPTION_SIGNALS: list[tuple[str, float, list[str]]] = [
+    # (signal_name, weight, patterns)
+    ("urgency_pressure", 1.0, [
+        r"\bact now\b", r"\bact immediately\b", r"\bwithin \d+ hours?\b",
+        r"\bwithin \d+ days?\b", r"\burgent\b", r"\bimmediately\b",
+        r"\bas soon as possible\b", r"\basap\b", r"\bexpires? (?:soon|today|in)\b",
+        r"\bfinal (?:notice|warning|reminder)\b", r"\bdo not (?:delay|ignore)\b",
+    ]),
+    ("generic_greeting", 1.0, [
+        r"\bdear (?:customer|user|account holder|member|client|valued)\b",
+        r"\bdear (?:sir|madam|sir/madam)\b",
+        r"\bhello (?:customer|user|member)\b",
+        r"\battention (?:customer|user|account holder)\b",
+    ]),
+    ("credential_request", 1.5, [
+        r"\bverify your (?:password|account|identity|login|credentials?)\b",
+        r"\bconfirm your (?:password|details|identity|payment|billing)\b",
+        r"\bupdate your (?:password|billing|payment|account|details)\b",
+        r"\benter your (?:username|password|pin|otp|credentials?)\b",
+        r"\bre[\s-]?enter your (?:password|details)\b",
+        r"\bprovide your (?:password|ssn|card|account) (?:number|details)?\b",
+    ]),
+    ("account_threat", 1.5, [
+        r"\byour account (?:has been |is |will be )?(?:suspended|locked|limited|disabled|deactivated|closed|deleted|terminated)\b",
+        r"\baccount (?:suspension|termination|closure|deletion)\b",
+        r"\bfailure to (?:respond|verify|comply|act)\b",
+        r"\bto avoid (?:suspension|closure|deactivation|losing)\b",
+        r"\bpermanently (?:closed|deleted|disabled)\b",
+    ]),
+    ("reward_lure", 1.0, [
+        r"\byou(?:'ve| have)? won\b", r"\bclaim your (?:prize|reward|gift|refund)\b",
+        r"\bcongratulations?\b", r"\bfree (?:gift|prize|voucher|reward)\b",
+        r"\bgift card\b", r"\byou(?:'ve| have)? been selected\b",
+        r"\bclaim now\b", r"\byou are (?:a|the) winner\b",
+    ]),
+    ("click_secrecy", 0.75, [
+        r"\bclick (?:here|the link|below)\b", r"\bopen the (?:attachment|link|file)\b",
+        r"\bkeep this (?:confidential|private|between us)\b",
+        r"\bdo not (?:tell|share|forward|reply to)\b",
+        r"\bstrictly confidential\b", r"\bthis is not (?:a |spam)\b",
+    ]),
+    ("unusual_activity", 1.0, [
+        r"\bunusual (?:activity|sign[\s-]?in|login|access)\b",
+        r"\bsuspicious (?:activity|login|sign[\s-]?in)\b",
+        r"\bdetected (?:a |an )?(?:unusual|unauthorized|suspicious)\b",
+        r"\bsecurity (?:alert|notice|warning|breach)\b",
+        r"\bsomeone (?:has |may have )?(?:accessed|tried to access)\b",
+    ]),
+]
+
+# Saturation constant: the total weighted deception score at (or above) which
+# the facet saturates to 1.0. Chosen so that ~2-3 independent strong signals
+# (e.g. credential_request + account_threat) push the score near the top, while
+# a single weak cue stays modest.
+_DECEPTION_SATURATION = 4.0
+
 
 class NLPInferenceEngine:
     """
@@ -402,6 +534,88 @@ class NLPInferenceEngine:
         hits = sum(1 for p in _URGENCY_PATTERNS if re.search(p, text_lower))
         return round(min(1.0, hits / 5.0), 4)
 
+    # ── Brand impersonation (heuristic, CONSTRAINT G4: NO NER) ────────────
+
+    def _detect_impersonation(
+        self, text: str, sender_domain: str
+    ) -> tuple[float, Optional[str]]:
+        """
+        Heuristic brand-impersonation facet → (impersonation_score, brand|None).
+
+        Step 1 — claimed brand: scan subject+body for a known-brand keyword from
+        _BRAND_DOMAIN_TOKENS. The longest matching phrase wins (so "bank of
+        america" beats a bare "bank"). If no brand is claimed, return (0.0, None).
+
+        Step 2 — sender comparison: compare the claimed brand's canonical domain
+        token against the lower-cased sender_domain.
+          • sender_domain known + token PRESENT in it  → legitimate, ~0 score.
+          • sender_domain known + token ABSENT          → mismatch = impersonation:
+            score 0.9, optionally +0.1 if extra impersonation cues are present
+            (capped at 1.0). This is the strongest signal — the email claims a
+            brand it provably is not sending from.
+          • sender_domain EMPTY (unknown): we CANNOT prove a mismatch, so we do
+            NOT cry impersonation on the brand name alone (legitimate brand mail
+            mentions the brand too). We emit a MODERATE score (0.5) only when the
+            email also carries impersonation cues (verify/confirm/suspended/...);
+            otherwise a low score (0.15) just flagging that a brand was named.
+
+        Returns the matched brand keyword's canonical token as impersonated_brand
+        whenever a non-trivial impersonation score is produced.
+        """
+        text_lower = text.lower()
+
+        # Find all claimed-brand matches; prefer the longest phrase (most specific).
+        matched: list[tuple[str, str]] = []  # (keyword, canonical_token)
+        for keyword, token in _BRAND_DOMAIN_TOKENS.items():
+            # word-ish boundary match so "ups" doesn't fire inside "groups".
+            if re.search(r"(?<![a-z0-9])" + re.escape(keyword) + r"(?![a-z0-9])", text_lower):
+                matched.append((keyword, token))
+
+        if not matched:
+            return 0.0, None
+
+        # Longest keyword wins (e.g. "bank of america" over "bank"-like cues).
+        matched.sort(key=lambda kt: len(kt[0]), reverse=True)
+        _, claimed_token = matched[0]
+
+        has_cues = any(re.search(p, text_lower) for p in _IMPERSONATION_CUE_PATTERNS)
+
+        sd = (sender_domain or "").strip().lower()
+        if sd:
+            # We have a sender domain → we can confirm or refute the claim.
+            if claimed_token in sd:
+                # Domain legitimately contains the brand token → not impersonation.
+                return 0.0, None
+            # Brand claimed but sender domain does NOT belong to that brand.
+            score = 0.9 + (0.1 if has_cues else 0.0)
+            return round(min(1.0, score), 4), claimed_token
+
+        # sender_domain unknown: cannot prove a mismatch.
+        if has_cues:
+            # Brand + classic impersonation cues, but unverifiable sender → moderate.
+            return 0.5, claimed_token
+        # Just a brand mention with no cues and no sender to check → low confidence.
+        return 0.15, claimed_token
+
+    # ── Deception (heuristic linguistic patterns, CONSTRAINT G4: NO model) ─
+
+    def _compute_deception(self, text: str) -> float:
+        """
+        Heuristic deception score 0.0–1.0 from weighted linguistic signals.
+
+        Sums the weight of every _DECEPTION_SIGNALS group that fires at least
+        once (urgency/pressure, generic greeting, credential request, account
+        threat, reward lure, click/secrecy, unusual-activity), then normalizes
+        against _DECEPTION_SATURATION and caps at 1.0. Pure rule-based — no NER,
+        no zero-shot, no model retrain.
+        """
+        text_lower = text.lower()
+        total = 0.0
+        for _name, weight, patterns in _DECEPTION_SIGNALS:
+            if any(re.search(p, text_lower) for p in patterns):
+                total += weight
+        return round(min(1.0, total / _DECEPTION_SATURATION), 4)
+
     # ── Inference ─────────────────────────────────────────────────────────
 
     @staticmethod
@@ -409,9 +623,24 @@ class NLPInferenceEngine:
         e = np.exp(x - x.max())
         return e / e.sum()
 
-    def predict(self, subject: str, body_plain: str, body_html: str = "") -> dict:
+    def predict(
+        self,
+        subject: str,
+        body_plain: str,
+        body_html: str = "",
+        sender_domain: str = "",
+        sender_name: str = "",
+    ) -> dict:
         """
         Run the full pipeline for one email and return the spec §8.3 response dict.
+
+        sender_domain / sender_name are OPTIONAL (defaulted) so existing callers
+        passing only (subject, body, html) keep working. They are plumbed from the
+        Kafka AnalysisText contract (sender_domain / sender_name) and used solely
+        by the heuristic brand-impersonation facet — when sender_domain is empty
+        the facet degrades gracefully (see _detect_impersonation). sender_name is
+        accepted for forward-compatibility; the current heuristic keys off the
+        domain only.
 
         Raises RuntimeError if the model has not been loaded successfully.
         """
@@ -464,6 +693,15 @@ class NLPInferenceEngine:
         intent_labels = self._detect_intent(text, classification)
         urgency_score = self._compute_urgency(text)
 
+        # 8. Heuristic facets (CONSTRAINT G4: rule-based only, no NER / no model).
+        #    Brand impersonation compares the claimed brand against sender_domain;
+        #    deception scores phishing linguistic cues. Both run on the
+        #    preprocessed text so they share the train/serve-safe canonicalization.
+        impersonation_score, impersonated_brand = self._detect_impersonation(
+            text, sender_domain
+        )
+        deception_score = self._compute_deception(text)
+
         return {
             "classification": classification,
             "confidence": round(confidence, 4),
@@ -473,6 +711,10 @@ class NLPInferenceEngine:
             "intent_labels": intent_labels,
             "urgency_score": urgency_score,
             "obfuscation_detected": obfuscation_detected,
+            # Heuristic facets (P4.2).
+            "impersonation_score": impersonation_score,
+            "impersonated_brand": impersonated_brand,
+            "deception_score": deception_score,
             # LIME attributions are expensive offline analysis (spec §7.3);
             # top_tokens is always empty in the production inference path.
             "top_tokens": [],

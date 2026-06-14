@@ -415,7 +415,9 @@ class TestPredict:
         expected_keys = {
             "classification", "confidence", "phishing_probability",
             "spam_probability", "content_risk_score", "intent_labels",
-            "urgency_score", "obfuscation_detected", "top_tokens",
+            "urgency_score", "obfuscation_detected",
+            "impersonation_score", "impersonated_brand", "deception_score",
+            "top_tokens",
         }
         assert set(result.keys()) == expected_keys
 
@@ -461,6 +463,146 @@ class TestPredict:
         result = engine.predict("s", "b")
         assert result["phishing_probability"] < 0.8
         assert result["classification"] == "legitimate"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 7b. Brand-impersonation facet (heuristic, P4.2)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestImpersonationFacet:
+    def setup_method(self):
+        self.engine = _make_engine()
+
+    # ── unit-level _detect_impersonation ──────────────────────────────────
+    def test_brand_claimed_mismatched_sender_high_score(self):
+        score, brand = self.engine._detect_impersonation(
+            "Your PayPal account has been suspended, verify your account",
+            "secure-login.example.com",
+        )
+        assert score >= 0.9
+        assert brand == "paypal"
+
+    def test_brand_claimed_matching_sender_zero(self):
+        score, brand = self.engine._detect_impersonation(
+            "Your PayPal receipt is ready", "service.paypal.com"
+        )
+        assert score == 0.0
+        assert brand is None
+
+    def test_no_brand_claimed_zero_none(self):
+        score, brand = self.engine._detect_impersonation(
+            "Lunch tomorrow at noon?", "coworker.example.com"
+        )
+        assert score == 0.0
+        assert brand is None
+
+    def test_empty_sender_with_cues_moderate(self):
+        # Unknown sender + brand + impersonation cues → moderate, can't prove.
+        score, brand = self.engine._detect_impersonation(
+            "Microsoft security alert: verify your account immediately", ""
+        )
+        assert score == 0.5
+        assert brand == "microsoft"
+
+    def test_empty_sender_no_cues_low(self):
+        # Just a brand mention, no cues, no sender to check → low confidence.
+        score, brand = self.engine._detect_impersonation(
+            "I love my new Apple laptop", ""
+        )
+        assert score == 0.15
+        assert brand == "apple"
+
+    def test_longest_brand_phrase_wins(self):
+        score, brand = self.engine._detect_impersonation(
+            "Bank of America: confirm your details", "phish.example.com"
+        )
+        assert brand == "bankofamerica"
+        assert score >= 0.9
+
+    def test_word_boundary_no_false_brand(self):
+        # "ups" must not fire inside "groups".
+        score, brand = self.engine._detect_impersonation(
+            "Join our community groups today", "newsletter.example.com"
+        )
+        assert score == 0.0
+        assert brand is None
+
+    # ── via predict() ─────────────────────────────────────────────────────
+    def test_predict_carries_impersonation_fields(self):
+        engine = _engine_with_logits([0.0, 0.0, 10.0])
+        result = engine.predict(
+            "PayPal: verify your account",
+            "Your account has been suspended, confirm your identity",
+            sender_domain="secure-login.example.com",
+        )
+        assert result["impersonation_score"] >= 0.9
+        assert result["impersonated_brand"] == "paypal"
+
+    def test_predict_default_sender_domain_still_works(self):
+        # Existing-style call (no sender_domain) must not error and must emit keys.
+        engine = _engine_with_logits([5.0, 0.0, 0.0])
+        result = engine.predict("Hello", "Just checking in")
+        assert "impersonation_score" in result
+        assert result["impersonation_score"] == 0.0
+        assert result["impersonated_brand"] is None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 7c. Deception facet (heuristic, P4.2)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestDeceptionFacet:
+    def setup_method(self):
+        self.engine = _make_engine()
+
+    def test_clearly_deceptive_text_high(self):
+        text = (
+            "Dear customer, your account has been suspended. "
+            "Verify your password immediately or your account will be deleted. "
+            "Click here within 24 hours to avoid suspension."
+        )
+        assert self.engine._compute_deception(text) >= 0.75
+
+    def test_benign_neutral_text_low(self):
+        assert self.engine._compute_deception("Lunch tomorrow?") < 0.25
+
+    def test_benign_meeting_text_zero(self):
+        assert self.engine._compute_deception(
+            "Hi team, attaching the slides for Thursday's review. Thanks!"
+        ) == 0.0
+
+    def test_signal_credential_request(self):
+        assert self.engine._compute_deception("Please verify your password now") > 0.0
+
+    def test_signal_generic_greeting(self):
+        assert self.engine._compute_deception("Dear customer, hello") > 0.0
+
+    def test_signal_reward_lure(self):
+        assert self.engine._compute_deception(
+            "Congratulations! You have won a free gift card, claim your prize"
+        ) > 0.0
+
+    def test_score_bounded_and_capped(self):
+        text = (
+            "Dear customer act now within 24 hours, verify your password, "
+            "your account will be deleted, you have won a prize, click here, "
+            "unusual activity detected, security alert"
+        )
+        score = self.engine._compute_deception(text)
+        assert 0.0 <= score <= 1.0
+        assert score == 1.0
+
+    def test_score_rounded_to_4dp(self):
+        score = self.engine._compute_deception("verify your password")
+        assert score == round(score, 4)
+
+    def test_predict_carries_deception_field(self):
+        engine = _engine_with_logits([0.0, 0.0, 10.0])
+        result = engine.predict(
+            "Account suspended",
+            "Dear customer, verify your password immediately or your account will be closed",
+        )
+        assert result["deception_score"] >= 0.5
 
 
 # ─────────────────────────────────────────────────────────────────────────────
