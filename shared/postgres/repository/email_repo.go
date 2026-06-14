@@ -178,10 +178,15 @@ func (r *EmailRepository) PersistParsed(ctx context.Context, orgID int64, in Per
 // fast path skips the allocation entirely). Content is preserved — only the
 // non-UTF-8 bytes Postgres would reject are rewritten.
 func validUTF8(s string) string {
-	if utf8.ValidString(s) {
+	// Postgres TEXT columns reject NUL (0x00) even though it is valid UTF-8, so
+	// strip NUL in addition to coercing invalid byte sequences.
+	if utf8.ValidString(s) && !strings.ContainsRune(s, 0) {
 		return s
 	}
-	return strings.ToValidUTF8(s, utf8Replacement)
+	if !utf8.ValidString(s) {
+		s = strings.ToValidUTF8(s, utf8Replacement)
+	}
+	return strings.ReplaceAll(s, "\x00", "")
 }
 
 // sanitizeText coerces an optional text column to valid UTF-8 in place, leaving
