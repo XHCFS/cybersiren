@@ -22,7 +22,7 @@
       },
       "targets": [
         {
-          "expr": "rate(nlp_predict_requests_total{service=\"svc-06-nlp\"}[5m])",
+          "expr": "rate(nlp_predict_requests_total{service=~\"svc-06-nlp.*\"}[5m])",
           "legendFormat": "{{classification}}",
           "refId": "A"
         }
@@ -44,7 +44,7 @@
       },
       "targets": [
         {
-          "expr": "rate(nlp_predict_errors_total{service=\"svc-06-nlp\"}[5m])",
+          "expr": "rate(nlp_predict_errors_total{service=~\"svc-06-nlp.*\"}[5m])",
           "legendFormat": "errors/s",
           "refId": "A"
         }
@@ -66,17 +66,17 @@
       },
       "targets": [
         {
-          "expr": "histogram_quantile(0.50, rate(nlp_predict_duration_seconds_bucket{service=\"svc-06-nlp\"}[5m]))",
+          "expr": "histogram_quantile(0.50, rate(nlp_predict_duration_seconds_bucket{service=~\"svc-06-nlp.*\"}[5m]))",
           "legendFormat": "p50",
           "refId": "A"
         },
         {
-          "expr": "histogram_quantile(0.95, rate(nlp_predict_duration_seconds_bucket{service=\"svc-06-nlp\"}[5m]))",
+          "expr": "histogram_quantile(0.95, rate(nlp_predict_duration_seconds_bucket{service=~\"svc-06-nlp.*\"}[5m]))",
           "legendFormat": "p95",
           "refId": "B"
         },
         {
-          "expr": "histogram_quantile(0.99, rate(nlp_predict_duration_seconds_bucket{service=\"svc-06-nlp\"}[5m]))",
+          "expr": "histogram_quantile(0.99, rate(nlp_predict_duration_seconds_bucket{service=~\"svc-06-nlp.*\"}[5m]))",
           "legendFormat": "p99",
           "refId": "C"
         }
@@ -101,7 +101,7 @@
       },
       "targets": [
         {
-          "expr": "nlp_predict_requests_total{service=\"svc-06-nlp\"}",
+          "expr": "nlp_predict_requests_total{service=~\"svc-06-nlp.*\"}",
           "legendFormat": "{{classification}}",
           "refId": "A"
         }
@@ -121,7 +121,7 @@
       },
       "targets": [
         {
-          "expr": "go_goroutines{service=\"svc-06-nlp\"}",
+          "expr": "go_goroutines{service=~\"svc-06-nlp.*\"}",
           "legendFormat": "goroutines",
           "refId": "A"
         }
@@ -142,12 +142,12 @@
       },
       "targets": [
         {
-          "expr": "go_memstats_alloc_bytes{service=\"svc-06-nlp\"}",
+          "expr": "go_memstats_alloc_bytes{service=~\"svc-06-nlp.*\"}",
           "legendFormat": "alloc",
           "refId": "A"
         },
         {
-          "expr": "go_memstats_sys_bytes{service=\"svc-06-nlp\"}",
+          "expr": "go_memstats_sys_bytes{service=~\"svc-06-nlp.*\"}",
           "legendFormat": "sys",
           "refId": "B"
         }
@@ -167,7 +167,7 @@
       },
       "targets": [
         {
-          "expr": "process_open_fds{service=\"svc-06-nlp\"}",
+          "expr": "process_open_fds{service=~\"svc-06-nlp.*\"}",
           "legendFormat": "open fds",
           "refId": "A"
         }
