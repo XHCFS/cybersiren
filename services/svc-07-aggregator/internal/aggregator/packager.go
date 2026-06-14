@@ -183,6 +183,19 @@ func publishLockKey(orgID int64, emailID string) string {
 	return fmt.Sprintf("%spublock:%d:%s", keyPrefix, orgID, emailID)
 }
 
+// tombstoneKey is a short-TTL marker written when an email_id is finalized
+// (emails.scored emitted and the bucket Del'd). Handle checks it BEFORE
+// (re)creating a bucket so a late component score that arrives after
+// finalization is dropped cleanly instead of resurrecting a plan-less
+// "zombie" bucket that the sweeper would re-log on every tick until TTL.
+//
+// The tombstone is NOT a bucket key (it carries the "done:" segment, which
+// parseAggregatorBucketKey rejects) so the sweeper never scans it as a
+// bucket.
+func tombstoneKey(orgID int64, emailID string) string {
+	return fmt.Sprintf("%sdone:%d:%s", keyPrefix, orgID, emailID)
+}
+
 // parseAggregatorBucketKey parses aggregator:{org}:{email}. Returns ok=false for
 // lock keys (aggregator:publock:...) or malformed keys.
 //
@@ -195,7 +208,7 @@ func parseAggregatorBucketKey(key string) (orgID int64, emailID string, ok bool)
 		return 0, "", false
 	}
 	rest := key[len(keyPrefix):]
-	if strings.HasPrefix(rest, "publock:") {
+	if strings.HasPrefix(rest, "publock:") || strings.HasPrefix(rest, "done:") {
 		return 0, "", false
 	}
 	colon := strings.LastIndexByte(rest, ':')

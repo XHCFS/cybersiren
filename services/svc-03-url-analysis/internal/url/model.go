@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	defaultPoolSize    = 3
+	defaultPoolSize    = 8
 	inferenceTimeout   = 5 * time.Second
 	neutralScore       = 50
 	neutralProbability = 0.5

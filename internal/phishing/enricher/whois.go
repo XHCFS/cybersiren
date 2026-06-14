@@ -22,7 +22,11 @@ const (
 	whoisNegativeTTL = 5 * time.Minute
 	// whoisLookupTimeout bounds the underlying whois.Whois call so the lookup
 	// goroutine cannot outlive the caller's budget by the library's ~30s default.
-	whoisLookupTimeout = 5 * time.Second
+	// Lowered from 5s to keep WHOIS off the per-URL critical-path tail.
+	whoisLookupTimeout = 2 * time.Second
+	// whoisCtxTimeout bounds the per-call wait. Matches whoisLookupTimeout so the
+	// caller doesn't wait longer than the underlying client can take.
+	whoisCtxTimeout = 2 * time.Second
 )
 
 // whoisClient is a shared client with a bounded timeout (#40: the library's
@@ -81,7 +85,7 @@ func LookupWHOIS(ctx context.Context, domain string) WHOISResult {
 	}
 	span.SetAttributes(attribute.Bool("enricher.cache_hit", false))
 
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, whoisCtxTimeout)
 	defer cancel()
 
 	type outcome struct {

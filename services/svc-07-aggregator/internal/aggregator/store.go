@@ -18,6 +18,11 @@ type StateStore interface {
 	// SetNXEX performs SET key value NX EX ttlSecs. Returns true if the key
 	// was set (exclusive lock acquired). False means another holder has the lock.
 	SetNXEX(ctx context.Context, key string, ttlSecs int, value string) (bool, error)
+	// SetEX performs SET key value EX ttlSecs (unconditional, with TTL). Used
+	// for finalization tombstones, which must overwrite any stale tombstone.
+	SetEX(ctx context.Context, key string, ttlSecs int, value string) error
+	// Exists reports whether key is present (EXISTS key == 1).
+	Exists(ctx context.Context, key string) (bool, error)
 	// HSetIfAbsent sets field=value only if the field does not already
 	// exist (HSETNX). Returns true when the field was created.
 	HSetIfAbsent(ctx context.Context, key, field, value string) (bool, error)
@@ -61,6 +66,24 @@ func (s *ValkeyStore) SetNXEX(ctx context.Context, key string, ttlSecs int, valu
 		return false, fmt.Errorf("setnx %s: %w", key, err)
 	}
 	return true, nil
+}
+
+func (s *ValkeyStore) SetEX(ctx context.Context, key string, ttlSecs int, value string) error {
+	resp := s.client.Do(ctx,
+		s.client.B().Set().Key(key).Value(value).ExSeconds(int64(ttlSecs)).Build(),
+	)
+	if err := resp.Error(); err != nil {
+		return fmt.Errorf("setex %s: %w", key, err)
+	}
+	return nil
+}
+
+func (s *ValkeyStore) Exists(ctx context.Context, key string) (bool, error) {
+	n, err := s.client.Do(ctx, s.client.B().Exists().Key(key).Build()).AsInt64()
+	if err != nil {
+		return false, fmt.Errorf("exists %s: %w", key, err)
+	}
+	return n > 0, nil
 }
 
 func (s *ValkeyStore) HSetIfAbsent(ctx context.Context, key, field, value string) (bool, error) {

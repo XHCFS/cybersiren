@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -39,14 +40,33 @@ type Config struct {
 	PollTimeout time.Duration
 }
 
+// maxHandlerRetries bounds how many consecutive times the SAME record may fail
+// its handler before the consumer gives up on it. Transient failures that
+// recover within this many polls are retried as before (at-least-once); a
+// permanently-failing ("poison") record is dead-lettered (logged) and its
+// offset committed so the partition advances instead of stalling forever.
+const maxHandlerRetries = 8
+
+// retryBackoff is the minimum delay inserted before a partition is re-fetched
+// after a handler error, so a fast-failing poison record does not spin the poll
+// loop while it burns through its retry budget.
+const retryBackoff = 200 * time.Millisecond
+
+// commitEvery bounds how many successfully-processed records accumulate before
+// the consumer commits, so draining a large backlog cannot spend minutes in a
+// single poll batch without advancing the committed offset (which would leave
+// the consumer reprocessing the same records and never making durable progress).
+const commitEvery = 200
+
 // Handler processes a single Kafka message and returns nil on success.
 //
 // On a non-nil error the consumer logs the failure, increments error metrics,
 // and does NOT commit the record's offset: the partition is rewound to the
 // failed record so it (and the records after it) are re-fetched and retried on
-// the next poll (at-least-once). A permanently-failing record therefore stalls
-// its partition until it succeeds — the bounded-retry + dead-letter escape is a
-// deferred platform task (spec §16 D16 / P8 8a-v).
+// the next poll (at-least-once). To stop a permanently-failing record from
+// stalling its partition indefinitely, the same record is retried at most
+// maxHandlerRetries times; past that it is dead-lettered (structured ERROR log)
+// and its offset committed so the partition advances.
 type Handler func(ctx context.Context, msg Message) error
 
 // Message is the consumer's view of a Kafka record. The embedded
@@ -69,6 +89,16 @@ type Header struct {
 	Value []byte
 }
 
+// stuckRecord tracks the consecutive failure count for the single record that
+// is currently blocking a partition. We only ever keep one entry per partition
+// (the head record that keeps failing); it is replaced when the head offset
+// advances and removed when the partition succeeds, so this map cannot grow
+// unbounded.
+type stuckRecord struct {
+	offset   int64
+	failures int
+}
+
 // Consumer is a single-topic at-least-once Kafka consumer.
 type Consumer struct {
 	client      *kgo.Client
@@ -76,6 +106,11 @@ type Consumer struct {
 	cfg         Config
 	pollTimeout time.Duration
 	log         zerolog.Logger
+
+	// retries tracks the currently-stuck record per partition so a poison
+	// message can be bounded and dead-lettered rather than retried forever.
+	// Run is single-goroutine, so no locking is required.
+	retries map[int32]*stuckRecord
 
 	messagesTotal     *prometheus.CounterVec
 	errorsTotal       *prometheus.CounterVec
@@ -114,6 +149,10 @@ func New(cfg Config, log zerolog.Logger, reg *prometheus.Registry) (*Consumer, e
 		kgo.ConsumeTopics(cfg.Topic),
 		kgo.DisableAutoCommit(),
 		kgo.WithHooks(k.Hooks()...),
+		// Surface franz-go's own group-coordination / commit problems (rebalances,
+		// commit failures) which are otherwise invisible. WARN keeps it quiet in
+		// steady state.
+		kgo.WithLogger(kgo.BasicLogger(os.Stderr, kgo.LogLevelWarn, nil)),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("kafka consumer: %w", err)
@@ -124,6 +163,7 @@ func New(cfg Config, log zerolog.Logger, reg *prometheus.Registry) (*Consumer, e
 		tracer:      tracer,
 		cfg:         cfg,
 		pollTimeout: cfg.PollTimeout,
+		retries:     make(map[int32]*stuckRecord),
 		log:         log.With().Str("component", "kafka-consumer").Str("group", cfg.GroupID).Str("topic", cfg.Topic).Logger(),
 	}
 
@@ -201,6 +241,7 @@ func (c *Consumer) Run(ctx context.Context, handler Handler) error {
 		// bounded-retry + dead-letter escape is the deferred platform task (§16 D16
 		// / P8 8a-v).
 		var toCommit []*kgo.Record
+		needsBackoff := false
 		fetches.EachPartition(func(ftp kgo.FetchTopicPartition) {
 			if ftp.Err != nil {
 				c.observeError(ftp.Topic, c.cfg.GroupID, "fetch")
@@ -234,38 +275,94 @@ func (c *Consumer) Run(ctx context.Context, handler Handler) error {
 				if err := handler(recCtx, msg); err != nil {
 					c.observeError(c.cfg.Topic, c.cfg.GroupID, "handler")
 					c.observeMessages(c.cfg.Topic, c.cfg.GroupID, "error")
-					recLog.Error().Err(err).Msg("kafka handler error; rewinding partition to retry (offset not committed)")
+
+					// Track consecutive failures of THIS record so a permanently
+					// failing ("poison") record cannot stall the partition forever.
+					fails := c.recordFailure(rec.Partition, rec.Offset)
+
+					if fails > maxHandlerRetries {
+						// Poison record: give up retrying, dead-letter it (structured
+						// ERROR log; this codebase has no DLQ topic convention), commit
+						// its offset so the partition advances, and continue processing
+						// the records after it.
+						recLog.Error().Err(err).
+							Int("failures", fails).
+							Int("max_retries", maxHandlerRetries).
+							Msg("kafka handler error budget exhausted; dead-lettering poison message and committing offset to advance partition")
+						c.observeError(c.cfg.Topic, c.cfg.GroupID, "deadletter")
+						c.clearFailure(rec.Partition)
+						span.RecordError(err)
+						span.End()
+						toCommit = append(toCommit, rec)
+						continue // skip this record; keep processing the partition
+					}
+
+					recLog.Error().Err(err).
+						Int("failures", fails).
+						Int("max_retries", maxHandlerRetries).
+						Msg("kafka handler error; rewinding partition to retry (offset not committed)")
 					// Rewind this partition to the failed record (carrying the leader
 					// epoch so the reset is fenced) so it and the records after it are
 					// re-fetched on the next poll.
 					c.client.SetOffsets(map[string]map[int32]kgo.EpochOffset{
 						rec.Topic: {rec.Partition: {Epoch: rec.LeaderEpoch, Offset: rec.Offset}},
 					})
+					needsBackoff = true
 					span.RecordError(err)
 					span.End()
 					return // stop this partition; records after the failure are not processed
 				}
 
+				// Success: clear any retry state for this partition so a later
+				// transient failure starts from a fresh budget.
+				c.clearFailure(rec.Partition)
 				sharedkafka.IncConsumed(c.cfg.GroupID, rec.Topic)
 				c.observeMessages(c.cfg.Topic, c.cfg.GroupID, "ok")
 				c.observeProcessingLatency(c.cfg.Topic, c.cfg.GroupID, time.Since(start))
 				toCommit = append(toCommit, rec)
 				span.End()
+
+				// Commit incrementally so a single large poll batch (e.g. when
+				// draining a backlog) cannot process for minutes without ever
+				// advancing the committed offset. Without this, the offset only
+				// moves once the WHOLE batch finishes, so a big backlog leaves the
+				// consumer reprocessing the same records on every restart and never
+				// makes durable progress.
+				if len(toCommit) >= commitEvery {
+					c.commitBatch(ctx, toCommit)
+					toCommit = toCommit[:0]
+				}
 			}
 		})
 
-		if len(toCommit) > 0 {
-			// Commit only the successfully-processed records, on a shutdown-
-			// independent context so the final batch is not dropped when ctx is
-			// already cancelled by SIGTERM (a dropped commit reprocesses the batch on
-			// the next restart).
-			commitCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			if err := c.client.CommitRecords(commitCtx, toCommit...); err != nil {
-				c.observeError(c.cfg.Topic, c.cfg.GroupID, "commit")
-				c.log.Error().Err(err).Msg("commit offsets failed")
+		if needsBackoff {
+			// Brief pause before re-fetching a rewound partition so a fast-failing
+			// record does not spin the poll loop while it burns its retry budget.
+			select {
+			case <-ctx.Done():
+			case <-time.After(retryBackoff):
 			}
-			cancel()
 		}
+
+		if len(toCommit) > 0 {
+			c.commitBatch(ctx, toCommit)
+		}
+	}
+}
+
+// commitBatch synchronously commits the given successfully-processed records on
+// a shutdown-independent context so the batch is not dropped when ctx is already
+// cancelled by SIGTERM (a dropped commit reprocesses the batch on the next
+// restart). Commit failures are logged + metered but not fatal.
+func (c *Consumer) commitBatch(_ context.Context, recs []*kgo.Record) {
+	if len(recs) == 0 {
+		return
+	}
+	commitCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := c.client.CommitRecords(commitCtx, recs...); err != nil {
+		c.observeError(c.cfg.Topic, c.cfg.GroupID, "commit")
+		c.log.Error().Err(err).Msg("commit offsets failed")
 	}
 }
 
@@ -284,6 +381,26 @@ func (c *Consumer) Ping(ctx context.Context) error {
 		return fmt.Errorf("kafka consumer ping: %w", err)
 	}
 	return nil
+}
+
+// recordFailure increments and returns the consecutive-failure count for the
+// record at (partition, offset). If the tracked offset for the partition has
+// advanced (a different record is now stuck, or the previous one was
+// dead-lettered) the count resets to 1. Only the current head record per
+// partition is tracked, so the map size is bounded by the partition count.
+func (c *Consumer) recordFailure(partition int32, offset int64) int {
+	if sr, ok := c.retries[partition]; ok && sr.offset == offset {
+		sr.failures++
+		return sr.failures
+	}
+	c.retries[partition] = &stuckRecord{offset: offset, failures: 1}
+	return 1
+}
+
+// clearFailure drops any tracked failure state for a partition. Called on
+// success and after a record is dead-lettered.
+func (c *Consumer) clearFailure(partition int32) {
+	delete(c.retries, partition)
 }
 
 func toHeaders(in []kgo.RecordHeader) []Header {

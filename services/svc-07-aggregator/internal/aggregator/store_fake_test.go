@@ -21,6 +21,8 @@ type fakeStore struct {
 	errOnHSetNX func(key, field string) error
 	errOnSetNX  func(key string) error
 	errOnExpire func(key string) error
+	errOnSetEX  func(key string) error
+	errOnExists func(key string) error
 }
 
 func newFakeStore() *fakeStore {
@@ -45,6 +47,36 @@ func (f *fakeStore) SetNXEX(_ context.Context, key string, _ int, value string) 
 	f.stringNX[key] = struct{}{}
 	f.stringVals[key] = value
 	return true, nil
+}
+
+func (f *fakeStore) SetEX(_ context.Context, key string, _ int, value string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.errOnSetEX != nil {
+		if err := f.errOnSetEX(key); err != nil {
+			return err
+		}
+	}
+	f.stringNX[key] = struct{}{}
+	f.stringVals[key] = value
+	return nil
+}
+
+func (f *fakeStore) Exists(_ context.Context, key string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.errOnExists != nil {
+		if err := f.errOnExists(key); err != nil {
+			return false, err
+		}
+	}
+	if _, ok := f.stringNX[key]; ok {
+		return true, nil
+	}
+	if _, ok := f.hashes[key]; ok {
+		return true, nil
+	}
+	return false, nil
 }
 
 func (f *fakeStore) HSetIfAbsent(_ context.Context, key, field, value string) (bool, error) {

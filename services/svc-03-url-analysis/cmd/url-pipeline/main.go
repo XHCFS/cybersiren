@@ -22,6 +22,7 @@ import (
 	"github.com/rs/zerolog"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/saif/cybersiren/internal/phishing"
 	phclient "github.com/saif/cybersiren/internal/phishing/client"
@@ -38,6 +39,34 @@ import (
 const (
 	serviceName    = "svc-03-url-analysis"
 	predictTimeout = 5 * time.Second
+
+	// maxURLsPerEmail caps how many distinct URLs we score per email. A single
+	// crafted email can carry dozens of URLs; without a cap one email could
+	// monopolise the consumer. After dedup we keep the first N in order.
+	maxURLsPerEmail = 15
+	// maxURLConcurrency bounds the number of URLs scanned in parallel for one
+	// email. It also sets the default L1 model pool size so concurrent L1 calls
+	// don't serialise. 8 keeps the worst-case per-email wall-clock at roughly
+	// the per-URL latency (a few seconds) rather than N×per-URL.
+	maxURLConcurrency = 8
+
+	// l2Timeout bounds a single Layer-2 enrichment call. Lowered from 15s: the
+	// enricher's own cap is ~2s, and we want a confirmed worst-case per-URL of
+	// ~1.5-2s rather than letting one slow host stall the whole email.
+	l2Timeout = 1500 * time.Millisecond
+
+	// L2 early-exit thresholds. The expensive L2 network enricher only adds
+	// value in the genuinely-uncertain band; when L1 is already confident we
+	// skip it entirely (the biggest latency win — most URLs never touch the
+	// network). A domain-guard hit already returns before L2 is considered.
+	//
+	//   l1ConfidentPhishingScore: L1 XGBoost score at/above which we trust the
+	//     phishing call without L2 corroboration (mirrors classifyLabel's >=70
+	//     phishing cut, with margin).
+	//   l1ConfidentBenignScore: L1 score at/below which we trust the benign call
+	//     without L2 (well under classifyLabel's 40 suspicious cut).
+	l1ConfidentPhishingScore = 85
+	l1ConfidentBenignScore   = 20
 )
 
 var (
@@ -61,7 +90,9 @@ func main() {
 			scriptPath := deps.Cfg.ML.URLModelPath
 			poolSize := deps.Cfg.ML.URLModelPoolSize
 			if poolSize <= 0 {
-				poolSize = 2
+				// Match the per-email URL scan concurrency so concurrent L1
+				// predictions don't serialize on a smaller worker pool.
+				poolSize = maxURLConcurrency
 			}
 			log := deps.Log
 			m, err := url.NewURLModel(scriptPath, poolSize, func(msg string, e error) {
@@ -165,15 +196,46 @@ func handle(ctx context.Context, msg kafkaconsumer.Message, deps svckit.Deps) er
 
 	log := zerolog.Ctx(ctx).With().Str("email_id", input.Meta.EmailID).Logger()
 
-	scans := make([]urlScan, 0, len(input.URLs))
+	// Dedup by normalized form and cap the count per email before scoring.
+	// Each scan does live network I/O (DNS/TLS/HTTP), so deduping repeated
+	// links and capping a URL-stuffed email is what keeps a single email's
+	// wall-clock bounded. We keep the FIRST occurrence (preserving order) and
+	// note when we truncated.
+	kept, deduped, truncated := dedupAndCapURLs(input.URLs)
+	if deduped > 0 || truncated > 0 {
+		log.Info().
+			Int("urls_in", len(input.URLs)).
+			Int("urls_scanned", len(kept)).
+			Int("deduped", deduped).
+			Int("truncated", truncated).
+			Msg("URL list deduped/capped before scoring")
+	}
+
+	// Scan the kept URLs concurrently with a bounded semaphore. Results are
+	// written to a position-indexed slice (no shared-state race), then the
+	// email aggregate is folded serially below — identical output to the old
+	// serial loop, just computed in parallel.
+	scans := make([]urlScan, len(kept))
+	sem := make(chan struct{}, maxURLConcurrency)
+	g, gctx := errgroup.WithContext(ctx)
+	for i, raw := range kept {
+		i, raw := i, raw
+		g.Go(func() error {
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			scans[i] = scanOne(gctx, raw, log)
+			return nil
+		})
+	}
+	// scanOne never returns an error (it degrades internally), so Wait is only
+	// for the barrier; we ignore the (always-nil) error.
+	_ = g.Wait()
+
 	maxScore := 0
 	maxProb := 0.0
 	maxTIRisk := 0
 	worstLabel := "legitimate"
-
-	for _, raw := range input.URLs {
-		s := scanOne(ctx, raw.URL, log)
-		scans = append(scans, s)
+	for _, s := range scans {
 		if s.Score > maxScore {
 			maxScore = s.Score
 			maxProb = s.Probability
@@ -432,8 +494,23 @@ func scanOne(ctx context.Context, raw string, log zerolog.Logger) urlScan {
 	// Layer 2: ML phishing check fires when TI didn't match OR when TI
 	// matched with low confidence (< 80 risk). classifyLabel ignores
 	// low-confidence TI matches, so we still want L2 to weigh in.
+	//
+	// Staged early-exit (latency): the L2 enricher does live network I/O, so we
+	// only invoke it for the genuinely-uncertain band. When L1 is already
+	// confident (clearly phishing >= l1ConfidentPhishingScore or clearly benign
+	// <= l1ConfidentBenignScore) AND there's no low-confidence TI hint pulling
+	// the verdict the other way, we trust the cheap verdict and skip the network
+	// entirely. A low-confidence TI match (Matched but <80) keeps us in the
+	// uncertain band so L2 can corroborate. This is the biggest latency win —
+	// most URLs never touch the network.
 	ranL2 := false
-	if (!tiRes.Matched || tiRes.RiskScore < 80) && phishingDetector != nil {
+	l2Candidate := (!tiRes.Matched || tiRes.RiskScore < 80) && phishingDetector != nil
+	if l2Candidate && l1Confident(mlScore, routed, tiRes) {
+		scanMetrics.IncOutcome("l2_skipped_confident")
+		span.SetAttributes(attribute.Bool("scan.l2_skipped_confident", true))
+		l2Candidate = false
+	}
+	if l2Candidate {
 		reasonLabel := "ti_miss"
 		if tiRes.Matched {
 			reasonLabel = "ti_low_confidence"
@@ -441,7 +518,7 @@ func scanOne(ctx context.Context, raw string, log zerolog.Logger) urlScan {
 		scanMetrics.IncL2(reasonLabel)
 		ranL2 = true
 
-		mlCtx, mlCancel := context.WithTimeout(ctx, 15*time.Second)
+		mlCtx, mlCancel := context.WithTimeout(ctx, l2Timeout)
 		defer mlCancel()
 		if phishResult, phishErr := phishingDetector.Score(mlCtx, normalized); phishErr != nil {
 			scanMetrics.IncStageError("l2")
@@ -515,6 +592,45 @@ func phishingScore(label string, score int, prob float64) (int, float64) {
 		return 100, 1.0
 	}
 	return score, prob
+}
+
+// l1Confident reports whether the cheap signals (L1 XGBoost score + routing
+// flag, no TI match) already place a URL clearly in the phishing or benign band,
+// so the L2 network enricher can be skipped. A URL routed-to-enrichment or with
+// any TI hit is NOT confident — those stay in the uncertain band so L2 weighs in.
+func l1Confident(mlScore int, routed bool, ti url.TIResult) bool {
+	if ti.Matched || routed {
+		return false
+	}
+	return mlScore >= l1ConfidentPhishingScore || mlScore <= l1ConfidentBenignScore
+}
+
+// dedupAndCapURLs normalises each raw URL, drops duplicates that share a
+// normalized form (keeping the first raw occurrence), and caps the result at
+// maxURLsPerEmail. It returns the kept raw URLs (in first-seen order), the
+// number dropped as duplicates, and the number dropped by the cap.
+//
+// URLs that fail normalisation are kept (deduped on their raw form) so scanOne
+// can still record the normalisation failure rather than silently dropping them.
+func dedupAndCapURLs(urls []contracts.ExtractedURL) (kept []string, deduped, truncated int) {
+	seen := make(map[string]struct{}, len(urls))
+	for _, u := range urls {
+		key := u.URL
+		if n, err := normalization.NormalizeURL(u.URL); err == nil {
+			key = n
+		}
+		if _, dup := seen[key]; dup {
+			deduped++
+			continue
+		}
+		seen[key] = struct{}{}
+		if len(kept) >= maxURLsPerEmail {
+			truncated++
+			continue
+		}
+		kept = append(kept, u.URL)
+	}
+	return kept, deduped, truncated
 }
 
 // worseLabel returns the more severe of two label values.
