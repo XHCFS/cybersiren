@@ -11,6 +11,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"time"
@@ -123,10 +124,17 @@ func process(ctx context.Context, input contracts.AnalysisText, pred predictor, 
 		// message and stall the partition (head-of-line blocking). Emit the
 		// neutral score of 50 and commit the offset. subject + plain_text are
 		// still carried so SVC-08's fingerprint/SimHash keep working.
+		// Distinguish a deadline/timeout from a service failure (non-2xx or
+		// unreachable) so downstream consumers don't mis-attribute every
+		// fallback as a timeout. status==0 is the unreachable/deadline path.
+		fallbackReason := "nlp_predict_failed"
+		if errors.Is(err, context.DeadlineExceeded) {
+			fallbackReason = "nlp_predict_timeout"
+		}
 		log.Warn().
 			Err(err).
 			Int("status", status).
-			Str("email_id", input.Meta.EmailID).
+			Str("fallback_reason", fallbackReason).
 			Msg("nlp predict failed/timed out; emitting fallback content_risk_score=50")
 		out = contracts.ScoreEnvelope{ //nolint:staticcheck // G13: sanctioned legacy ScoreEnvelope producer.
 			Meta:      meta,
@@ -135,7 +143,7 @@ func process(ctx context.Context, input contracts.AnalysisText, pred predictor, 
 			Details: map[string]interface{}{
 				"classification":  "unknown",
 				"fallback":        true,
-				"fallback_reason": "nlp_predict_timeout",
+				"fallback_reason": fallbackReason,
 				"fallback_error":  err.Error(),
 				// subject + plain_text carry the content dimension SVC-08's
 				// campaign fingerprint and SimHash near-dedup read from
