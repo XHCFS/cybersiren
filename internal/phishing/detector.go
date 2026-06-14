@@ -72,6 +72,11 @@ type Result struct {
 	DeployP      float64
 	Verdict      string // "phishing" | "benign"
 	CacheHit     bool
+	// Degraded is set when the verdict is a fail-open default rather than a real
+	// model score (e.g. the circuit breaker was OPEN and enrichment was skipped).
+	// Callers must NOT treat a Degraded "benign" as evidence the URL is benign —
+	// it only means "no L2 signal available", so a high L1 score must stand.
+	Degraded bool
 }
 
 // Detector orchestrates sidecar scoring.
@@ -164,7 +169,7 @@ func (d *Detector) Score(ctx context.Context, rawURL string) (Result, error) {
 				attribute.Bool("phishing.breaker_open", true),
 				attribute.String("phishing.verdict", "benign"),
 			)
-			return Result{URL: rawURL, EffectiveURL: rawURL, Verdict: "benign"}, nil
+			return Result{URL: rawURL, EffectiveURL: rawURL, Verdict: "benign", Degraded: true}, nil
 		}
 		scored, cacheHit, err = d.scoreViaFeatures(ctx, rawURL)
 	} else {
@@ -220,8 +225,16 @@ func (d *Detector) scoreViaFeatures(ctx context.Context, rawURL string) (phclien
 	// degraded-network window trip it OPEN (and a clean run closes a half-open
 	// probe). Done here, immediately after the call, so only the network leg's
 	// health drives the breaker — not the sidecar /score-features call.
+	//
+	// Enrich degrades gracefully and returns a nil error even when DNS cannot be
+	// reached (it just produces empty features), so a network outage would never
+	// trip the breaker on enrichErr alone. eu.DNSNetworkError surfaces a
+	// network-level resolution failure (timeout/SERVFAIL, NOT a clean NXDOMAIN),
+	// which is the signal that a degraded-network window is in progress. Without
+	// it the breaker never opens during an outage and a high L1 score is silently
+	// de-escalated instead of standing as Degraded.
 	if d.breaker != nil {
-		if enrichErr != nil {
+		if enrichErr != nil || eu.DNSNetworkError {
 			d.breaker.Failure()
 		} else {
 			d.breaker.Success()

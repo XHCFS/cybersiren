@@ -23,6 +23,14 @@ type EnrichedURL struct {
 	TLS   TLSResult
 	HTTP  HTTPResult
 
+	// DNSNetworkError is set when DNS resolution failed with a network-level
+	// error (timeout / SERVFAIL) rather than a clean NXDOMAIN. It signals the
+	// enrichment leg could not run because the network is degraded — the L2
+	// circuit breaker uses it to fail open (Degraded) so a high L1 score is not
+	// silently de-escalated during an outage. A normal dead/deregistered domain
+	// (NXDOMAIN) does NOT set this.
+	DNSNetworkError bool
+
 	Features FeatureVector
 }
 
@@ -89,8 +97,11 @@ func (e *Enricher) Enrich(ctx context.Context, rawURL string) (EnrichedURL, erro
 	apex := apexDomain(hostname)
 
 	// DNS gate: resolve first. A dead host short-circuits the two 5s legs.
-	eu.IP = ResolveIP(ctx, hostname)
-	span.SetAttributes(attribute.Bool("enricher.resolved", eu.IP != ""))
+	eu.IP, eu.DNSNetworkError = resolveIPStatus(ctx, hostname)
+	span.SetAttributes(
+		attribute.Bool("enricher.resolved", eu.IP != ""),
+		attribute.Bool("enricher.dns_network_error", eu.DNSNetworkError),
+	)
 
 	if eu.IP == "" {
 		// Host does not resolve: skip WHOIS + HTTP (and TLS, which also needs a
