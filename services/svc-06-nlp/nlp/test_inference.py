@@ -506,11 +506,110 @@ class TestImpersonationFacet:
 
     def test_empty_sender_no_cues_low(self):
         # Just a brand mention, no cues, no sender to check → low confidence.
+        # Use an UNAMBIGUOUS brand (paypal); ambiguous words have their own case.
         score, brand = self.engine._detect_impersonation(
-            "I love my new Apple laptop", ""
+            "I got my PayPal statement", ""
         )
         assert score == 0.15
+        assert brand == "paypal"
+
+    # ── H1: lookalike / cousin domains must be flagged (not legit) ─────────
+    def test_lookalike_domain_secure_paypal_flagged(self):
+        score, brand = self.engine._detect_impersonation(
+            "Your PayPal account has been suspended, verify your account",
+            "secure-paypal.com",
+        )
+        assert score > 0.5
+        assert brand == "paypal"
+
+    def test_lookalike_domain_subdomain_evil_flagged(self):
+        score, brand = self.engine._detect_impersonation(
+            "PayPal: confirm your identity", "paypal.com.evil.ru"
+        )
+        assert score > 0.5
+        assert brand == "paypal"
+
+    def test_lookalike_domain_paypal_support_flagged(self):
+        score, brand = self.engine._detect_impersonation(
+            "PayPal support: update your account information", "paypal-support.io"
+        )
+        assert score > 0.5
+        assert brand == "paypal"
+
+    def test_lookalike_apple_id_verify_flagged_with_cue(self):
+        score, brand = self.engine._detect_impersonation(
+            "Apple ID: verify your account, unusual activity detected",
+            "apple-id-verify.ru",
+        )
+        assert score > 0.5
         assert brand == "apple"
+
+    # ── H2: legit first-party product domains must NOT be flagged ─────────
+    def test_legit_first_party_gmail(self):
+        score, brand = self.engine._detect_impersonation(
+            "Your Gmail security settings were updated", "gmail.com"
+        )
+        assert score == 0.0
+        assert brand is None
+
+    def test_legit_first_party_icloud(self):
+        score, brand = self.engine._detect_impersonation(
+            "Your iCloud storage is almost full", "icloud.com"
+        )
+        assert score == 0.0
+        assert brand is None
+
+    def test_legit_first_party_outlook(self):
+        score, brand = self.engine._detect_impersonation(
+            "Your Outlook inbox summary", "outlook.com"
+        )
+        assert score == 0.0
+        assert brand is None
+
+    def test_legit_first_party_onedrive_subdomain(self):
+        score, brand = self.engine._detect_impersonation(
+            "Your OneDrive files are shared", "onedrive.live.com"
+        )
+        assert score == 0.0
+        assert brand is None
+
+    def test_legit_first_party_office365_subdomain(self):
+        score, brand = self.engine._detect_impersonation(
+            "Your Office 365 subscription", "outlook.office365.com"
+        )
+        assert score == 0.0
+        assert brand is None
+
+    # ── H3: ambiguous dictionary-word brands gated on cues ────────────────
+    def test_ambiguous_word_chase_no_cue_low(self):
+        # "chase up the invoice" is ordinary English, benign sender, no cue.
+        score, brand = self.engine._detect_impersonation(
+            "I will chase up the invoice tomorrow", "mycompany.com"
+        )
+        assert score <= 0.2
+
+    def test_ambiguous_word_ups_no_cue_low(self):
+        score, brand = self.engine._detect_impersonation(
+            "The back-ups are ready for review", "internal.corp.com"
+        )
+        assert score <= 0.2
+
+    def test_ambiguous_word_chase_with_cue_high(self):
+        score, brand = self.engine._detect_impersonation(
+            "Chase: verify your account, unusual activity detected",
+            "phish.example.com",
+        )
+        assert score >= 0.9
+        assert brand == "chase"
+
+    # ── L1: None-safety must not crash ────────────────────────────────────
+    def test_none_text_and_domain_safe(self):
+        score, brand = self.engine._detect_impersonation(None, None)
+        assert score == 0.0
+        assert brand is None
+
+    def test_deception_none_safe(self):
+        assert self.engine._compute_deception(None) == 0.0
 
     def test_longest_brand_phrase_wins(self):
         score, brand = self.engine._detect_impersonation(
