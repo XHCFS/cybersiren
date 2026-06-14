@@ -72,6 +72,11 @@ type Result struct {
 	DeployP      float64
 	Verdict      string // "phishing" | "benign"
 	CacheHit     bool
+	// Degraded is set when the verdict is a fail-open default rather than a real
+	// model score (e.g. the circuit breaker was OPEN and enrichment was skipped).
+	// Callers must NOT treat a Degraded "benign" as evidence the URL is benign —
+	// it only means "no L2 signal available", so a high L1 score must stand.
+	Degraded bool
 }
 
 // Detector orchestrates sidecar scoring.
@@ -164,7 +169,7 @@ func (d *Detector) Score(ctx context.Context, rawURL string) (Result, error) {
 				attribute.Bool("phishing.breaker_open", true),
 				attribute.String("phishing.verdict", "benign"),
 			)
-			return Result{URL: rawURL, EffectiveURL: rawURL, Verdict: "benign"}, nil
+			return Result{URL: rawURL, EffectiveURL: rawURL, Verdict: "benign", Degraded: true}, nil
 		}
 		scored, cacheHit, err = d.scoreViaFeatures(ctx, rawURL)
 	} else {
