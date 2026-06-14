@@ -53,7 +53,7 @@ type PredictResponse struct {
 	UrgencyScore        float64      `json:"urgency_score"` // 0.0 – 1.0
 	ObfuscationDetected bool         `json:"obfuscation_detected"`
 	TopTokens           []TokenScore `json:"top_tokens"` // always [] in production
-	// Heuristic facets added by the Python engine (P4.1). impersonated_brand is
+	// Heuristic facets added by the Python engine (P4.2). impersonated_brand is
 	// nullable (no impersonation detected → null).
 	ImpersonationScore float64 `json:"impersonation_score"` // 0.0 – 1.0
 	ImpersonatedBrand  *string `json:"impersonated_brand"`
