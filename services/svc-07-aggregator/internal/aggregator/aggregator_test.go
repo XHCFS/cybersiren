@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -488,6 +489,122 @@ func TestParseAggregatorBucketKey(t *testing.T) {
 	_, _, lock := parseAggregatorBucketKey("aggregator:publock:7:99")
 	assert.False(t, lock)
 
+	// P1: finalization tombstone keys must never be swept as buckets.
+	_, _, tomb := parseAggregatorBucketKey("aggregator:done:7:99")
+	assert.False(t, tomb, "tombstone keys must not parse as buckets")
+
 	_, _, legacy := parseAggregatorBucketKey("aggregator:42")
 	assert.False(t, legacy, "an org-only key (no email segment) must not parse")
+}
+
+// P1: once an email_id is finalized (emails.scored emitted + bucket Del'd) a
+// tombstone is written. A late component score arriving afterwards must be
+// dropped cleanly — it must NOT recreate a (plan-less) bucket that the sweeper
+// would re-log every tick, and the late-drop metric must increment.
+func TestHandle_Tombstone_SuppressesResurrectedBucket(t *testing.T) {
+	t.Parallel()
+
+	store := newFakeStore()
+	pub := &recorderPublisher{}
+	a := newAgg(t, store, pub)
+	ctx := context.Background()
+
+	emailID, orgID := "e-tomb", int64(1)
+
+	// Complete an email: plan + the one expected (header) score → emit + cleanup.
+	require.NoError(t, a.Handle(ctx, planMsg(t, emailID, orgID, contracts.TopicScoresHeader)))
+	require.NoError(t, a.Handle(ctx, headerMsg(t, emailID, orgID, 4242, 70)))
+	require.Equal(t, 1, pub.count(), "email must finalize")
+
+	// Tombstone + cleared bucket are the post-finalization state.
+	exists, err := store.Exists(ctx, tombstoneKey(orgID, emailID))
+	require.NoError(t, err)
+	assert.True(t, exists, "finalization must write a tombstone")
+	state, _ := store.HGetAll(ctx, keyForOrgEmail(orgID, emailID))
+	assert.Empty(t, state, "bucket must be cleared after finalization")
+
+	before := lateDropCount(t, a, "after_finalization")
+
+	// A late URL score arrives long after finalization — must be dropped, not stored.
+	require.NoError(t, a.Handle(ctx, envelopeMsg(t, contracts.TopicScoresURL, emailID, orgID, 88)))
+	assert.Equal(t, 1, pub.count(), "late score must not trigger another publish")
+
+	state, _ = store.HGetAll(ctx, keyForOrgEmail(orgID, emailID))
+	assert.Empty(t, state, "late score must NOT resurrect a (plan-less) zombie bucket")
+	assert.Equal(t, before+1, lateDropCount(t, a, "after_finalization"), "late drop must be metered")
+
+	// And a sweep over an empty key-space finds no planless zombie to log.
+	NewSweeper(a).tick(ctx)
+}
+
+// P1 disable switch: with the tombstone gate off, the historical behaviour is
+// preserved (a late score recreates a bucket). Guards the config wiring.
+func TestHandle_Tombstone_Disabled_RecreatesBucket(t *testing.T) {
+	t.Parallel()
+
+	store := newFakeStore()
+	pub := &recorderPublisher{}
+	log := zerolog.New(io.Discard)
+	cfg := Config{}
+	cfg.SetTombstoneFinalized(false)
+	a := New(cfg, store, pub, metrics.New(nil), log)
+	a.now = func() time.Time { return time.Date(2026, 5, 3, 10, 0, 0, 0, time.UTC) }
+	ctx := context.Background()
+
+	emailID, orgID := "e-notomb", int64(1)
+
+	require.NoError(t, a.Handle(ctx, planMsg(t, emailID, orgID, contracts.TopicScoresHeader)))
+	require.NoError(t, a.Handle(ctx, headerMsg(t, emailID, orgID, 4242, 70)))
+	require.Equal(t, 1, pub.count())
+
+	exists, err := store.Exists(ctx, tombstoneKey(orgID, emailID))
+	require.NoError(t, err)
+	assert.False(t, exists, "tombstone must not be written when the gate is disabled")
+
+	// Late score recreates a bucket (the pre-fix behaviour) — no tombstone gate.
+	require.NoError(t, a.Handle(ctx, envelopeMsg(t, contracts.TopicScoresURL, emailID, orgID, 88)))
+	state, _ := store.HGetAll(ctx, keyForOrgEmail(orgID, emailID))
+	assert.NotEmpty(t, state, "with the gate off a late score recreates the bucket")
+}
+
+// P3: the sweeper's planless-bucket path must DELETE the bucket on first
+// encounter (not just the lock) so it is never re-swept/re-logged. This kills
+// the log-amplification storm (44,871 logs / 2,881 emails in the incident).
+func TestSweeper_PlanlessBucket_DeletedSoItIsNotReswept(t *testing.T) {
+	t.Parallel()
+
+	store := newFakeStore()
+	pub := &recorderPublisher{}
+	a := newAgg(t, store, pub)
+	ctx := context.Background()
+
+	emailID, orgID := "e-noplan", int64(1)
+
+	// A lone score arrives with NO plan — the bucket exists but is plan-less.
+	a.now = func() time.Time { return time.Date(2026, 5, 3, 10, 0, 0, 0, time.UTC) }
+	require.NoError(t, a.Handle(ctx, envelopeMsg(t, contracts.TopicScoresURL, emailID, orgID, 50)))
+	state, _ := store.HGetAll(ctx, keyForOrgEmail(orgID, emailID))
+	require.NotEmpty(t, state)
+	_, hasPlan := state[fieldPlan]
+	require.False(t, hasPlan, "precondition: bucket has no plan")
+
+	// Age it past the timeout and sweep.
+	a.now = func() time.Time { return time.Date(2026, 5, 3, 10, 0, 31, 0, time.UTC) }
+	NewSweeper(a).tick(ctx)
+
+	assert.Equal(t, 0, pub.count(), "planless bucket must not publish a partial")
+	state, _ = store.HGetAll(ctx, keyForOrgEmail(orgID, emailID))
+	assert.Empty(t, state, "planless bucket must be DELETED on first sweep, not left to re-log until TTL")
+	assert.False(t, store.nxHeld(publishLockKey(orgID, emailID)), "sweep lock must be released")
+
+	// A subsequent sweep finds nothing to process (no re-log, no re-sweep).
+	NewSweeper(a).tick(ctx)
+	state, _ = store.HGetAll(ctx, keyForOrgEmail(orgID, emailID))
+	assert.Empty(t, state)
+}
+
+// lateDropCount reads the aggregator_late_drops_total counter for one reason.
+func lateDropCount(t *testing.T, a *Aggregator, reason string) int {
+	t.Helper()
+	return int(testutil.ToFloat64(a.metrics.LateDrops.WithLabelValues(reason)))
 }

@@ -17,6 +17,8 @@ package main
 import (
 	"context"
 	"os"
+	"strconv"
+	"strings"
 
 	"github.com/rs/zerolog"
 	"golang.org/x/sync/errgroup"
@@ -57,7 +59,7 @@ func main() {
 				return errProducerMissing
 			}
 
-			agg = aggregator.New(aggregator.Config{}, store, producer, m, deps.Log)
+			agg = aggregator.New(loadConfig(), store, producer, m, deps.Log)
 			sweeper = aggregator.NewSweeper(agg)
 
 			// Start the sweeper in its own goroutine. Its lifetime is
@@ -86,6 +88,44 @@ func main() {
 		l.Error().Err(err).Send()
 		os.Exit(1)
 	}
+}
+
+// loadConfig builds the aggregator runtime config from optional env overrides.
+// Defaults are unchanged (timeout 30 s, hash TTL 120 s, tombstone gate ON);
+// these knobs let ops raise the sweep window above svc-03's URL-scan latency
+// without a rebuild. Invalid/absent values fall through to aggregator.New's
+// defaults (a non-positive value there is treated as "use default").
+//
+//   - CYBERSIREN_AGGREGATOR__TIMEOUT_SECS  partial-emit threshold (default 30)
+//   - CYBERSIREN_AGGREGATOR__HASH_TTL_SECS bucket/tombstone TTL  (default 120)
+//   - CYBERSIREN_AGGREGATOR__TOMBSTONE     "false"/"0"/"off" disables P1 gate
+func loadConfig() aggregator.Config {
+	var cfg aggregator.Config
+	cfg.TimeoutSecs = envInt("CYBERSIREN_AGGREGATOR__TIMEOUT_SECS")
+	cfg.HashTTLSecs = envInt("CYBERSIREN_AGGREGATOR__HASH_TTL_SECS")
+	if v, ok := os.LookupEnv("CYBERSIREN_AGGREGATOR__TOMBSTONE"); ok {
+		switch strings.ToLower(strings.TrimSpace(v)) {
+		case "false", "0", "off", "no":
+			cfg.SetTombstoneFinalized(false)
+		default:
+			cfg.SetTombstoneFinalized(true)
+		}
+	}
+	return cfg
+}
+
+// envInt parses a non-negative int env var; returns 0 (→ use default) when
+// unset, empty, or unparseable.
+func envInt(key string) int {
+	raw, ok := os.LookupEnv(key)
+	if !ok {
+		return 0
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || n < 0 {
+		return 0
+	}
+	return n
 }
 
 // errors as package-level vars so `go vet` and the linter don't complain

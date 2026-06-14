@@ -33,6 +33,21 @@ type Config struct {
 	SweepInterval      time.Duration // How often the sweeper polls (default 5 s)
 	PublishRetries     int           // Inner-loop publish retry budget (default 1)
 	PublishLockTTLSecs int           // Valkey NX lock TTL for emissions (default 180 s)
+	// TombstoneFinalized, when true (default), writes a short-TTL tombstone on
+	// finalization so late component scores are dropped instead of resurrecting
+	// a plan-less bucket (P1). Exposed so ops can disable the gate if needed.
+	// Set it via SetTombstoneFinalized so New can tell "left at zero value"
+	// (→ default ON) from an explicit disable.
+	TombstoneFinalized bool
+	tombstoneSet       bool // true once SetTombstoneFinalized was called
+}
+
+// SetTombstoneFinalized explicitly sets the P1 tombstone gate, marking the
+// field as deliberately configured so New does not override it with the
+// default-ON value. Used by main.go (env override) and tests.
+func (c *Config) SetTombstoneFinalized(v bool) {
+	c.TombstoneFinalized = v
+	c.tombstoneSet = true
 }
 
 // Aggregator is the per-message orchestrator. One instance is shared by
@@ -71,6 +86,12 @@ func New(
 	if cfg.PublishLockTTLSecs <= 0 {
 		// Longer than default producer stall window (writes + retries + backoff).
 		cfg.PublishLockTTLSecs = 180
+	}
+	// Tombstone gate defaults ON; main.go reads CYBERSIREN_AGGREGATOR__TOMBSTONE
+	// to disable it explicitly. The zero value of Config (used by some tests)
+	// thus gets the P1 protection by default — matching production wiring.
+	if !cfg.tombstoneSet {
+		cfg.TombstoneFinalized = true
 	}
 	return &Aggregator{
 		cfg:       cfg,
@@ -122,6 +143,34 @@ func (a *Aggregator) Handle(ctx context.Context, msg kafkaconsumer.Message) erro
 	field := msg.Topic
 	if msg.Topic == contracts.TopicAnalysisPlans {
 		field = fieldPlan
+	}
+
+	// P1 — Tombstone gate. If this email_id was already finalized (emails.scored
+	// emitted and the bucket Del'd), a tombstone with the bucket TTL is present.
+	// A score arriving now is "late": its plan field is gone forever (Kafka
+	// offset committed, never redelivered), so (re)creating a bucket here would
+	// produce a plan-less zombie that the sweeper re-logs every tick until TTL.
+	// Drop the late score cleanly instead. We deliberately DISCARD rather than
+	// re-emit a corrected partial: svc-08 keys idempotency on (internal_id,
+	// fetched_at) and dedupe-skips a second emails.scored for an already-written
+	// verdict (persist/writer.go FindExistingVerdictForEmail → DedupeSkip), so a
+	// re-emit would not update the verdict — it would be silently swallowed.
+	// Correcting late scores is a follow-up that needs svc-08 to recompute on
+	// replay; see the audit's svc-03 P0 for the real fix (land URL scores in time).
+	if a.cfg.TombstoneFinalized {
+		if done, terr := a.store.Exists(ctx, tombstoneKey(orgID, emailID)); terr != nil {
+			// Treat a tombstone-probe failure as "unknown" and fall through:
+			// at worst we recreate a bucket the sweeper will age out, which is
+			// the pre-tombstone behaviour — never NACK on this best-effort gate.
+			a.log.Debug().Err(terr).Str("email_id", emailID).Msg("tombstone probe failed; continuing")
+		} else if done {
+			a.observeMessage(msg.Topic, "late_drop")
+			a.bumpLateDrop("after_finalization")
+			a.log.Debug().Str("topic", msg.Topic).Str("email_id", emailID).Int64("org_id", orgID).
+				Msg("dropping late score: email_id already finalized (tombstoned)")
+			span.SetAttributes(attribute.String("aggregator.status", "late_drop_tombstoned"))
+			return nil
+		}
 	}
 
 	// Persist the message verbatim under the appropriate field. Set
@@ -286,6 +335,10 @@ func (a *Aggregator) publishAndCleanup(
 			Str("email_id", emailID).Int64("org_id", orgID).Int64("internal_id", out.InternalID).
 			Msg("cannot emit emails.scored: internal_id unresolved — dropping; verdict cannot be addressed")
 		a.bumpPublishError("internal_id_unresolved")
+		a.bumpLateDrop("internal_id_unresolved")
+		// Tombstone first: this email_id is finalized-as-dropped, so any late
+		// score must not resurrect a (plan-less) zombie bucket either.
+		a.writeTombstone(ctx, orgID, emailID)
 		_ = a.store.Del(ctx, publishLockKey(orgID, emailID))
 		if err := a.store.Del(ctx, keyForOrgEmail(orgID, emailID)); err != nil {
 			a.log.Debug().Err(err).Str("email_id", emailID).Msg("aggregator del failed; relying on TTL")
@@ -304,6 +357,11 @@ func (a *Aggregator) publishAndCleanup(
 	if err := a.publisher.Publish(ctx, key, body, a.cfg.PublishRetries); err != nil {
 		return fmt.Errorf("publish emails.scored: %w", err)
 	}
+
+	// Tombstone this email_id BEFORE deleting the bucket so a late score that
+	// races in between cannot recreate a plan-less zombie (P1). Best-effort:
+	// on tombstone failure the worst case is the pre-fix behaviour.
+	a.writeTombstone(ctx, orgID, emailID)
 
 	_ = a.store.Del(ctx, publishLockKey(orgID, emailID))
 
@@ -333,6 +391,28 @@ func (a *Aggregator) bumpPublishError(kind string) {
 		return
 	}
 	a.metrics.PublishErrors.WithLabelValues(kind).Inc()
+}
+
+// writeTombstone marks an email_id as finalized so Handle's tombstone gate
+// drops late scores instead of resurrecting a plan-less bucket. TTL matches
+// the bucket TTL: late scores can only arrive within that window (their own
+// bucket would otherwise have TTL'd out), and a longer-lived tombstone would
+// needlessly suppress a legitimately-new same-email_id (which cannot happen
+// for UUIDv7 ids anyway). Best-effort: a write failure is logged, not fatal.
+func (a *Aggregator) writeTombstone(ctx context.Context, orgID int64, emailID string) {
+	if !a.cfg.TombstoneFinalized {
+		return
+	}
+	if err := a.store.SetEX(ctx, tombstoneKey(orgID, emailID), a.cfg.HashTTLSecs, "1"); err != nil {
+		a.log.Debug().Err(err).Str("email_id", emailID).Msg("tombstone write failed; late scores may recreate a bucket")
+	}
+}
+
+func (a *Aggregator) bumpLateDrop(reason string) {
+	if a == nil || a.metrics == nil || a.metrics.LateDrops == nil {
+		return
+	}
+	a.metrics.LateDrops.WithLabelValues(reason).Inc()
 }
 
 func parseStartedAt(s string) time.Time {
