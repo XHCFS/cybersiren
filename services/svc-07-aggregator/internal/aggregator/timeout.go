@@ -121,11 +121,29 @@ func (s *Sweeper) processKey(ctx context.Context, key string, threshold time.Tim
 	orgID = orgIDKey
 
 	// If the plan never arrived we cannot package a meaningful partial
-	// (we don't know which scores were expected). Drop the lock and let
-	// the bucket TTL out — a "no plan" bucket is a parser bug, not a
-	// pipeline timeout.
+	// (we don't know which scores were expected).
+	//
+	// P3 — log de-amplification. Previously this path only Del'd the lock and
+	// left the planless bucket to TTL out (~120 s), so EVERY 5 s sweep re-found
+	// it and re-logged "without plan" — ~15× amplification (44,871 logs / 2,881
+	// emails in the incident). We now DELETE the bucket itself on first
+	// encounter so it is never re-swept, and log exactly once at Warn.
+	//
+	// Safety: we only reach here when startedAt is already older than the
+	// partial-emit threshold (TimeoutSecs), i.e. the bucket has been alive
+	// past the full aggregation window with no plan. The plan is keyed and
+	// committed once by svc-02; it is not redelivered, so a bucket still
+	// plan-less past the window will NEVER get one — deleting it cannot race a
+	// legitimately-in-flight plan (that plan would have landed inside the
+	// window). With P1 tombstones, late-score resurrection (the dominant source
+	// of these zombies) is already blocked upstream, so this path now sees only
+	// genuine "plan never produced" buckets. Deleting is the correct terminal
+	// action and also stops the sweep CPU.
 	if _, ok := state[fieldPlan]; !ok {
-		a.log.Warn().Str("email_id", emailID).Msg("sweeper: bucket aged out without plan; dropping")
+		a.log.Warn().Str("email_id", emailID).Msg("sweeper: bucket aged out without plan; deleting")
+		if err := a.store.Del(ctx, key); err != nil {
+			a.log.Debug().Err(err).Str("email_id", emailID).Msg("sweeper: planless bucket del failed; relying on TTL")
+		}
 		_ = a.store.Del(ctx, lockKey)
 		return
 	}
