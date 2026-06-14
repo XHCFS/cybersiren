@@ -4,15 +4,15 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>CyberSiren — Inbox Scanner</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none'%3E%3Cpath d='M12 2l8 3v6c0 5-3.4 8.5-8 11-4.6-2.5-8-6-8-11V5l8-3z' stroke='%232ee6c4' stroke-width='1.5' stroke-linejoin='round'/%3E%3Cpath d='M12 7v6M12 16v0.5' stroke='%232ee6c4' stroke-width='1.6' stroke-linecap='round'/%3E%3C/svg%3E" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none'%3E%3Cpath d='M12 2l8 3v6c0 5-3.4 8.5-8 11-4.6-2.5-8-6-8-11V5l8-3z' stroke='%230e9f8e' stroke-width='1.5' stroke-linejoin='round'/%3E%3Cpath d='M12 7v6M12 16v0.5' stroke='%230e9f8e' stroke-width='1.6' stroke-linecap='round'/%3E%3C/svg%3E" />
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=Outfit:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
 <style>
   :root{
-    --ink:#070b12; --panel:#101826; --panel2:#0c1320; --line:#1e2c40;
-    --text:#e8eef7; --muted:#8aa0bd; --faint:#5b718f;
-    --teal:#2ee6c4; --blue:#5aa9ff; --amber:#ffb648; --rose:#ff5d73; --green:#56e39f; --violet:#b58bff;
+    --ink:#f4f6fa; --panel:#ffffff; --panel2:#eef2f8; --line:#d4dde9;
+    --text:#0f1b2d; --muted:#586b85; --faint:#8493a8;
+    --teal:#0e9f8e; --blue:#2f6fed; --amber:#c8860b; --rose:#d92d43; --green:#1f9d57; --violet:#7c5cff;
   }
   *{box-sizing:border-box}
   html,body{margin:0}
@@ -24,8 +24,8 @@
   body::before{
     content:""; position:fixed; inset:0; z-index:-1;
     background:
-      radial-gradient(800px 500px at 12% -8%, rgba(46,230,196,.10), transparent 60%),
-      radial-gradient(700px 500px at 100% 0%, rgba(90,169,255,.10), transparent 55%);
+      radial-gradient(800px 500px at 12% -8%, rgba(14,159,142,.07), transparent 60%),
+      radial-gradient(700px 500px at 100% 0%, rgba(47,111,237,.07), transparent 55%);
   }
   a{color:var(--teal); text-decoration:none}
   .wrap{max-width:1180px; margin:0 auto; padding:28px 22px 80px}
@@ -33,8 +33,8 @@
   header.top{display:flex; align-items:center; justify-content:space-between; gap:18px; margin-bottom:22px}
   .brand{display:flex; align-items:center; gap:13px}
   .sigil{width:42px; height:42px; border-radius:12px; display:grid; place-items:center;
-    background:linear-gradient(150deg,#13233a,#0a121d); border:1px solid var(--line);
-    box-shadow:0 0 24px rgba(46,230,196,.18)}
+    background:linear-gradient(150deg,#ffffff,#eef2f8); border:1px solid var(--line);
+    box-shadow:0 8px 24px rgba(15,27,45,.06)}
   .brand h1{font-family:'Fraunces',serif; font-weight:600; font-size:22px; margin:0; letter-spacing:.2px}
   .brand .sub{color:var(--muted); font-size:12.5px; margin-top:1px}
 
@@ -43,15 +43,15 @@
   .led{width:9px; height:9px; border-radius:50%; background:var(--faint); box-shadow:0 0 0 0 rgba(0,0,0,0)}
   .led.on{background:var(--green); box-shadow:0 0 10px var(--green)}
   .btn{display:inline-flex; align-items:center; gap:8px; padding:9px 15px; border-radius:11px; cursor:pointer;
-    font-family:inherit; font-size:13.5px; font-weight:500; border:1px solid var(--line); background:#16233a; color:var(--text)}
+    font-family:inherit; font-size:13.5px; font-weight:500; border:1px solid var(--line); background:#eef2f8; color:var(--text)}
   .btn:hover{border-color:var(--teal)}
-  .btn.primary{background:linear-gradient(135deg,#1d8b78,#176a8f); border-color:transparent; color:#031014; font-weight:600}
-  .btn.g{background:#fff; color:#1f2937; border-color:#fff; font-weight:600}
+  .btn.primary{background:linear-gradient(135deg,#0e9f8e,#2f6fed); border-color:transparent; color:#ffffff; font-weight:600}
+  .btn.g{background:#ffffff; color:#1f2937; border-color:var(--line); font-weight:600}
   .btn.ghost{background:transparent}
   .btn[disabled]{opacity:.5; cursor:not-allowed}
   .samples{display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin-top:11px}
   .chipbtn{font-family:inherit; font-size:12px; padding:5px 10px; border-radius:9px; cursor:pointer;
-    background:#0c1626; border:1px solid var(--line); color:var(--text)}
+    background:#eef2f8; border:1px solid var(--line); color:var(--text)}
   .chipbtn:hover{border-color:var(--teal)}
 
   .grid{display:grid; grid-template-columns: 380px 1fr; gap:20px; align-items:start}
@@ -63,9 +63,9 @@
   .card h2{font-family:'Fraunces',serif; font-weight:600; font-size:16px; margin:0 0 3px}
   .card .lede{color:var(--muted); font-size:12.5px; margin:0 0 14px}
   .tag{font-family:'JetBrains Mono',monospace; font-size:10.5px; letter-spacing:.5px; text-transform:uppercase;
-    color:var(--muted); background:#0c1626; border:1px solid var(--line); padding:3px 8px; border-radius:6px}
+    color:var(--muted); background:#eef2f8; border:1px solid var(--line); padding:3px 8px; border-radius:6px}
 
-  textarea{width:100%; min-height:120px; resize:vertical; background:#0a1220; color:var(--text);
+  textarea{width:100%; min-height:120px; resize:vertical; background:#ffffff; color:var(--text);
     border:1px solid var(--line); border-radius:11px; padding:11px 12px; font-family:'JetBrains Mono',monospace;
     font-size:12px; line-height:1.5}
   textarea::placeholder{color:var(--faint)}
@@ -78,68 +78,68 @@
   .feed{display:flex; flex-direction:column; gap:8px; max-height:420px; overflow:auto}
   .feed .empty{color:var(--faint); font-size:13px; padding:14px 4px}
   .scan{display:flex; align-items:center; gap:11px; padding:10px 11px; border-radius:11px; cursor:pointer;
-    background:#0b1422; border:1px solid var(--line)}
-  .scan:hover{border-color:#2c425f}
-  .scan.active{border-color:var(--teal); background:#0e1c2b}
+    background:#ffffff; border:1px solid var(--line)}
+  .scan:hover{border-color:#b9c6d8}
+  .scan.active{border-color:var(--teal); background:#eef2f8}
   .scan .ic{width:26px; height:26px; border-radius:8px; display:grid; place-items:center; flex:none;
-    background:#0f1d2e; border:1px solid var(--line); font-size:13px}
+    background:#eef2f8; border:1px solid var(--line); font-size:13px}
   .scan .meta{min-width:0; flex:1}
   .scan .subj{font-size:13px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
   .scan .from{font-size:11.5px; color:var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
   .chip{font-size:11px; font-weight:600; padding:3px 9px; border-radius:20px; white-space:nowrap}
-  .chip.pending{background:#15233a; color:var(--muted)} .chip.scoring{background:#1d2c19; color:var(--amber)}
-  .chip.benign{background:#10301f; color:var(--green)} .chip.suspicious{background:#33260f; color:var(--amber)}
-  .chip.phishing,.chip.malware{background:#34151d; color:var(--rose)} .chip.spam,.chip.unknown{background:#221a33; color:var(--violet)}
+  .chip.pending{background:#eef2f8; color:var(--muted); border:1px solid var(--line)} .chip.scoring{background:#fff; color:var(--amber); border:1px solid var(--amber)}
+  .chip.benign{background:#fff; color:var(--green); border:1px solid var(--green)} .chip.suspicious{background:#fff; color:var(--amber); border:1px solid var(--amber)}
+  .chip.phishing,.chip.malware{background:#fff; color:var(--rose); border:1px solid var(--rose)} .chip.spam,.chip.unknown{background:#fff; color:var(--violet); border:1px solid var(--violet)}
 
   /* detail */
   .detail .placeholder{display:grid; place-items:center; min-height:340px; color:var(--faint); text-align:center}
   .hero{display:flex; align-items:center; gap:18px; padding:16px 18px; border-radius:14px; margin-bottom:16px;
-    border:1px solid var(--line); background:#0b1422}
-  .hero.low{background:linear-gradient(120deg,#0c2018,#0b1422); border-color:#1c4332}
-  .hero.med{background:linear-gradient(120deg,#231a0c,#0b1422); border-color:#4a3a18}
-  .hero.high{background:linear-gradient(120deg,#2a0f16,#0b1422); border-color:#5a2330}
+    border:1px solid var(--line); background:#ffffff}
+  .hero.low{background:linear-gradient(120deg,#eaf7f0,#ffffff); border-color:#a9dcc1}
+  .hero.med{background:linear-gradient(120deg,#fbf2dd,#ffffff); border-color:#e6cf94}
+  .hero.high{background:linear-gradient(120deg,#fbe3e7,#ffffff); border-color:#eeb0bb}
   .gauge{--p:0; width:74px; height:74px; border-radius:50%; flex:none; display:grid; place-items:center;
-    background:conic-gradient(var(--gc) calc(var(--p)*1%), #18283c 0); position:relative}
-  .gauge::after{content:""; position:absolute; inset:7px; border-radius:50%; background:#0b1422}
+    background:conic-gradient(var(--gc) calc(var(--p)*1%), #e2e8f1 0); position:relative}
+  .gauge::after{content:""; position:absolute; inset:7px; border-radius:50%; background:#ffffff}
   .gauge b{position:relative; font-family:'Fraunces',serif; font-size:23px}
   .hero .label{font-family:'Fraunces',serif; font-size:24px; text-transform:capitalize}
   .hero .sub{color:var(--muted); font-size:12.5px; margin-top:3px}
   .pipe{display:flex; gap:9px; margin-left:auto; text-align:center}
-  .pipe .m{min-width:74px; padding:8px 6px; border-radius:10px; background:#0a1422; border:1px solid var(--line)}
+  .pipe .m{min-width:74px; padding:8px 6px; border-radius:10px; background:#eef2f8; border:1px solid var(--line)}
   .pipe .m .v{font-family:'Fraunces',serif; font-size:18px} .pipe .m .k{font-size:10px; color:var(--muted); text-transform:uppercase; letter-spacing:.4px}
 
   .modules{display:grid; grid-template-columns:1fr 1fr; gap:14px}
   @media(max-width:680px){ .modules{grid-template-columns:1fr} }
-  .mod{background:#0a1422; border:1px solid var(--line); border-radius:13px; padding:14px}
+  .mod{background:#eef2f8; border:1px solid var(--line); border-radius:13px; padding:14px}
   .mod h3{margin:0 0 2px; font-size:14px; font-family:'Fraunces',serif; display:flex; align-items:center; gap:8px}
   .mod .score{margin-left:auto; font-family:'JetBrains Mono',monospace; font-size:14px}
-  .mod .meter{height:6px; border-radius:6px; background:#152339; overflow:hidden; margin:9px 0 11px}
+  .mod .meter{height:6px; border-radius:6px; background:#dbe3ee; overflow:hidden; margin:9px 0 11px}
   .mod .meter i{display:block; height:100%; border-radius:6px; transition:width .5s ease}
-  .kv{display:flex; justify-content:space-between; gap:10px; font-size:12.5px; padding:3px 0; border-bottom:1px dashed #16243a}
+  .kv{display:flex; justify-content:space-between; gap:10px; font-size:12.5px; padding:3px 0; border-bottom:1px dashed #d4dde9}
   .kv:last-child{border-bottom:0} .kv .k{color:var(--muted)} .kv .v{font-family:'JetBrains Mono',monospace; text-align:right}
   .pills{display:flex; flex-wrap:wrap; gap:6px; margin-top:8px}
-  .badge{font-size:10.5px; padding:2px 8px; border-radius:20px; background:#13243a; border:1px solid var(--line); color:var(--muted)}
-  .badge.bad{color:var(--rose); border-color:#3a2530} .badge.ok{color:var(--green); border-color:#1c4332} .badge.warn{color:var(--amber); border-color:#43381a}
-  .link{font-family:'JetBrains Mono',monospace; font-size:11.5px; word-break:break-all; padding:8px 0; border-bottom:1px dashed #16243a}
+  .badge{font-size:10.5px; padding:2px 8px; border-radius:20px; background:#ffffff; border:1px solid var(--line); color:var(--muted)}
+  .badge.bad{color:var(--rose); border-color:#eeb0bb} .badge.ok{color:var(--green); border-color:#a9dcc1} .badge.warn{color:var(--amber); border-color:#e6cf94}
+  .link{font-family:'JetBrains Mono',monospace; font-size:11.5px; word-break:break-all; padding:8px 0; border-bottom:1px dashed #d4dde9}
   .link:last-child{border-bottom:0}
   .l1l2{display:flex; gap:6px; margin-top:5px; flex-wrap:wrap}
   .gc-green{--gc:var(--green)} .gc-amber{--gc:var(--amber)} .gc-rose{--gc:var(--rose)}
 
   /* consumer verdict: plain-language reasons + collapsible technical details */
-  .reasons{border:1px solid var(--line); border-radius:14px; padding:14px 16px; margin-bottom:14px; background:#0b1422}
-  .reasons.low{border-color:#1c4332} .reasons.med{border-color:#4a3a18} .reasons.high{border-color:#5a2330}
+  .reasons{border:1px solid var(--line); border-radius:14px; padding:14px 16px; margin-bottom:14px; background:#ffffff}
+  .reasons.low{border-color:#a9dcc1} .reasons.med{border-color:#e6cf94} .reasons.high{border-color:#eeb0bb}
   .reasons .rh{font-family:'Fraunces',serif; font-size:14.5px; margin-bottom:9px; color:var(--text)}
   .reasons ul{margin:0; padding-left:20px} .reasons li{margin:6px 0; font-size:13.5px}
   .reasons.low li::marker{color:var(--green)} .reasons.med li::marker{color:var(--amber)} .reasons.high li::marker{color:var(--rose)}
-  .reasons .advice{margin-top:11px; font-size:12.5px; color:var(--muted); border-top:1px dashed #16243a; padding-top:9px}
-  details.tech{border:1px solid var(--line); border-radius:12px; background:#0a1422; overflow:hidden}
+  .reasons .advice{margin-top:11px; font-size:12.5px; color:var(--muted); border-top:1px dashed #d4dde9; padding-top:9px}
+  details.tech{border:1px solid var(--line); border-radius:12px; background:#eef2f8; overflow:hidden}
   details.tech>summary{cursor:pointer; padding:12px 16px; font-size:13px; color:var(--muted); user-select:none; list-style:none}
   details.tech>summary::-webkit-details-marker{display:none}
   details.tech>summary::before{content:"▸  "; color:var(--teal)} details.tech[open]>summary::before{content:"▾  "}
   details.tech>summary:hover{color:var(--text)}
   .techbody{padding:4px 16px 16px}
-  .toast{position:fixed; bottom:22px; left:50%; transform:translateX(-50%); background:#0e1c2b; border:1px solid var(--teal);
-    color:var(--text); padding:11px 18px; border-radius:11px; font-size:13px; opacity:0; transition:opacity .3s; pointer-events:none}
+  .toast{position:fixed; bottom:22px; left:50%; transform:translateX(-50%); background:#ffffff; border:1px solid var(--teal);
+    color:var(--text); padding:11px 18px; border-radius:11px; font-size:13px; opacity:0; transition:opacity .3s; pointer-events:none; box-shadow:0 8px 24px rgba(15,27,45,.06)}
   .toast.show{opacity:1}
   .foot{margin-top:26px; color:var(--faint); font-size:11.5px; text-align:center}
 </style>
@@ -149,7 +149,7 @@
   <header class="top">
     <div class="brand">
       <div class="sigil">
-        <svg width="22" height="22" viewBox="0 0 24 24" fill="none"><path d="M12 2l8 3v6c0 5-3.4 8.5-8 11-4.6-2.5-8-6-8-11V5l8-3z" stroke="#2ee6c4" stroke-width="1.5" stroke-linejoin="round"/><path d="M12 7v6M12 16v0.5" stroke="#2ee6c4" stroke-width="1.6" stroke-linecap="round"/></svg>
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none"><path d="M12 2l8 3v6c0 5-3.4 8.5-8 11-4.6-2.5-8-6-8-11V5l8-3z" stroke="#0e9f8e" stroke-width="1.5" stroke-linejoin="round"/><path d="M12 7v6M12 16v0.5" stroke="#0e9f8e" stroke-width="1.6" stroke-linecap="round"/></svg>
       </div>
       <div>
         <h1>CyberSiren</h1>
@@ -174,7 +174,7 @@
       </div>
 
       <div class="card">
-        <span class="tag">Demo / test</span>
+        <span class="tag">Sample</span>
         <h2 style="margin-top:10px">Try a sample <span class="muted" style="font-weight:400">(.eml)</span></h2>
         <p class="lede">No account needed — paste or upload a raw email and watch it flow through the pipeline.</p>
         <textarea id="eml" placeholder="Paste raw RFC-822 here, or use the buttons below…"></textarea>
@@ -212,7 +212,6 @@
     </div>
   </div>
 
-  <div class="foot">Standalone demo dashboard · talks to the pipeline via svc-01 <code>/api/v1/scan</code> + the <code>emails.scored</code>/<code>emails.verdict</code> topics.</div>
 </div>
 <div class="toast" id="toast"></div>
 
@@ -237,7 +236,7 @@ async function loadGmail(){
     const body=$('connect-body');
     if(s.connected){ body.innerHTML='<div class="row"><span class="badge ok">● scanning '+esc(s.email||'')+'</span><span class="muted small">new inbox mail is scanned automatically</span></div>'; }
     else if(s.configured){ body.innerHTML='<a class="btn g" href="/gmail/connect"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="#4285F4" d="M22 12.07c0-.79-.07-1.54-.2-2.27H12v4.3h5.6a4.8 4.8 0 0 1-2.08 3.15v2.6h3.36C20.84 18.1 22 15.36 22 12.07z"/><path fill="#34A853" d="M12 23c2.7 0 4.97-.9 6.62-2.43l-3.36-2.6c-.93.62-2.12.99-3.26.99-2.5 0-4.62-1.69-5.38-3.96H3.15v2.49A10 10 0 0 0 12 23z"/><path fill="#FBBC05" d="M6.62 14.99A6 6 0 0 1 6.3 12c0-1.04.18-2.05.32-2.99V6.52H3.15A10 10 0 0 0 2 12c0 1.62.39 3.15 1.15 4.48l3.47-2.49z"/><path fill="#EA4335" d="M12 6.06c1.47 0 2.79.5 3.83 1.5l2.87-2.87C16.96 3.05 14.69 2 12 2A10 10 0 0 0 3.15 7.52l3.47 2.49C7.38 7.75 9.5 6.06 12 6.06z"/></svg>Sign in with Google</a><div class="muted small" style="margin-top:9px">Scope: read-only Gmail. You\'ll be a test user on your own OAuth app.</div>'; }
-    else { body.innerHTML='<div class="muted small">Set <code>GOOGLE_CLIENT_ID</code> / <code>GOOGLE_CLIENT_SECRET</code> and restart — see <a href="https://github.com" onclick="return false">demo/dashboard/README.md</a> for the 5-minute setup.</div>'; }
+    else { body.innerHTML='<div class="muted small">Set <code>GOOGLE_CLIENT_ID</code> / <code>GOOGLE_CLIENT_SECRET</code> and restart — see the dashboard README for the 5-minute setup.</div>'; }
   }catch(e){ /* keep silent */ }
 }
 async function disconnectGmail(){ await fetch('/gmail/disconnect',{method:'POST'}); toast('Gmail disconnected'); loadGmail(); }
@@ -400,7 +399,7 @@ function renderDetail(v){
   }
   // ── full analyst-grade breakdown, collapsed by default ──
   let tech='';
-  const comp=[['URL',m.url&&m.url.score],['Header',m.header&&m.header.score],['NLP',m.nlp&&m.nlp.score],['Attach',m.attachment&&m.attachment.score]];
+  const comp=[['URL',m.url&&m.url.score],['Header',m.header&&m.header.score],['Content',m.nlp&&m.nlp.score],['Attach',m.attachment&&m.attachment.score]];
   tech+='<div class="pipe" style="margin-left:0">'+comp.map(c=>'<div class="m"><div class="v" style="color:'+(c[1]==null?'var(--faint)':(c[1]>=70?'var(--rose)':c[1]>=40?'var(--amber)':'var(--green)'))+'">'+(c[1]==null?'—':c[1])+'</div><div class="k">'+c[0]+'</div></div>').join('')+'</div>';
   if(ver) tech+='<div class="muted small" style="margin:8px 0 12px">'+(topDriver(m)?topDriver(m)+' · ':'')+'confidence '+pct(ver.confidence)+' · '+esc(ver.source||'')+(ver.model_version?(' · '+esc(ver.model_version)):'')+'</div>';
   tech+='<div class="modules">'+urlCard(m.url)+headerCard(m.header)+nlpCard(m.nlp)+attachCard(m.attachment)+'</div>';
@@ -463,8 +462,8 @@ function headerCard(hd){
 }
 function authBadge(k,val){ const v=(val||'').toLowerCase(); const cls = v==='pass'?'ok':(v===''||v==='none'?'':'bad'); return '<span class="badge '+cls+'">'+k+' '+esc(val||'—')+'</span>'; }
 function nlpCard(n){
-  if(!n) return '<div class="mod"><h3>🧠 NLP<span class="score muted">n/a</span></h3></div>';
-  let h='<div class="mod">'+modHead('NLP / content','🧠',n.score);
+  if(!n) return '<div class="mod"><h3>🧠 Content<span class="score muted">n/a</span></h3></div>';
+  let h='<div class="mod">'+modHead('Content','🧠',n.score);
   if(n.classification) h+=kv('Classification', esc(n.classification));
   if(n.intent && n.intent!==n.classification) h+=kv('Intent', esc(n.intent)+(n.intent_confidence?(' ('+pct(n.intent_confidence)+')'):''));
   else if(n.intent_confidence) h+=kv('Confidence', pct(n.intent_confidence));
