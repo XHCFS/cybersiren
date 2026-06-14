@@ -33,7 +33,9 @@ func GetTLSCert(ctx context.Context, hostname string, port int) TLSResult {
 	defer span.End()
 	span.SetAttributes(attribute.String("enricher.hostname", hostname), attribute.Int("enricher.port", port))
 
-	dialCtx, cancel := context.WithTimeout(ctx, 2500*time.Millisecond)
+	// 1.5s: keep the TLS handshake off the per-URL critical-path tail; the
+	// enricher's overall cap is ~2s.
+	dialCtx, cancel := context.WithTimeout(ctx, 1500*time.Millisecond)
 	defer cancel()
 
 	// SSRF guard: hostname comes from a URL in an incoming email. InsecureSkipVerify

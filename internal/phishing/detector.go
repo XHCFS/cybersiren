@@ -80,6 +80,7 @@ type Detector struct {
 	client   *phclient.Client
 	metrics  *phclient.Metrics
 	enricher *enricher.Enricher // nil when GeoIP unavailable; Score falls back to /score
+	breaker  *circuitBreaker    // guards the network enricher (fail-open when tripped)
 	log      zerolog.Logger
 }
 
@@ -100,7 +101,7 @@ func NewDetector(cfg Config) (*Detector, error) {
 	if logger.GetLevel() == zerolog.NoLevel {
 		logger = zerolog.Nop()
 	}
-	d := &Detector{cfg: cfg, client: c, metrics: cfg.Metrics, log: logger}
+	d := &Detector{cfg: cfg, client: c, metrics: cfg.Metrics, breaker: newCircuitBreaker(), log: logger}
 	if cfg.GeoIPDir != "" {
 		enr, enrErr := enricher.New(cfg.GeoIPDir)
 		if enrErr != nil {
@@ -150,6 +151,21 @@ func (d *Detector) Score(ctx context.Context, rawURL string) (Result, error) {
 
 	if d.enricher != nil {
 		path = "score-features"
+		// Circuit breaker: during a degraded-network window the enricher's
+		// per-leg timeouts would be paid on every URL. When the breaker is
+		// OPEN we skip enrichment entirely and fail open (benign/low), so a
+		// transient network problem can't stall the whole pipeline. The
+		// breaker is only consulted on the enricher path; the /score fallback
+		// path below already tolerates sidecar failures.
+		if d.breaker != nil && !d.breaker.Allow() {
+			d.metrics.IncScore("benign", "breaker_open")
+			span.SetAttributes(
+				attribute.String("phishing.path", "breaker-open-skip"),
+				attribute.Bool("phishing.breaker_open", true),
+				attribute.String("phishing.verdict", "benign"),
+			)
+			return Result{URL: rawURL, EffectiveURL: rawURL, Verdict: "benign"}, nil
+		}
 		scored, cacheHit, err = d.scoreViaFeatures(ctx, rawURL)
 	} else {
 		path = "score"
@@ -200,6 +216,17 @@ func (d *Detector) Score(ctx context.Context, rawURL string) (Result, error) {
 // transient enricher problem doesn't take down L2 entirely.
 func (d *Detector) scoreViaFeatures(ctx context.Context, rawURL string) (phclient.ScoreResult, bool, error) {
 	eu, enrichErr := d.enricher.Enrich(ctx, rawURL)
+	// Report the enrichment outcome to the breaker so repeated failures in a
+	// degraded-network window trip it OPEN (and a clean run closes a half-open
+	// probe). Done here, immediately after the call, so only the network leg's
+	// health drives the breaker — not the sidecar /score-features call.
+	if d.breaker != nil {
+		if enrichErr != nil {
+			d.breaker.Failure()
+		} else {
+			d.breaker.Success()
+		}
+	}
 	if enrichErr != nil {
 		d.log.Warn().Err(enrichErr).Str("url", rawURL).
 			Msg("Go enricher failed; falling back to /score for this request")
