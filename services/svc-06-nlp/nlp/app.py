@@ -45,8 +45,8 @@ def _load_engine_background() -> None:
         else:
             logger.warning(
                 "NLP service started WITHOUT a model. "
-                "POST /predict will return 503 until onnx/model_int8.onnx is replaced "
-                "with the real model from cybersiren_nlp_out/onnx/model_int8.onnx."
+                "POST /predict will return 503 until onnx/model_int8.onnx is present. "
+                "Run `git lfs pull` (LFS source: python/svc-06-nlp/onnx/) or `make check-nlp-model`."
             )
     except Exception as exc:
         logger.error("Background engine load failed: %s", exc)
@@ -70,14 +70,16 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="CyberSiren NLP Service",
     description=(
-        "SVC-06 — Phishing / Legitimate email text classifier. "
-        "Backbone: distilbert-base-uncased (INT8 ONNX). Spec: NLP-SPEC-v1.0. "
-        "Note: the underlying model has a 3-class head (legitimate/spam/phishing) "
-        "but spam+phishing logits are collapsed post-hoc into a single 'phishing' "
-        "verdict because the INT8 checkpoint is poorly calibrated between those "
-        "two classes."
+        "SVC-06 — email text classifier (legitimate / spam / phishing). "
+        "Backbone: distilbert-base-uncased (fp32 ONNX). Spec: NLP-SPEC-v2.0 "
+        "(cycle-12, generalization-hardened). "
+        "Scoring: content_risk_score = round(P(phishing) * 100). Spam is a "
+        "distinct, non-threat class and does NOT inflate the risk score (the v1 "
+        "spam+phishing collapse is retired now that the phishing class is live). "
+        "URLs are stripped before tokenization — their reputation is scored "
+        "separately by SVC-03 and combined at the aggregator."
     ),
-    version="1.0.0",
+    version="2.0.0",
     lifespan=lifespan,
 )
 
@@ -96,10 +98,11 @@ class TokenScore(BaseModel):
 
 
 class PredictResponse(BaseModel):
-    classification: str          # "phishing" | "legitimate"
+    classification: str          # "phishing" | "spam" | "legitimate"
     confidence: float            # 0.0 – 1.0
-    phishing_probability: float  # 0.0 – 1.0  (collapsed spam+phishing logit)
-    content_risk_score: int      # 0 – 100  (feeds emails.content_risk_score)
+    phishing_probability: float  # 0.0 – 1.0  P(phishing) alone
+    spam_probability: float      # 0.0 – 1.0  P(spam); spam is NOT a threat
+    content_risk_score: int      # 0 – 100  = round(P(phishing) * 100); feeds emails.content_risk_score
     intent_labels: list[str]     # e.g. ["credential_harvest", "urgency_threat"]
     urgency_score: float         # 0.0 – 1.0
     obfuscation_detected: bool
@@ -141,8 +144,8 @@ def predict(req: PredictRequest):
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=(
                 "NLP model is not loaded. "
-                "Place onnx/model_int8.onnx (from cybersiren_nlp_out/onnx/) "
-                "in the service directory and restart."
+                "Fetch it with `git lfs pull` (LFS source: python/svc-06-nlp/onnx/) "
+                "or `make check-nlp-model`, then restart."
             ),
         )
     try:
