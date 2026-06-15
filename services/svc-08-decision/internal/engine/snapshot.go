@@ -63,11 +63,32 @@ func BuildSnapshot(in SnapshotInputs) rules.SignalSnapshot {
 // ComponentsFrom extracts the typed Components view from an EmailsScored
 // message — the engine operates on the typed view rather than the raw
 // JSON throughout.
+//
+// A component flagged in DegradedComponents produced a score on a fail-soft
+// fallback path (e.g. svc-06's neutral content score after a model timeout). A
+// fallback is not a measurement, so it is treated as ABSENT rather than fused:
+// otherwise svc-06's neutral 50 — which under the P(phishing) content scoring is
+// a *moderate phishing* value, not a neutral one — would push a legit email's
+// verdict up during an NLP outage. Absent means the verdict relies on the other
+// channels (or stays benign), which is the correct fail-soft behaviour.
 func ComponentsFrom(s contracts.EmailsScored) Components {
-	return Components{
+	c := Components{
 		URL:        s.URLScore,
 		Header:     s.HeaderScore,
 		NLP:        s.NLPScore,
 		Attachment: s.AttachmentScore,
 	}
+	for _, d := range s.DegradedComponents {
+		switch d {
+		case contracts.TopicScoresURL:
+			c.URL = nil
+		case contracts.TopicScoresHeader:
+			c.Header = nil
+		case contracts.TopicScoresNLP:
+			c.NLP = nil
+		case contracts.TopicScoresAttachment:
+			c.Attachment = nil
+		}
+	}
+	return c
 }
