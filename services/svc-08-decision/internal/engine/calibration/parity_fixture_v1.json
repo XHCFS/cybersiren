@@ -8,28 +8,21 @@
       "score": 100.0
     },
     {
-      "nlp": 90,
-      "url": 100,
-      "header": 10,
+      "nlp": 95,
+      "url": null,
+      "header": null,
       "attachment": null,
-      "score": 97.1014
+      "score": 97.9933
     },
     {
       "nlp": 3,
       "url": 100,
       "header": 3,
       "attachment": null,
-      "score": 46.7742
+      "score": 13.6752
     },
     {
       "nlp": 0,
-      "url": 100,
-      "header": 0,
-      "attachment": null,
-      "score": 26.757921
-    },
-    {
-      "nlp": 60,
       "url": null,
       "header": 80,
       "attachment": null,
@@ -40,315 +33,322 @@
       "url": null,
       "header": 45,
       "attachment": null,
-      "score": 78.5714
-    },
-    {
-      "nlp": 35,
-      "url": null,
-      "header": 3,
-      "attachment": null,
-      "score": 66.6667
-    },
-    {
-      "nlp": null,
-      "url": null,
-      "header": null,
-      "attachment": null,
-      "score": 0.0642
-    },
-    {
-      "nlp": 50,
-      "url": 50,
-      "header": 50,
-      "attachment": 50,
-      "score": 98.75
-    },
-    {
-      "nlp": -5,
-      "url": 150,
-      "header": 50,
-      "attachment": null,
-      "score": 82.856256
+      "score": 82.3529
     },
     {
       "nlp": null,
       "url": null,
       "header": null,
       "attachment": 95,
-      "score": 97.1014
+      "score": 97.9933
     },
     {
-      "nlp": 40,
-      "url": 40,
-      "header": 40,
-      "attachment": 40,
-      "score": 97.1014
+      "nlp": 50,
+      "url": 50,
+      "header": 50,
+      "attachment": 50,
+      "score": 100.0
     },
     {
-      "nlp": 95,
-      "url": null,
-      "header": null,
+      "nlp": -5,
+      "url": 150,
+      "header": 50,
       "attachment": null,
       "score": 82.3529
     },
     {
       "nlp": null,
       "url": null,
-      "header": 88,
+      "header": null,
+      "attachment": null,
+      "score": 0.0
+    },
+    {
+      "nlp": 60,
+      "url": 100,
+      "header": 10,
+      "attachment": null,
+      "score": 99.999899
+    },
+    {
+      "nlp": 0.11,
+      "url": null,
+      "header": null,
+      "attachment": null,
+      "score": 0.0119
+    },
+    {
+      "nlp": 0.13,
+      "url": null,
+      "header": null,
+      "attachment": null,
+      "score": 0.0119
+    },
+    {
+      "nlp": 0.01,
+      "url": null,
+      "header": null,
+      "attachment": null,
+      "score": 0.0119
+    },
+    {
+      "nlp": 0.01,
+      "url": null,
+      "header": null,
+      "attachment": null,
+      "score": 0.0119
+    },
+    {
+      "nlp": 0.12,
+      "url": null,
+      "header": null,
+      "attachment": null,
+      "score": 0.0119
+    },
+    {
+      "nlp": 0.03,
+      "url": null,
+      "header": null,
+      "attachment": null,
+      "score": 0.0119
+    },
+    {
+      "nlp": 0.02,
+      "url": null,
+      "header": null,
+      "attachment": null,
+      "score": 0.0119
+    },
+    {
+      "nlp": 0.05,
+      "url": null,
+      "header": null,
+      "attachment": null,
+      "score": 0.0119
+    },
+    {
+      "nlp": 0.04,
+      "url": null,
+      "header": null,
+      "attachment": null,
+      "score": 0.0119
+    },
+    {
+      "nlp": 0.02,
+      "url": null,
+      "header": null,
+      "attachment": null,
+      "score": 0.0119
+    },
+    {
+      "nlp": 0.05,
+      "url": null,
+      "header": null,
+      "attachment": null,
+      "score": 0.0119
+    },
+    {
+      "nlp": 0.01,
+      "url": null,
+      "header": null,
+      "attachment": null,
+      "score": 0.0119
+    },
+    {
+      "nlp": 0.0,
+      "url": null,
+      "header": 10.0,
+      "attachment": null,
+      "score": 6.390713
+    },
+    {
+      "nlp": 0.01,
+      "url": null,
+      "header": null,
+      "attachment": null,
+      "score": 0.0119
+    },
+    {
+      "nlp": 0.04,
+      "url": null,
+      "header": null,
+      "attachment": null,
+      "score": 0.0119
+    },
+    {
+      "nlp": 0.01,
+      "url": null,
+      "header": null,
+      "attachment": null,
+      "score": 0.0119
+    },
+    {
+      "nlp": 0.0,
+      "url": null,
+      "header": null,
+      "attachment": null,
+      "score": 0.0119
+    },
+    {
+      "nlp": 0.05,
+      "url": null,
+      "header": null,
+      "attachment": null,
+      "score": 0.0119
+    },
+    {
+      "nlp": 0.0,
+      "url": null,
+      "header": null,
+      "attachment": null,
+      "score": 0.0119
+    },
+    {
+      "nlp": 0.0,
+      "url": null,
+      "header": null,
+      "attachment": null,
+      "score": 0.0119
+    },
+    {
+      "nlp": 99.99,
+      "url": null,
+      "header": 10.0,
       "attachment": null,
       "score": 100.0
     },
     {
-      "nlp": 12,
-      "url": 30,
-      "header": 8,
+      "nlp": 0.13,
+      "url": null,
+      "header": null,
       "attachment": null,
-      "score": 46.7742
+      "score": 0.0119
+    },
+    {
+      "nlp": 0.03,
+      "url": null,
+      "header": null,
+      "attachment": null,
+      "score": 0.0119
+    },
+    {
+      "nlp": 0.0,
+      "url": 0.0,
+      "header": 10.0,
+      "attachment": null,
+      "score": 6.390713
+    },
+    {
+      "nlp": 0.0,
+      "url": null,
+      "header": 25.0,
+      "attachment": null,
+      "score": 6.390713
     },
     {
       "nlp": 0.0,
       "url": null,
       "header": null,
       "attachment": null,
-      "score": 0.0642
+      "score": 0.0119
     },
     {
       "nlp": 0.0,
+      "url": null,
+      "header": 10.0,
+      "attachment": null,
+      "score": 6.390713
+    },
+    {
+      "nlp": 0.01,
+      "url": null,
+      "header": null,
+      "attachment": null,
+      "score": 0.0119
+    },
+    {
+      "nlp": 0.01,
+      "url": null,
+      "header": null,
+      "attachment": null,
+      "score": 0.0119
+    },
+    {
+      "nlp": 0.01,
+      "url": null,
+      "header": null,
+      "attachment": null,
+      "score": 0.0119
+    },
+    {
+      "nlp": 0.06,
+      "url": null,
+      "header": null,
+      "attachment": null,
+      "score": 0.0119
+    },
+    {
+      "nlp": 0.0,
+      "url": null,
+      "header": 25.0,
+      "attachment": null,
+      "score": 6.390713
+    },
+    {
+      "nlp": 0.04,
+      "url": null,
+      "header": null,
+      "attachment": null,
+      "score": 0.0119
+    },
+    {
+      "nlp": 99.99,
       "url": 100.0,
-      "header": null,
-      "attachment": null,
-      "score": 0.0642
-    },
-    {
-      "nlp": 92.0,
-      "url": null,
-      "header": 10.0,
-      "attachment": null,
-      "score": 97.1014
-    },
-    {
-      "nlp": 0.0,
-      "url": null,
-      "header": null,
-      "attachment": null,
-      "score": 0.0642
-    },
-    {
-      "nlp": 0.0,
-      "url": null,
-      "header": null,
-      "attachment": null,
-      "score": 0.0642
-    },
-    {
-      "nlp": 0.0,
-      "url": null,
-      "header": 10.0,
-      "attachment": null,
-      "score": 26.757921
-    },
-    {
-      "nlp": 0.0,
-      "url": 61.0,
-      "header": null,
-      "attachment": null,
-      "score": 0.0642
-    },
-    {
-      "nlp": 0.0,
-      "url": null,
-      "header": null,
-      "attachment": null,
-      "score": 0.0642
-    },
-    {
-      "nlp": 0.0,
-      "url": null,
-      "header": null,
-      "attachment": null,
-      "score": 0.0642
-    },
-    {
-      "nlp": 0.0,
-      "url": 100.0,
-      "header": null,
-      "attachment": null,
-      "score": 0.0642
-    },
-    {
-      "nlp": 1.0,
-      "url": 7.0,
-      "header": 10.0,
-      "attachment": null,
-      "score": 26.7583
-    },
-    {
-      "nlp": 0.0,
-      "url": null,
-      "header": null,
-      "attachment": null,
-      "score": 0.0642
-    },
-    {
-      "nlp": 0.0,
-      "url": null,
-      "header": null,
-      "attachment": null,
-      "score": 0.0642
-    },
-    {
-      "nlp": 0.0,
-      "url": null,
-      "header": null,
-      "attachment": null,
-      "score": 0.0642
-    },
-    {
-      "nlp": 0.0,
-      "url": null,
-      "header": null,
-      "attachment": null,
-      "score": 0.0642
-    },
-    {
-      "nlp": 0.0,
-      "url": null,
-      "header": null,
-      "attachment": null,
-      "score": 0.0642
-    },
-    {
-      "nlp": 0.0,
-      "url": null,
-      "header": null,
-      "attachment": null,
-      "score": 0.0642
-    },
-    {
-      "nlp": 100.0,
-      "url": 79.0,
-      "header": null,
-      "attachment": null,
-      "score": 100.0
-    },
-    {
-      "nlp": 100.0,
-      "url": 100.0,
-      "header": null,
-      "attachment": null,
-      "score": 100.0
-    },
-    {
-      "nlp": 0.0,
-      "url": null,
-      "header": 10.0,
-      "attachment": null,
-      "score": 26.757921
-    },
-    {
-      "nlp": 0.0,
-      "url": null,
-      "header": null,
-      "attachment": null,
-      "score": 0.0642
-    },
-    {
-      "nlp": 0.0,
-      "url": null,
-      "header": null,
-      "attachment": null,
-      "score": 0.0642
-    },
-    {
-      "nlp": 0.0,
-      "url": null,
-      "header": null,
-      "attachment": null,
-      "score": 0.0642
-    },
-    {
-      "nlp": 0.0,
-      "url": 99.0,
-      "header": null,
-      "attachment": null,
-      "score": 0.0642
-    },
-    {
-      "nlp": 0.0,
-      "url": null,
-      "header": null,
-      "attachment": null,
-      "score": 0.0642
-    },
-    {
-      "nlp": 0.0,
-      "url": null,
-      "header": null,
-      "attachment": null,
-      "score": 0.0642
-    },
-    {
-      "nlp": 0.0,
-      "url": null,
-      "header": null,
-      "attachment": null,
-      "score": 0.0642
-    },
-    {
-      "nlp": 97.0,
-      "url": null,
-      "header": null,
-      "attachment": null,
-      "score": 97.1014
-    },
-    {
-      "nlp": 0.0,
-      "url": null,
-      "header": null,
-      "attachment": null,
-      "score": 0.0642
-    },
-    {
-      "nlp": 0.0,
-      "url": null,
-      "header": null,
-      "attachment": null,
-      "score": 0.0642
-    },
-    {
-      "nlp": 0.0,
-      "url": null,
-      "header": null,
-      "attachment": null,
-      "score": 0.0642
-    },
-    {
-      "nlp": 0.0,
-      "url": null,
-      "header": null,
-      "attachment": null,
-      "score": 0.0642
-    },
-    {
-      "nlp": 1.0,
-      "url": null,
-      "header": null,
-      "attachment": null,
-      "score": 0.4739
-    },
-    {
-      "nlp": 0.0,
-      "url": null,
-      "header": null,
-      "attachment": null,
-      "score": 0.0642
-    },
-    {
-      "nlp": 0.0,
-      "url": null,
       "header": 60.0,
       "attachment": null,
       "score": 100.0
+    },
+    {
+      "nlp": 0.0,
+      "url": 0.0,
+      "header": 10.0,
+      "attachment": null,
+      "score": 6.390713
+    },
+    {
+      "nlp": 0.1,
+      "url": null,
+      "header": null,
+      "attachment": null,
+      "score": 0.0119
+    },
+    {
+      "nlp": 0.03,
+      "url": null,
+      "header": null,
+      "attachment": null,
+      "score": 0.0119
+    },
+    {
+      "nlp": 0.0,
+      "url": null,
+      "header": null,
+      "attachment": null,
+      "score": 0.0119
+    },
+    {
+      "nlp": 0.0,
+      "url": null,
+      "header": null,
+      "attachment": null,
+      "score": 0.0119
+    },
+    {
+      "nlp": 0.02,
+      "url": null,
+      "header": 10.0,
+      "attachment": null,
+      "score": 6.390713
     }
   ]
 }

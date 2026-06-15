@@ -244,30 +244,39 @@ SVC-08 supports three fusion methods, selected by `CYBERSIREN_DECISION__FUSION_M
 #### `calibrated_or` — calibrated probabilistic-OR (default)
 
 Each present component's raw 0–100 score is mapped through a per-channel **calibration
-curve** to a maliciousness probability `pₑ = calibₑ(scoreₑ)`; the channels combine with a
+curve** to a phishing probability `pₑ = calibₑ(scoreₑ)`; the channels combine with a
 probabilistic-OR and the fused raw score passes through a **final calibration curve** so
-the output is a true `P(malicious)·100`:
+the output is a true `P(phishing)·100`:
 
 $$\text{raw}=100\Big(1-\!\!\prod_{c\,\in\,\text{present}}\!\!\big(1-\mathrm{clip}(\text{calib}_c(s_c),0,0.999)\big)\Big),\qquad \text{risk}=100\cdot\text{final}(\text{raw})$$
 
 The curves are a **versioned, embedded artifact** (`internal/engine/calibration/fusion_calibration_v1.json`,
-piecewise-linear isotonic knots) fit on the consistent real-model base (`benchmark/`). Why
-this is the production choice (objective = *maliciousness*, positive = `label != legitimate`):
+piecewise-linear isotonic knots) fit on the consistent real-model base (`benchmark/`). The
+objective is **phishing** (positive = `label == phishing`): advance-fee/419 scams are
+phishing-labelled and stay high, while benign marketing spam is a negative and must not
+inflate the score — this matches the svc-06 **v4** content scoring (`content_risk =
+P(phishing)·100`). Why this is the production choice:
 
 - **No dilution.** A clean channel calibrates low → contributes a factor ≈ 1, so a single
   confident channel is never averaged below threshold.
 - **Reliability is *learned*, not hand-set.** Each curve is the channel's measured
-  `P(malicious|score)`; the noisy lexical-URL channel calibrates to ≈ 0 automatically (no
-  magic `0.22`). Raw OR *without* calibration scores 29% — calibration is essential.
-- **Calibrated output** (ECE ≈ 0.005), so the §3.6 bands stay meaningful.
+  `P(phishing|score)`; the noisy lexical-URL channel calibrates to ≈ 0 automatically (no
+  magic `0.22`). Raw OR *without* calibration scores ~29% — calibration is essential.
+- **Calibrated output** (the final isotonic curve makes risk a true probability, ECE ≈
+  0.005 on the calibration base), so the §3.6 bands stay meaningful.
 - A channel with no curve (attachment) uses **identity** (`p = score/100`), preserving a
   confirmed-malware signal without inventing a weight.
 
-**Measured on the consistent real-model base** (real svc-06 ONNX v3 NLP, real svc-04 Go
-header, real svc-03 L1 URL; graded on maliciousness): recall@1%FPR — `weighted_average`
-**58.4%** (worse than NLP-alone 71.6%) → `calibrated_or` **83.5% held-out (5-seed), AUC
-0.985, OOD 99.6%**, beating NLP-alone on 5/5 seeds. It rescues text-only BEC (0→100%) and
-header-spoof (0→100%) that the weighted mean dropped to 0%. See `benchmark/FINDINGS.md`.
+**Measured on the consistent real-model base** (real svc-06 ONNX NLP scored as `P(phishing)`
+(v4), real svc-04 Go header, real svc-03 L1 URL). The old default `weighted_average` is
+*worse than NLP alone* — it dilutes the strong channel (NLP carries the lowest weight 0.25)
+and injects URL noise (the L1 lexical score fires >50 on 91% of legit URLs), dragging
+malicious emails a mean 21 points below their best single channel. `calibrated_or` removes
+both effects: it beats every individual channel and the old default, lifting **whole-system
+held-out recall@2%FPR to ~96% (ROC-AUC ~0.995)** and rescuing text-only BEC (0→100%) and
+header-spoof (0→100%) that the weighted mean dropped to 0%. The per-config multi-seed
+recall@1%FPR (8-seed, `is_phishing`, with URL re-entered as an authoritative guard channel)
+is reproduced by the evaluation harness in `benchmark/`.
 
 > **URL is deliberately neutralised** in the shipped artifact: the lexical/L2 URL score is
 > noise on offline data and the L2 operational model needs **live enrichment** (SSL/WHOIS/

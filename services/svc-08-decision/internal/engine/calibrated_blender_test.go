@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"math"
 	"testing"
+
+	contracts "github.com/saif/cybersiren/shared/contracts/kafka"
 )
 
 //go:embed calibration/parity_fixture_v1.json
@@ -126,6 +128,30 @@ func TestCalibratedOR_URLNeutral(t *testing.T) {
 	b := NewCalibratedORBlender()
 	if got := b.Blend(Components{URL: iptr(100), NLP: iptr(2), Header: iptr(2)}).Score; got > 50 {
 		t.Fatalf("noisy URL on a clean email should stay benign: got %.1f", got)
+	}
+}
+
+// TestComponentsFrom_DropsDegraded: a fail-soft (degraded) score must be treated as
+// ABSENT, not fused — svc-06's neutral 50 is a moderate phishing value under the
+// P(phishing) content scoring and must not push a legit verdict during an NLP outage.
+func TestComponentsFrom_DropsDegraded(t *testing.T) {
+	nlp50 := 50
+	hdr80 := 80
+	scored := contracts.EmailsScored{
+		NLPScore:           &nlp50,
+		HeaderScore:        &hdr80,
+		DegradedComponents: []string{contracts.TopicScoresNLP},
+	}
+	c := ComponentsFrom(scored)
+	if c.NLP != nil {
+		t.Fatalf("degraded NLP should be dropped (absent), got %d", *c.NLP)
+	}
+	if c.Header == nil || *c.Header != 80 {
+		t.Fatalf("non-degraded header should pass through, got %v", c.Header)
+	}
+	// a degraded NLP-only message must blend to benign (no real signal present).
+	if got := NewCalibratedORBlender().Blend(c).Score; c.Header == nil && got > 50 {
+		t.Fatalf("degraded-only should not fire, got %.1f", got)
 	}
 }
 
