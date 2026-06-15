@@ -272,9 +272,13 @@ func headerViewOf(score *int, h *contracts.ScoresHeaderMessage) *headerView {
 	return hv
 }
 
-// nlpViewOf decodes the NLP component, supporting BOTH the typed ScoresNLP
-// (facets, when svc-06 migrates) and today's legacy ScoreEnvelope (classification
-// / intent_labels / urgency under details). Composite from emails.scored.nlp_score.
+// nlpViewOf decodes the NLP component. svc-06 today emits the structured facets
+// (urgency/intent/impersonation/deception) under details.facets while keeping
+// the legacy classification/intent_labels/obfuscation keys alongside; the typed
+// ScoresNLP migration will move facets to the top level. This reads facets from
+// EITHER location (top-level first, then details.facets) so impersonation and
+// deception surface today, and falls back to the legacy details keys otherwise.
+// Composite from emails.scored.nlp_score.
 func nlpViewOf(score *int, raw json.RawMessage) *nlpView {
 	if score == nil && len(raw) == 0 {
 		return nil
@@ -286,26 +290,37 @@ func nlpViewOf(score *int, raw json.RawMessage) *nlpView {
 	var d struct {
 		Facets  contracts.NLPFacets `json:"facets"`
 		Details struct {
-			Classification string          `json:"classification"`
-			Confidence     float64         `json:"confidence"`
-			IntentLabels   json.RawMessage `json:"intent_labels"`
-			UrgencyScore   float64         `json:"urgency_score"`
-			Obfuscation    bool            `json:"obfuscation_detected"`
+			Classification string              `json:"classification"`
+			Confidence     float64             `json:"confidence"`
+			IntentLabels   json.RawMessage     `json:"intent_labels"`
+			UrgencyScore   float64             `json:"urgency_score"`
+			Obfuscation    bool                `json:"obfuscation_detected"`
+			Facets         contracts.NLPFacets `json:"facets"`
 		} `json:"details"`
 	}
 	_ = json.Unmarshal(raw, &d)
 
+	// Prefer top-level facets (typed ScoresNLP); fall back to details.facets
+	// (svc-06's current ScoreEnvelope emit).
 	f := d.Facets
+	if f.IntentLabel == "" && f.UrgencyScore == 0 && f.ImpersonationScore == 0 && f.DeceptionScore == 0 {
+		f = d.Details.Facets
+	}
 	if f.IntentLabel != "" || f.UrgencyScore > 0 || f.ImpersonationScore > 0 || f.DeceptionScore > 0 {
-		// typed ScoresNLP facets
 		nv.HasFacets = true
 		nv.Intent, nv.IntentConfidence = f.IntentLabel, f.IntentConfidence
 		nv.Urgency, nv.Impersonation, nv.Deception = f.UrgencyScore, f.ImpersonationScore, f.DeceptionScore
 		nv.ImpersonatedBrand = f.ImpersonatedBrand
+		// classification / obfuscation live outside the facet struct.
+		nv.Classification = d.Details.Classification
+		nv.Obfuscation = d.Details.Obfuscation
+		if nv.Intent == "" {
+			nv.Intent = intentString(d.Details.IntentLabels, d.Details.Classification)
+		}
 		return nv
 	}
 
-	// legacy ScoreEnvelope.details (svc-06 today)
+	// legacy ScoreEnvelope.details (no facets at all)
 	nv.Classification = d.Details.Classification
 	nv.Intent = intentString(d.Details.IntentLabels, d.Details.Classification)
 	nv.IntentConfidence = d.Details.Confidence

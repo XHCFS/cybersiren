@@ -181,23 +181,17 @@ _BRAND_LEGIT_DOMAINS: dict[str, set[str]] = {
     "netflix": {"netflix", "nflxext", "nflximg"},
 }
 
-# Ambiguous-word brands: ordinary English words / short tokens that collide with
-# everyday usage ("I'll chase up the invoice", "the back-ups are ready", "an
-# Apple laptop"). For these we do NOT grant the strong "provable impersonation"
-# band on a domain mismatch alone — we require a corroborating impersonation cue
-# (_IMPERSONATION_CUE_PATTERNS). Without a cue an ambiguous-word brand stays low
-# (H3). Unambiguous brands (paypal, microsoft, docusign, netflix…) keep the
+# Ambiguous-word KEYWORDS: ordinary English words / short tokens that collide
+# with everyday usage ("I'll chase up the invoice", "the back-ups are ready",
+# "an Apple laptop"). Keyed on the matched KEYWORD, NOT the canonical token —
+# the bare word "apple" is ambiguous, but "icloud"/"itunes"/"appleid" (which
+# also map to the "apple" token) are not, so they must keep the strong-signal
+# behaviour. For an ambiguous keyword we do NOT grant the strong "provable
+# impersonation" band on a domain mismatch alone — we require a corroborating
+# impersonation cue (_IMPERSONATION_CUE_PATTERNS). Without a cue it stays low
+# (H3). Unambiguous keywords (paypal, microsoft, docusign, netflix…) keep the
 # strong-signal behaviour on mismatch.
-_AMBIGUOUS_WORD_BRANDS: set[str] = {"chase", "ups", "apple", "citi"}
-
-# Common public suffixes whose registrable domain is the last TWO labels
-# (eTLD = 1 label). Used by the dependency-free eTLD+1 approximation below.
-_SINGLE_LABEL_PUBLIC_SUFFIXES: set[str] = {
-    "com", "net", "org", "io", "co", "ru", "us", "uk", "de", "fr", "it",
-    "es", "nl", "ca", "au", "jp", "cn", "in", "br", "mx", "ch", "se", "no",
-    "fi", "dk", "pl", "cz", "be", "at", "ie", "nz", "za", "sg", "info",
-    "biz", "xyz", "online", "site", "app", "dev", "me", "tv", "cc", "ai",
-}
+_AMBIGUOUS_WORD_KEYWORDS: set[str] = {"chase", "ups", "apple", "citi"}
 
 # Common TWO-label public suffixes (eTLD = 2 labels) → registrable domain is the
 # last THREE labels. Hand-enumerated; not exhaustive (we keep this self-contained
@@ -229,8 +223,9 @@ def _registrable_label(domain: str) -> str:
       onedrive.live.com   → "live"
 
     Heuristic, NOT a real public-suffix list: we recognise a hand-enumerated set
-    of common single-label and two-label public suffixes; when the suffix is
-    unknown we fall back to the second-to-last label as the registrable label.
+    of common two-label public suffixes; otherwise (the common single-label
+    suffix case, plus any unknown suffix) we fall back to the second-to-last
+    label as the registrable label.
     """
     labels = [p for p in domain.strip().lower().split(".") if p]
     if not labels:
@@ -250,6 +245,21 @@ def _legit_labels_for(token: str) -> set[str]:
     """Accepted registrable labels for a brand token (defaults to {token})."""
     return _BRAND_LEGIT_DOMAINS.get(token, {token})
 
+
+# Precompiled brand-keyword matchers, built once at import (NOT recompiled per
+# email). Each is a word-ish boundary match so "ups" doesn't fire inside
+# "groups" — and the boundary class includes "-" so it also doesn't fire inside
+# hyphenated words ("back-ups", "start-ups", "follow-ups"). Tuple carries the
+# matched keyword (for longest-match + ambiguity gating) and its canonical token.
+_BRAND_PATTERNS: list[tuple[re.Pattern[str], str, str]] = [
+    (
+        re.compile(r"(?<![a-z0-9-])" + re.escape(keyword) + r"(?![a-z0-9-])"),
+        keyword,
+        token,
+    )
+    for keyword, token in _BRAND_DOMAIN_TOKENS.items()
+]
+
 # Cues (beyond the bare brand name) that an email is *pretending* to act on a
 # brand's behalf — used to grant a moderate impersonation score when the sender
 # domain is unknown (empty) and we therefore cannot prove a mismatch.
@@ -262,6 +272,10 @@ _IMPERSONATION_CUE_PATTERNS = [
     r"\bsecurity (?:alert|notice|warning)\b",
     r"\bsign[\s-]?in to (?:your )?account\b",
     r"\blog[\s-]?in to (?:your )?account\b",
+]
+# Precompiled once at import (not per email).
+_IMPERSONATION_CUE_RE: list[re.Pattern[str]] = [
+    re.compile(p) for p in _IMPERSONATION_CUE_PATTERNS
 ]
 
 # ── Deception facet (heuristic linguistic patterns, CONSTRAINT G4: NO model) ─
@@ -317,6 +331,13 @@ _DECEPTION_SIGNALS: list[tuple[str, float, list[str]]] = [
         r"\bsecurity (?:alert|notice|warning|breach)\b",
         r"\bsomeone (?:has |may have )?(?:accessed|tried to access)\b",
     ]),
+]
+
+# Precompiled deception signals (patterns compiled once at import, not per
+# email): (signal_name, weight, [compiled patterns]).
+_DECEPTION_SIGNALS_COMPILED: list[tuple[str, float, list[re.Pattern[str]]]] = [
+    (name, weight, [re.compile(p) for p in patterns])
+    for name, weight, patterns in _DECEPTION_SIGNALS
 ]
 
 # Saturation constant: the total weighted deception score at (or above) which
@@ -667,20 +688,22 @@ class NLPInferenceEngine:
 
         # Find all claimed-brand matches; prefer the longest phrase (most specific).
         matched: list[tuple[str, str]] = []  # (keyword, canonical_token)
-        for keyword, token in _BRAND_DOMAIN_TOKENS.items():
-            # word-ish boundary match so "ups" doesn't fire inside "groups".
-            if re.search(r"(?<![a-z0-9])" + re.escape(keyword) + r"(?![a-z0-9])", text_lower):
+        for pattern, keyword, token in _BRAND_PATTERNS:
+            if pattern.search(text_lower):
                 matched.append((keyword, token))
 
         if not matched:
             return 0.0, None
 
-        # Longest keyword wins (e.g. "bank of america" over "bank"-like cues).
+        # Longest keyword wins (e.g. "bank of america" over "bank"-like cues,
+        # and "icloud" over a bare "apple" so sub-brands aren't downgraded).
         matched.sort(key=lambda kt: len(kt[0]), reverse=True)
-        _, claimed_token = matched[0]
+        claimed_keyword, claimed_token = matched[0]
 
-        has_cues = any(re.search(p, text_lower) for p in _IMPERSONATION_CUE_PATTERNS)
-        is_ambiguous = claimed_token in _AMBIGUOUS_WORD_BRANDS
+        # Ambiguity is keyed on the matched KEYWORD, not the canonical token:
+        # bare "apple" is ambiguous, but "icloud"/"itunes"/"appleid" are not.
+        has_cues = any(p.search(text_lower) for p in _IMPERSONATION_CUE_RE)
+        is_ambiguous = claimed_keyword in _AMBIGUOUS_WORD_KEYWORDS
 
         sd = sender_domain.strip().lower()
         if sd:
@@ -720,8 +743,8 @@ class NLPInferenceEngine:
         """
         text_lower = (text or "").lower()
         total = 0.0
-        for _name, weight, patterns in _DECEPTION_SIGNALS:
-            if any(re.search(p, text_lower) for p in patterns):
+        for _name, weight, patterns in _DECEPTION_SIGNALS_COMPILED:
+            if any(p.search(text_lower) for p in patterns):
                 total += weight
         return round(min(1.0, total / _DECEPTION_SATURATION), 4)
 

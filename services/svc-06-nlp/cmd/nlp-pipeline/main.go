@@ -29,20 +29,15 @@ const (
 	predictTimeout = 10 * time.Second
 )
 
-// Facet model/heuristic version strings recorded in the scores.nlp
-// model_versions envelope so downstream consumers can reason about score
-// provenance. The urgency/impersonation/deception facets are pure keyword/
-// domain heuristics (CONSTRAINT G4: no NER, no retraining). The intent label
-// is likewise a deterministic heuristic mapping (mapIntentTo5Label) layered
-// over the Python 11-class intent_labels — it does NOT retrain DistilBERT —
-// so it carries a heuristic version too. Bump these when the mapping or any
-// heuristic changes so provenance stays accurate.
-const (
-	versionUrgency       = "heuristic-1.0"
-	versionIntent        = "heuristic-1.0"
-	versionImpersonation = "heuristic-1.0"
-	versionDeception     = "heuristic-1.0"
-)
+// versionHeuristic is the version string recorded for every facet in the
+// scores.nlp model_versions envelope so downstream consumers can reason about
+// score provenance. All four facets (urgency/intent/impersonation/deception)
+// are pure keyword/domain heuristics (CONSTRAINT G4: no NER, no retraining) —
+// the intent label is a deterministic mapping (mapIntentTo5Label) over the
+// Python 11-class intent_labels, it does NOT retrain DistilBERT — so they
+// currently share one version. model_versions still carries a field per facet,
+// so if one heuristic diverges, give that field its own constant and bump it.
+const versionHeuristic = "heuristic-1.0"
 
 // 5-label intent taxonomy (ARCH-SPEC; see contracts.NLPFacets.IntentLabel).
 const (
@@ -233,12 +228,26 @@ func process(ctx context.Context, input contracts.AnalysisText, pred predictor, 
 	})
 	cancel()
 
-	var out contracts.ScoreEnvelope //nolint:staticcheck // G13: sanctioned legacy ScoreEnvelope producer.
+	// Per-branch values. The defaults describe the fallback (no model ran)
+	// state; the success branch overwrites them. Both paths then build ONE
+	// envelope below so the emitted scores.nlp shape is identical whether the
+	// model answered or timed out — every consumer (svc-07 decoder, svc-08
+	// fingerprint, the console) reads the same keys on either path.
+	var (
+		score          float64 = 50
+		classification         = "unknown"
+		intentLabels           = []string{} // empty (not nil) for shape stability
+		phishProb      float64
+		confidence     float64
+		obfuscation    bool
+		facets         = contracts.NLPFacets{IntentLabel: intentLegitimate}
+		fallbackInfo   map[string]interface{}
+	)
+
 	if err != nil {
 		// Spec §6 fallback: a slow/unreachable/non-2xx model must NOT NACK the
 		// message and stall the partition (head-of-line blocking). Emit the
-		// neutral score of 50 and commit the offset. subject + plain_text are
-		// still carried so SVC-08's fingerprint/SimHash keep working.
+		// neutral score of 50 and commit the offset.
 		// Distinguish a deadline/timeout from a service failure (non-2xx or
 		// unreachable) so downstream consumers don't mis-attribute every
 		// fallback as a timeout. status==0 is the unreachable/deadline path.
@@ -251,40 +260,10 @@ func process(ctx context.Context, input contracts.AnalysisText, pred predictor, 
 			Int("status", status).
 			Str("fallback_reason", fallbackReason).
 			Msg("nlp predict failed/timed out; emitting fallback content_risk_score=50")
-		out = contracts.ScoreEnvelope{ //nolint:staticcheck // G13: sanctioned legacy ScoreEnvelope producer.
-			Meta:      meta,
-			Component: contracts.ComponentNLP,
-			Score:     50,
-			Details: map[string]interface{}{
-				"classification":  "unknown",
-				"fallback":        true,
-				"fallback_reason": fallbackReason,
-				"fallback_error":  err.Error(),
-				// Neutral/empty facets so the envelope shape is identical to the
-				// success path (consumers can always read facets/model_versions).
-				// No model ran, so every facet is zero and intent is legitimate.
-				"facets": contracts.NLPFacets{
-					UrgencyScore:       0,
-					IntentLabel:        intentLegitimate,
-					IntentConfidence:   0,
-					ImpersonationScore: 0,
-					ImpersonatedBrand:  nil,
-					DeceptionScore:     0,
-				},
-				"model_versions": contracts.NLPModelVersions{
-					Urgency:       versionUrgency,
-					Intent:        versionIntent,
-					Impersonation: versionImpersonation,
-					Deception:     versionDeception,
-				},
-				"intent_label":      intentLegitimate,
-				"intent_confidence": 0.0,
-				// subject + plain_text carry the content dimension SVC-08's
-				// campaign fingerprint and SimHash near-dedup read from
-				// component_details.nlp.details (ARCH-SPEC §8.1).
-				"subject":    input.Subject,
-				"plain_text": input.Body,
-			},
+		fallbackInfo = map[string]interface{}{
+			"fallback":        true,
+			"fallback_reason": fallbackReason,
+			"fallback_error":  err.Error(),
 		}
 	} else {
 		// Heuristic 5-label intent collapsed from the Python 11-class
@@ -292,7 +271,13 @@ func process(ctx context.Context, input contracts.AnalysisText, pred predictor, 
 		// SVC-08's fingerprint; intent_label/intent_confidence add the single
 		// spec-taxonomy label (also surfaced inside facets).
 		intentLabel, intentConf := mapIntentTo5Label(resp.IntentLabels, resp.Classification)
-		facets := contracts.NLPFacets{
+		score = float64(resp.ContentRiskScore)
+		classification = resp.Classification
+		intentLabels = resp.IntentLabels
+		phishProb = resp.PhishingProbability
+		confidence = resp.Confidence
+		obfuscation = resp.ObfuscationDetected
+		facets = contracts.NLPFacets{
 			UrgencyScore:       resp.UrgencyScore,
 			IntentLabel:        intentLabel,
 			IntentConfidence:   intentConf,
@@ -300,43 +285,46 @@ func process(ctx context.Context, input contracts.AnalysisText, pred predictor, 
 			ImpersonatedBrand:  resp.ImpersonatedBrand,
 			DeceptionScore:     resp.DeceptionScore,
 		}
-		modelVersions := contracts.NLPModelVersions{
-			Urgency:       versionUrgency,
-			Intent:        versionIntent,
-			Impersonation: versionImpersonation,
-			Deception:     versionDeception,
-		}
-		out = contracts.ScoreEnvelope{ //nolint:staticcheck // G13: sanctioned legacy ScoreEnvelope producer.
-			Meta:      meta,
-			Component: contracts.ComponentNLP,
-			Score:     float64(resp.ContentRiskScore),
-			Details: map[string]interface{}{
-				"classification":       resp.Classification,
-				"phishing_probability": resp.PhishingProbability,
-				"confidence":           resp.Confidence,
-				"intent_labels":        resp.IntentLabels,
-				"urgency_score":        resp.UrgencyScore,
-				"obfuscation_detected": resp.ObfuscationDetected,
-				// Structured facet + provenance envelope (P4.2). Added ALONGSIDE
-				// the legacy keys above — the topic stays a contracts.ScoreEnvelope
-				// because svc-07's decoder decodes scores.nlp as ScoreEnvelope and
-				// svc-08's fingerprint reads intent_labels/subject/plain_text out of
-				// this Details map. NLPFacets / NLPModelVersions JSON-marshal to the
-				// spec facets{} / model_versions{} shapes.
-				"facets":            facets,
-				"model_versions":    modelVersions,
-				"intent_label":      intentLabel,
-				"intent_confidence": intentConf,
-				// subject + plain_text carry the content dimension SVC-08's
-				// campaign fingerprint and SimHash near-dedup read from
-				// component_details.nlp.details (ARCH-SPEC §8.1). Without them the
-				// fingerprint's subject dimension collapses to SHA256("") and
-				// SimHash never runs. Body is the HTML-stripped clean plain text
-				// (spec field: plain_text).
-				"subject":    input.Subject,
-				"plain_text": input.Body,
-			},
-		}
+	}
+
+	// Single envelope shared by both paths. The topic stays a
+	// contracts.ScoreEnvelope because svc-07's decoder decodes scores.nlp as
+	// ScoreEnvelope and svc-08's fingerprint reads intent_labels/subject/
+	// plain_text out of this Details map. NLPFacets / NLPModelVersions
+	// JSON-marshal to the spec facets{} / model_versions{} shapes.
+	details := map[string]interface{}{
+		"classification":       classification,
+		"phishing_probability": phishProb,
+		"confidence":           confidence,
+		"intent_labels":        intentLabels,
+		"urgency_score":        facets.UrgencyScore,
+		"obfuscation_detected": obfuscation,
+		"facets":               facets,
+		"model_versions": contracts.NLPModelVersions{
+			Urgency:       versionHeuristic,
+			Intent:        versionHeuristic,
+			Impersonation: versionHeuristic,
+			Deception:     versionHeuristic,
+		},
+		"intent_label":      facets.IntentLabel,
+		"intent_confidence": facets.IntentConfidence,
+		// subject + plain_text carry the content dimension SVC-08's campaign
+		// fingerprint and SimHash near-dedup read from component_details.nlp.
+		// details (ARCH-SPEC §8.1). Without them the fingerprint's subject
+		// dimension collapses to SHA256("") and SimHash never runs. Body is the
+		// HTML-stripped clean plain text (spec field: plain_text).
+		"subject":    input.Subject,
+		"plain_text": input.Body,
+	}
+	// Fallback-only provenance keys, layered on the otherwise-identical shape.
+	for k, v := range fallbackInfo {
+		details[k] = v
+	}
+	out := contracts.ScoreEnvelope{ //nolint:staticcheck // G13: sanctioned legacy ScoreEnvelope producer.
+		Meta:      meta,
+		Component: contracts.ComponentNLP,
+		Score:     score,
+		Details:   details,
 	}
 
 	body, err := json.Marshal(out)

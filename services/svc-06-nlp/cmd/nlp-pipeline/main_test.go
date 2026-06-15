@@ -442,4 +442,29 @@ func TestProcess_FallbackEmitsNeutralFacets(t *testing.T) {
 	if out.Details.ModelVersions.Intent == "" {
 		t.Fatalf("fallback model_versions not populated: %+v", out.Details.ModelVersions)
 	}
+
+	// Shape-identical invariant: the fallback envelope must carry the same
+	// legacy keys the success path emits, so consumers (svc-08 fingerprint
+	// reads intent_labels; the console reads confidence/obfuscation) see a
+	// stable shape on either path. Decode the raw Details map and assert the
+	// keys are present (not silently dropped on a timeout).
+	var rawOut struct {
+		Details map[string]json.RawMessage `json:"details"`
+	}
+	if err := json.Unmarshal(pub.gotValue, &rawOut); err != nil {
+		t.Fatalf("unmarshal raw envelope: %v", err)
+	}
+	for _, key := range []string{
+		"classification", "phishing_probability", "confidence",
+		"intent_labels", "urgency_score", "obfuscation_detected",
+		"intent_label", "intent_confidence", "subject", "plain_text",
+	} {
+		if _, ok := rawOut.Details[key]; !ok {
+			t.Fatalf("fallback envelope missing legacy key %q (shape must match success path)", key)
+		}
+	}
+	// intent_labels must be an empty array, not null, for downstream stability.
+	if got := string(rawOut.Details["intent_labels"]); got != "[]" {
+		t.Fatalf("fallback intent_labels = %s, want []", got)
+	}
 }
