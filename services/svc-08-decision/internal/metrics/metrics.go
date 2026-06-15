@@ -17,9 +17,11 @@ type Metrics struct {
 	RulesFiredTotal    *prometheus.CounterVec // labels: rule_id
 	ProcessingDuration prometheus.Histogram
 	SimhashLookupIndex prometheus.Histogram // SMEMBERS size per lookup
-	// FusionShadowDisagree counts emails where the non-active fusion method would
-	// land in a different verdict band — lets the impact of switching the blender
-	// be measured before it is enabled. Labels: active_band, shadow_band.
+	// FusionShadowDisagree counts emails where the non-active fusion method, run
+	// through the full pipeline (nudge → rule adjustment → reconcile), would emit a
+	// different final verdict label — lets the impact of switching the blender be
+	// measured before it is enabled. Labels: active_band, shadow_band (the reconciled
+	// verdict labels of the active and shadow methods).
 	FusionShadowDisagree *prometheus.CounterVec
 }
 

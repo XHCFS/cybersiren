@@ -17,7 +17,13 @@ func blendBand(c Components) Label { return LabelFor(blendScore(c)) }
 // a single CONFIRMED channel that SVC-03/05 pinned to a high score must reach the
 // high band — the OR-floor (risk >= max score at reliability 1.0) guarantees it.
 // The old weighted average DILUTED these (a TI-confirmed URL with clean text
-// scored ~28-41 -> "suspicious"); the OR keeps them in the malware band.
+// scored ~28-41 -> "suspicious"); the OR keeps them in the malware (76-100) band.
+//
+// NOTE: this asserts the BLENDER's natural band (LabelFor). The engine then applies
+// ReconcileLabel, which keeps the malware label only when a malware-grade attachment
+// is present and otherwise emits phishing(high) — so the URL-only cases below surface
+// to the operator as phishing(high), the attachment cases as malware. The point this
+// test pins is that none are diluted out of the high band, not the final label name.
 func TestNoisyOR_ConfirmedSignalsSurvive(t *testing.T) {
 	cases := []struct {
 		name string
@@ -120,26 +126,28 @@ func TestNoisyOR_DefaultsGuard(t *testing.T) {
 	}
 }
 
-// TestSelectBlender / TestShadowBlender wire the config switch and the shadow
-// (the shadow is always the *other* method).
-func TestSelectBlender(t *testing.T) {
-	if _, ok := selectBlender(Config{FusionMode: FusionNoisyOR}.Defaults()).(*ReliabilityNoisyORBlender); !ok {
+// TestBuildBlenders wires the config switch: the active blender matches the mode
+// and the shadow is always the *other* method. Unknown modes fall back to the
+// weighted average as the active method.
+func TestBuildBlenders(t *testing.T) {
+	active, shadow := buildBlenders(Config{FusionMode: FusionNoisyOR}.Defaults())
+	if _, ok := active.(*ReliabilityNoisyORBlender); !ok {
 		t.Fatal("FusionNoisyOR did not select the noisy-OR blender")
 	}
-	if _, ok := selectBlender(Config{FusionMode: FusionWeightedAverage}.Defaults()).(*WeightedAverageBlender); !ok {
-		t.Fatal("FusionWeightedAverage did not select the weighted-average blender")
-	}
-	if _, ok := selectBlender(Config{FusionMode: "bogus"}.Defaults()).(*WeightedAverageBlender); !ok {
-		t.Fatal("unknown fusion mode should fall back to weighted average")
-	}
-}
-
-func TestShadowBlender(t *testing.T) {
-	// shadow is the opposite of the active method
-	if _, ok := shadowBlender(Config{FusionMode: FusionNoisyOR}.Defaults()).(*WeightedAverageBlender); !ok {
+	if _, ok := shadow.(*WeightedAverageBlender); !ok {
 		t.Fatal("with noisy_or active, shadow should be the weighted average")
 	}
-	if _, ok := shadowBlender(Config{FusionMode: FusionWeightedAverage}.Defaults()).(*ReliabilityNoisyORBlender); !ok {
+
+	active, shadow = buildBlenders(Config{FusionMode: FusionWeightedAverage}.Defaults())
+	if _, ok := active.(*WeightedAverageBlender); !ok {
+		t.Fatal("FusionWeightedAverage did not select the weighted-average blender")
+	}
+	if _, ok := shadow.(*ReliabilityNoisyORBlender); !ok {
 		t.Fatal("with weighted_average active, shadow should be the noisy-OR")
+	}
+
+	active, _ = buildBlenders(Config{FusionMode: "bogus"}.Defaults())
+	if _, ok := active.(*WeightedAverageBlender); !ok {
+		t.Fatal("unknown fusion mode should fall back to weighted average")
 	}
 }

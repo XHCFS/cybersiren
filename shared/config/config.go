@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"math"
 	"net/url"
 	"os"
 	"strings"
@@ -50,6 +51,57 @@ type Config struct {
 	Attachment   AttachmentConfig   `koanf:"attachment"`
 	Notification NotificationConfig `koanf:"notification"`
 	Gmail        GmailConfig        `koanf:"gmail"`
+	Decision     DecisionConfig     `koanf:"decision"`
+}
+
+// DecisionConfig holds the score-fusion tunables for SVC-08 Decision Engine.
+// Set via env (e.g. CYBERSIREN_DECISION__FUSION_MODE=noisy_or) or config.yaml
+// (decision.fusion_mode). See docs/design/svc-07-08-design-brief.md §3.4/§3.6.
+type DecisionConfig struct {
+	// FusionMode selects the blender: "weighted_average" (default, v1) or
+	// "noisy_or" (probabilistic OR, opt-in until §3.6 bands are recalibrated).
+	FusionMode string `koanf:"fusion_mode"`
+	// FusionShadow, when true, computes the non-active method per email and records
+	// decision_fusion_shadow_disagree_total so a switch can be measured first.
+	FusionShadow bool `koanf:"fusion_shadow"`
+	// Reliability is the per-channel trust in [0,1] for the noisy-OR blender
+	// (default 1.0). Lower a channel that proves noisy in production.
+	Reliability ReliabilityConfig `koanf:"reliability"`
+}
+
+// ReliabilityConfig holds the per-channel noisy-OR reliabilities (each in [0,1]).
+type ReliabilityConfig struct {
+	URL        float64 `koanf:"url"`
+	Header     float64 `koanf:"header"`
+	NLP        float64 `koanf:"nlp"`
+	Attachment float64 `koanf:"attachment"`
+}
+
+// Validate checks the decision-engine tunables. Opt-in (called by SVC-08 at
+// startup, like HeaderConfig.Validate) so other services are unaffected.
+func (d DecisionConfig) Validate() error {
+	switch d.FusionMode {
+	case "", "weighted_average", "noisy_or":
+	default:
+		return fmt.Errorf("decision.fusion_mode must be one of: weighted_average, noisy_or; got %q", d.FusionMode)
+	}
+	channels := map[string]float64{
+		"url": d.Reliability.URL, "header": d.Reliability.Header,
+		"nlp": d.Reliability.NLP, "attachment": d.Reliability.Attachment,
+	}
+	var positive bool
+	for name, r := range channels {
+		if math.IsNaN(r) || math.IsInf(r, 0) || r < 0 || r > 1 {
+			return fmt.Errorf("decision.reliability.%s must be a finite value in [0,1], got %v", name, r)
+		}
+		if r > 0 {
+			positive = true
+		}
+	}
+	if !positive {
+		return errors.New("decision.reliability: at least one channel must be > 0 (all-zero disables scoring)")
+	}
+	return nil
 }
 
 // HeaderConfig holds configuration for SVC-04 Header Analysis Service.
@@ -432,6 +484,11 @@ func Load() (*Config, error) {
 			PollEnabled:  true,
 			PollInterval: 5 * time.Minute,
 			HTTPTimeout:  30 * time.Second,
+		},
+		Decision: DecisionConfig{
+			FusionMode:   "weighted_average",
+			FusionShadow: false,
+			Reliability:  ReliabilityConfig{URL: 1.0, Header: 1.0, NLP: 1.0, Attachment: 1.0},
 		},
 	}
 

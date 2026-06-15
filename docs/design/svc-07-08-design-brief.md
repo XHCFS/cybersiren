@@ -237,9 +237,10 @@ Produces to `emails.verdict` (7-day retention).
 Receives `url_score`, `header_score`, `attachment_score` (nullable), `nlp_score` (nullable) from SVC-07.
 
 SVC-08 supports two fusion methods, selected by `CYBERSIREN_DECISION__FUSION_MODE`
-(`internal/engine`, the `Blender` interface). **Default: `weighted_average`** (the v1
-behaviour, unchanged). `noisy_or` is **opt-in** and runs in **shadow** (see below) until
-its verdict-band recalibration lands.
+(or `decision.fusion_mode` in `config.yaml` — both feed `DecisionConfig` via
+`shared/config`; an unrecognized value fails fast at startup). **Default:
+`weighted_average`** (the v1 behaviour, unchanged). `noisy_or` is **opt-in** and runs in
+**shadow** (see below) until its verdict-band recalibration lands.
 
 #### `weighted_average` — v1 weighted mean (default)
 
@@ -265,10 +266,13 @@ that = **P(at least one channel fires)**.
 full trust, *not* tuned per channel. Each upstream score is already a fused/calibrated
 signal in its own service (the URL score is SVC-03's TI+guard+L2-fused verdict, not a raw
 lexical score; attachment is SVC-05's AV/TI-aware score), so the blender does not
-second-guess it. Operators may lower a value if a channel proves noisy in production; no
-channel ships at a fabricated sub-1.0 default. *(An earlier draft down-weighted URL to 0.22
-based on an offline lexical-only proxy; that incorrectly crushed the TI-confirmed
-production score to "benign" and was removed.)*
+second-guess it. Operators may lower a value if a channel proves noisy in production via
+`CYBERSIREN_DECISION__RELIABILITY__{URL,HEADER,NLP,ATTACHMENT}` (or `decision.reliability.*`
+in `config.yaml`) — a float in `[0,1]`; an out-of-range/non-finite value, or all-zero,
+fails fast at startup (`DecisionConfig.Validate`). No channel ships at a fabricated sub-1.0
+default. *(An earlier draft down-weighted URL to 0.22 based on an offline lexical-only
+proxy; that incorrectly crushed the TI-confirmed production score to "benign" and was
+removed.)*
 
 **What it fixes — confirmed-signal preservation (the OR-floor):**
 `risk ≥ 100·maxₑ(rₑ·sₑ/100)`, so at reliability 1.0 a channel pinned to 100 yields risk
@@ -286,10 +290,16 @@ dilution. Monotone, bounded [0,100], pure arithmetic (no model / sidecar).
    characterization in `noisyor_blender_test.go` pins the current band map as the input to
    that work.
 
-**Shadow.** When the active method is `weighted_average`, the engine also computes the
-noisy-OR (and vice-versa) and increments `decision_fusion_shadow_disagree_total{active_band,
-shadow_band}` when the two would land in different bands — *without* affecting the verdict.
-This makes the distribution impact of switching measurable before it is enabled.
+**Shadow.** Opt-in via `CYBERSIREN_DECISION__FUSION_SHADOW=true` (default off, so steady-state
+deployments do not pay for a second blend per email). When enabled, the engine runs the
+*other* fusion method through the **same pipeline the active verdict took** — nudge → rule
+adjustment → reconcile — and increments `decision_fusion_shadow_disagree_total{active_band,
+shadow_band}` when the two would emit different **final verdict labels**, *without* affecting
+the verdict. Comparing reconciled final labels (not the raw blend band) makes the metric a
+faithful measure of the distribution impact of switching before it is enabled. *(The rule
+adjustment is reused from the active evaluation; a rule keyed on the pre-rule band could in
+principle fire differently under the shadow score, but reusing it captures the dominant
+nudge/score/reconcile effects.)*
 
 **Evidence status.** The committed, reproducible evidence is behavioural, in
 `noisyor_blender_test.go`: confirmed-signal preservation (a TI-pinned URL=100 and a

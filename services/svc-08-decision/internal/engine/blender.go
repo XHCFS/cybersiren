@@ -123,13 +123,7 @@ func (b *WeightedAverageBlender) Blend(c Components) BlendResult {
 		return BlendResult{Score: 0, Contributions: contributions, WeightSum: 0}
 	}
 
-	score := weighted / weightSum
-	if score < 0 {
-		score = 0
-	}
-	if score > 100 {
-		score = 100
-	}
+	score := clampScore(weighted / weightSum)
 
 	// Normalise contributions so they sum to the blended score: divide
 	// each by weightSum so the sum-of-contributions equals the blended
@@ -142,6 +136,19 @@ func (b *WeightedAverageBlender) Blend(c Components) BlendResult {
 		Contributions: contributions,
 		WeightSum:     weightSum,
 	}
+}
+
+// clampScore clamps a 0–100 risk score to [0, 100]. Shared by every Blender so
+// the band invariant lives in one place. NaN (which compares false to both
+// bounds) is mapped to 0 rather than escaping into Round/LabelFor downstream.
+func clampScore(v float64) float64 {
+	if math.IsNaN(v) || v < 0 {
+		return 0
+	}
+	if v > 100 {
+		return 100
+	}
+	return v
 }
 
 // Round rounds a float to the nearest int with half-up tie-breaking.

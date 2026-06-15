@@ -1,6 +1,7 @@
 package config
 
 import (
+	"math"
 	"net/url"
 	"os"
 	"strings"
@@ -819,6 +820,49 @@ func TestGmailConfig_Validate(t *testing.T) {
 			g := valid
 			tt.mutate(&g)
 			err := g.Validate()
+			if err == nil {
+				t.Fatalf("expected error containing %q, got nil", tt.wantErr)
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("expected error containing %q, got %q", tt.wantErr, err.Error())
+			}
+		})
+	}
+}
+
+func TestDecisionConfig_Validate(t *testing.T) {
+	valid := DecisionConfig{
+		FusionMode:   "noisy_or",
+		FusionShadow: true,
+		Reliability:  ReliabilityConfig{URL: 1.0, Header: 0.8, NLP: 1.0, Attachment: 0.0},
+	}
+	if err := valid.Validate(); err != nil {
+		t.Fatalf("valid decision config rejected: %v", err)
+	}
+	// empty fusion mode is allowed (engine defaults it to weighted_average).
+	if err := (DecisionConfig{Reliability: ReliabilityConfig{URL: 1}}).Validate(); err != nil {
+		t.Fatalf("empty fusion mode should be allowed: %v", err)
+	}
+
+	tests := []struct {
+		name    string
+		mutate  func(*DecisionConfig)
+		wantErr string
+	}{
+		{"bad mode", func(d *DecisionConfig) { d.FusionMode = "noisyor" }, "decision.fusion_mode"},
+		{"reliability > 1", func(d *DecisionConfig) { d.Reliability.URL = 1.5 }, "decision.reliability.url"},
+		{"reliability < 0", func(d *DecisionConfig) { d.Reliability.Header = -0.2 }, "decision.reliability.header"},
+		{"reliability NaN", func(d *DecisionConfig) { d.Reliability.NLP = math.NaN() }, "decision.reliability.nlp"},
+		{"reliability Inf", func(d *DecisionConfig) { d.Reliability.Attachment = math.Inf(1) }, "decision.reliability.attachment"},
+		{"all-zero reliability", func(d *DecisionConfig) {
+			d.Reliability = ReliabilityConfig{}
+		}, "at least one channel must be > 0"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d := valid
+			tt.mutate(&d)
+			err := d.Validate()
 			if err == nil {
 				t.Fatalf("expected error containing %q, got nil", tt.wantErr)
 			}

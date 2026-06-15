@@ -1,5 +1,7 @@
 package engine
 
+import "math"
+
 // Probabilistic-OR (noisy-OR) blender.
 //
 // The v1 WeightedAverageBlender *dilutes* a confident channel: a strong single
@@ -65,14 +67,32 @@ type ReliabilityNoisyORBlender struct {
 	R Reliabilities
 }
 
-// NewReliabilityNoisyORBlender constructs the blender. A reliability set that is
-// non-positive across all channels is replaced with DefaultReliabilities so a
-// misconfiguration can never produce an all-zero (always-benign) blender.
+// NewReliabilityNoisyORBlender constructs the blender. Each reliability is
+// clamped to its [0,1] contract (so an operator-supplied >1 value can never push
+// a per-channel probability past 1), and a reliability set that is non-positive
+// across all channels is replaced with DefaultReliabilities so a misconfiguration
+// can never produce an all-zero (always-benign) blender.
 func NewReliabilityNoisyORBlender(r Reliabilities) *ReliabilityNoisyORBlender {
 	if r.URL+r.Header+r.NLP+r.Attachment <= 0 {
 		r = DefaultReliabilities()
 	}
+	r.URL = clampUnit(r.URL)
+	r.Header = clampUnit(r.Header)
+	r.NLP = clampUnit(r.NLP)
+	r.Attachment = clampUnit(r.Attachment)
 	return &ReliabilityNoisyORBlender{R: r}
+}
+
+// clampUnit clamps a reliability to its [0,1] contract. NaN (which compares false
+// to both bounds) maps to 0 so a non-finite value can never poison the OR product.
+func clampUnit(v float64) float64 {
+	if math.IsNaN(v) || v < 0 {
+		return 0
+	}
+	if v > 1 {
+		return 1
+	}
+	return v
 }
 
 // Blend implements Blender.
@@ -87,16 +107,9 @@ func (b *ReliabilityNoisyORBlender) Blend(c Components) BlendResult {
 		if score == nil || rel <= 0 {
 			return
 		}
-		s := float64(*score)
-		if s < 0 {
-			s = 0
-		} else if s > 100 {
-			s = 100
-		}
+		s := clampScore(float64(*score))
+		// rel ∈ [0,1] (clamped in the constructor) and s/100 ∈ [0,1], so p ∈ [0,1].
 		p := rel * (s / 100.0)
-		if p > 1 { // reliabilities are <=1 by contract, but guard anyway
-			p = 1
-		}
 		pNot *= (1 - p)
 		relSum += rel
 		contributions[name] = p
@@ -111,12 +124,7 @@ func (b *ReliabilityNoisyORBlender) Blend(c Components) BlendResult {
 		return BlendResult{Score: 0, Contributions: contributions, WeightSum: 0}
 	}
 
-	score := (1 - pNot) * 100
-	if score < 0 {
-		score = 0
-	} else if score > 100 {
-		score = 100
-	}
+	score := clampScore((1 - pNot) * 100)
 	// WeightSum carries Σ reliability over present components (analogous to the
 	// weighted blender's Σ weight — used only for downstream introspection).
 	return BlendResult{

@@ -31,23 +31,7 @@ const (
 	defaultDBRetries    = 3
 	defaultPubRetries   = 3
 	defaultModelVersion = "decision-v1"
-
-	// fusionModeEnv selects the score-fusion method. Default is the v1 weighted
-	// average; set to "noisy_or" to opt into the probabilistic-OR fusion, which
-	// runs in shadow (decision_fusion_shadow_disagree_total) until its verdict-band
-	// recalibration lands — see design brief §3.4/§3.6.
-	fusionModeEnv = "CYBERSIREN_DECISION__FUSION_MODE"
 )
-
-// fusionMode reads the fusion-method selector from the environment, defaulting to
-// the weighted average. Only the explicit value "noisy_or" opts into the
-// probabilistic-OR fusion; anything else (incl. unset) uses the weighted average.
-func fusionMode() string {
-	if os.Getenv(fusionModeEnv) == engine.FusionNoisyOR {
-		return engine.FusionNoisyOR
-	}
-	return engine.FusionWeightedAverage
-}
 
 var (
 	errNotReady          = errors.New("svc-08: engine not yet initialised")
@@ -88,11 +72,26 @@ func main() {
 			simhash := campaign.NewComputer(deps.Valkey, campaign.SimHashThreshold, deps.Log, m.SimhashLookupIndex)
 			writer := persist.NewWriter(deps.Pool, defaultDBRetries, deps.Log)
 
+			// Fail fast on a bad fusion mode / out-of-range reliability, like the
+			// rest of the fleet (HeaderConfig.Validate etc.). Both env
+			// (CYBERSIREN_DECISION__FUSION_MODE) and config.yaml (decision.fusion_mode)
+			// feed deps.Cfg.Decision via shared/config.
+			dc := deps.Cfg.Decision
+			if err := dc.Validate(); err != nil {
+				return err
+			}
+
 			eng = engine.New(
 				engine.Config{
-					FusionMode:           fusionMode(),
-					BlendWeights:         engine.DefaultWeights(),
-					Reliabilities:        engine.DefaultReliabilities(),
+					FusionMode:   dc.FusionMode,
+					FusionShadow: dc.FusionShadow,
+					BlendWeights: engine.DefaultWeights(),
+					Reliabilities: engine.Reliabilities{
+						URL:        dc.Reliability.URL,
+						Header:     dc.Reliability.Header,
+						NLP:        dc.Reliability.NLP,
+						Attachment: dc.Reliability.Attachment,
+					},
 					Shrinkage:            campaign.DefaultShrinkage(),
 					SimHashThreshold:     campaign.SimHashThreshold,
 					PublishRetryAttempts: defaultPubRetries,
@@ -108,7 +107,8 @@ func main() {
 
 			deps.Log.Info().
 				Str("model_version", defaultModelVersion).
-				Str("fusion_mode", fusionMode()).
+				Str("fusion_mode", dc.FusionMode).
+				Bool("fusion_shadow", dc.FusionShadow).
 				Int("simhash_threshold", campaign.SimHashThreshold).
 				Msg("decision engine ready")
 			return nil

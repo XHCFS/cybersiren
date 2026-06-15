@@ -37,7 +37,13 @@ const (
 type Config struct {
 	// FusionMode selects the Blender. Empty defaults to FusionWeightedAverage so
 	// existing callers keep v1 behaviour; the service sets FusionNoisyOR explicitly.
-	FusionMode           string
+	FusionMode string
+	// FusionShadow, when true, also computes the *other* fusion method per email and
+	// records verdict-band disagreement (decision_fusion_shadow_disagree_total) so
+	// the impact of switching can be measured before it is enabled. It never gates a
+	// verdict. Default false — steady-state deployments that are not running a
+	// fusion-calibration study pay nothing for the second blend.
+	FusionShadow         bool
 	BlendWeights         BlendWeights
 	Reliabilities        Reliabilities
 	Shrinkage            campaign.Shrinkage
@@ -54,6 +60,13 @@ func (c Config) Defaults() Config {
 	if c.BlendWeights.URL+c.BlendWeights.Header+c.BlendWeights.NLP+c.BlendWeights.Attachment <= 0 {
 		c.BlendWeights = DefaultWeights()
 	}
+	// Clamp each channel to [0,1] (NaN→0) BEFORE the all-non-positive guard so a
+	// single bad value (e.g. a negative) cannot drag the sum ≤ 0 and silently reset
+	// every other channel to full trust.
+	c.Reliabilities.URL = clampUnit(c.Reliabilities.URL)
+	c.Reliabilities.Header = clampUnit(c.Reliabilities.Header)
+	c.Reliabilities.NLP = clampUnit(c.Reliabilities.NLP)
+	c.Reliabilities.Attachment = clampUnit(c.Reliabilities.Attachment)
 	if c.Reliabilities.URL+c.Reliabilities.Header+c.Reliabilities.NLP+c.Reliabilities.Attachment <= 0 {
 		c.Reliabilities = DefaultReliabilities()
 	}
@@ -69,26 +82,18 @@ func (c Config) Defaults() Config {
 	return c
 }
 
-// selectBlender returns the Blender named by cfg.FusionMode. Unknown values fall
-// back to the weighted average so a misconfiguration can never leave the engine
-// without a blender.
-func selectBlender(cfg Config) Blender {
-	switch cfg.FusionMode {
-	case FusionNoisyOR:
-		return NewReliabilityNoisyORBlender(cfg.Reliabilities)
-	default:
-		return NewWeightedAverageBlender(cfg.BlendWeights)
-	}
-}
-
-// shadowBlender returns the *other* fusion method, computed alongside the active
-// one purely to emit a band-disagreement metric so the verdict-distribution impact
-// of switching can be measured before it is enabled. It never affects the verdict.
-func shadowBlender(cfg Config) Blender {
+// buildBlenders constructs both fusion methods once and returns (active, other):
+// active is the Blender named by cfg.FusionMode (unknown values fall back to the
+// weighted average so a misconfiguration can never leave the engine without a
+// blender), and other is the opposite method used for shadow comparison. Building
+// both here removes the duplicated, mutually-inverted selector logic.
+func buildBlenders(cfg Config) (active, other Blender) {
+	wa := NewWeightedAverageBlender(cfg.BlendWeights)
+	no := NewReliabilityNoisyORBlender(cfg.Reliabilities)
 	if cfg.FusionMode == FusionNoisyOR {
-		return NewWeightedAverageBlender(cfg.BlendWeights)
+		return no, wa
 	}
-	return NewReliabilityNoisyORBlender(cfg.Reliabilities)
+	return wa, no
 }
 
 // Publisher is the producer for emails.verdict (subset of
@@ -141,10 +146,10 @@ func New(
 	log zerolog.Logger,
 ) *Engine {
 	cfg = cfg.Defaults()
-	return &Engine{
+	active, other := buildBlenders(cfg)
+	eng := &Engine{
 		cfg:       cfg,
-		blender:   selectBlender(cfg),
-		shadow:    shadowBlender(cfg),
+		blender:   active,
 		rules:     rulesCache,
 		evaluator: rules.NewEvaluator(log),
 		simhash:   simhash,
@@ -154,6 +159,13 @@ func New(
 		log:       log,
 		tracer:    tracing.Tracer("svc-08-decision"),
 	}
+	// The shadow blender is built only when explicitly enabled, so the e.shadow
+	// nil-check in Handle is a real off-switch and default deployments do not pay
+	// for a second blend per email.
+	if cfg.FusionShadow {
+		eng.shadow = other
+	}
+	return eng
 }
 
 // Handle is the Kafka consumer Handler. Returns nil on processed
@@ -209,16 +221,6 @@ func (e *Engine) Handle(ctx context.Context, msg kafkaconsumer.Message) error {
 	components := ComponentsFrom(scored)
 	blendOut := e.blender.Blend(components)
 	source := SourceFor(components)
-
-	// Shadow: compute the non-active fusion and record band disagreement so the
-	// verdict-distribution impact of switching is observable. This never gates.
-	if e.shadow != nil && e.metrics != nil && components.HasAnyML() {
-		activeBand := LabelFor(Round(blendOut.Score))
-		shadowBand := LabelFor(Round(e.shadow.Blend(components).Score))
-		if activeBand != shadowBand {
-			e.metrics.FusionShadowDisagree.WithLabelValues(string(activeBand), string(shadowBand)).Inc()
-		}
-	}
 
 	// 2. Compute fingerprint and (optionally) SimHash. SimHash override
 	// hijacks the fingerprint to an existing campaign so the UPSERT
@@ -308,6 +310,12 @@ func (e *Engine) Handle(ctx context.Context, msg kafkaconsumer.Message) error {
 	// shared seam keeps this path and the degraded path in lockstep — see
 	// verdictLabelAndConfidence for the confidence-trap invariant.
 	label, confidence := verdictLabelAndConfidence(finalScore, components, scored.PartialAnalysis, source)
+
+	// Shadow: record when the non-active fusion method would emit a different final
+	// verdict label. Runs the full pipeline (rules re-evaluated against the shadow's
+	// own pre-rule band) so the metric faithfully reflects a switch.
+	e.recordFusionShadow(rs, scored, components, campaignHistory, source, label, logCtx)
+
 	procElapsed := time.Since(startedAt)
 
 	wireElapsed := procElapsed // snapshot for VerdictWireBuilder closure
@@ -335,7 +343,7 @@ func (e *Engine) Handle(ctx context.Context, msg kafkaconsumer.Message) error {
 		ModelVersion:  mv,
 
 		Fired:            fired,
-		AnalysisMetadata: marshalAnalysisMetadata(blendOut, nudgedScore, nudgeAlpha, ruleAdjustment, simHit, simMatch),
+		AnalysisMetadata: marshalAnalysisMetadata(e.cfg.FusionMode, blendOut, nudgedScore, nudgeAlpha, ruleAdjustment, simHit, simMatch),
 		VerdictWireBuilder: func(wx persist.VerdictWireContext) ([]byte, error) {
 			o := persist.Output{
 				CampaignID: wx.CampaignID,
@@ -460,6 +468,19 @@ func (e *Engine) publishDegraded(
 	label, confidence := verdictLabelAndConfidence(finalScore, components, scored.PartialAnalysis, source)
 	mvdeg := e.modelVersionFor(scored, source)
 
+	// Shadow: also measure disagreement on the degraded path (rs nil → no rule
+	// adjustment, mirroring this path's blend-only verdict) so the calibration
+	// sample is not silently biased toward healthy traffic.
+	var campaignHistory *campaign.History
+	if history != nil {
+		campaignHistory = &campaign.History{
+			CampaignID: history.CampaignID,
+			RiskScore:  history.RiskScore,
+			EmailCount: history.EmailCount,
+		}
+	}
+	e.recordFusionShadow(nil, scored, components, campaignHistory, source, label, e.log)
+
 	out, err := e.writer.Write(ctx, persist.Input{
 		OrgID:      scored.Meta.OrgID,
 		InternalID: scored.InternalID,
@@ -481,7 +502,7 @@ func (e *Engine) publishDegraded(
 
 		Fired: nil,
 		AnalysisMetadata: marshalAnalysisMetadata(
-			blendOut, nudgedScore, 0, 0, simHit, simMatch,
+			e.cfg.FusionMode, blendOut, nudgedScore, 0, 0, simHit, simMatch,
 		),
 		VerdictWireBuilder: func(wx persist.VerdictWireContext) ([]byte, error) {
 			o := persist.Output{
@@ -616,11 +637,77 @@ func campaignNameFor(fingerprint string) string {
 	return "campaign-" + fingerprint
 }
 
+// recordFusionShadow computes the verdict label the non-active fusion method would
+// emit and increments decision_fusion_shadow_disagree_total when it differs from the
+// active label. No-op unless the shadow blender is enabled (cfg.FusionShadow). It
+// never affects the verdict. rs may be nil (degraded path: no rule adjustment),
+// mirroring the active path.
+func (e *Engine) recordFusionShadow(
+	rs []rules.CachedRule,
+	scored contracts.EmailsScored,
+	components Components,
+	campaignHistory *campaign.History,
+	source string,
+	activeLabel Label,
+	logCtx zerolog.Logger,
+) {
+	if e.shadow == nil || e.metrics == nil || !components.HasAny() {
+		return
+	}
+	shadowLabel := e.shadowVerdictLabel(rs, scored, components, campaignHistory)
+	if shadowLabel == activeLabel {
+		return
+	}
+	e.metrics.FusionShadowDisagree.WithLabelValues(string(activeLabel), string(shadowLabel)).Inc()
+	logCtx.Debug().
+		Str("active_label", string(activeLabel)).
+		Str("shadow_label", string(shadowLabel)).
+		Msg("fusion shadow disagreement")
+}
+
+// shadowVerdictLabel runs the non-active fusion method through the same pipeline the
+// active verdict takes — blend → nudge → rule evaluation → reconcile — and returns
+// its final reconciled label. Rules are re-evaluated against the shadow score's own
+// pre-rule band (not the active path's adjustment) so a switch is measured
+// faithfully. rs nil → no rule adjustment (degraded path). Confidence is not
+// computed; only the band is needed for the comparison.
+func (e *Engine) shadowVerdictLabel(
+	rs []rules.CachedRule,
+	scored contracts.EmailsScored,
+	components Components,
+	campaignHistory *campaign.History,
+) Label {
+	shadowScore := e.shadow.Blend(components).Score
+	shadowNudged, _ := campaign.Nudge(shadowScore, campaignHistory, e.cfg.Shrinkage)
+	adjustment := 0
+	if rs != nil {
+		snap := BuildSnapshot(SnapshotInputs{
+			Scored:        scored,
+			Components:    components,
+			BlendedScore:  shadowScore,
+			NudgedScore:   shadowNudged,
+			PreRuleLabel:  LabelFor(Round(shadowNudged)),
+			CampaignState: campaignHistory,
+		})
+		_, adjustment = e.evaluator.Evaluate(rs, snap)
+	}
+	shadowFinal := ClampInt(Round(shadowNudged)+adjustment, 0, 100)
+	return ReconcileLabel(shadowFinal, components)
+}
+
 // marshalAnalysisMetadata builds the JSONB blob written to
 // emails.analysis_metadata for explainability. Per design brief §3.4,
 // component contributions are preserved here regardless of blending
 // method; the blob also records the campaign-nudge details.
+//
+// blend.method names the fusion method so consumers can interpret the
+// contributions correctly: under "weighted_average" the contributions are
+// per-component shares that SUM to blend.score, while under "noisy_or" they are
+// per-channel probabilities in [0,1] (reliability × score/100) that do NOT sum to
+// the score. weight_sum is Σ weight (weighted_average) or Σ reliability (noisy_or)
+// over present components.
 func marshalAnalysisMetadata(
+	method string,
 	blendOut BlendResult,
 	nudgedScore float64,
 	nudgeAlpha float64,
@@ -630,6 +717,7 @@ func marshalAnalysisMetadata(
 ) []byte {
 	meta := map[string]any{
 		"blend": map[string]any{
+			"method":        method,
 			"score":         blendOut.Score,
 			"weight_sum":    blendOut.WeightSum,
 			"contributions": blendOut.Contributions,
