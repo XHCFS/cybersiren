@@ -32,6 +32,13 @@ import (
 
 var scanHandlerTracer = otel.Tracer("svc-03-url-analysis/scan-handler")
 
+// l2ScanTimeout bounds the Layer-2 call on the interactive /scan path. The
+// detector splits this between live enrichment and the sidecar inference call
+// (see internal/phishing.l2SidecarReserve), so 5s leaves ample room for both
+// while keeping the request from hanging. Replaces the old 45s ceiling, which
+// was far too long for a request path.
+const l2ScanTimeout = 5 * time.Second
+
 // urlPredictor abstracts the URL model so the handler is testable without a
 // real Python worker.
 type urlPredictor interface {
@@ -453,11 +460,14 @@ func scanHandler(
 			sm.IncL2(reasonLabel)
 			ranL2 = true
 
-			mlCtx, mlCancel := context.WithTimeout(reqCtx, 45*time.Second)
+			mlCtx, mlCancel := context.WithTimeout(reqCtx, l2ScanTimeout)
 			defer mlCancel()
 			if phishResult, phishErr := scorer.Score(mlCtx, normalized); phishErr != nil {
 				sm.IncStageError("l2")
 				span.RecordError(phishErr)
+				// Surface L2 unavailability to the caller so a degraded scan is not
+				// mistaken for a clean one (mirrors the pipeline's degraded marking).
+				resp.Degraded = true
 				log.Warn().Err(phishErr).Str("url", normalized).Msg("phishing ML check failed")
 			} else {
 				resp.MLDeployP = phishResult.DeployP
