@@ -10,9 +10,10 @@ v2 notes:
     train/serve skew). Preprocessing tests exercise that module directly,
     including the adversarial canonicalization defenses (homoglyph / leet /
     letter-spacing folding).
-  - Scoring: content_risk_score = round(P(phishing) * 100). Spam is a distinct,
-    NON-threat class — it does NOT collapse into phishing and does NOT inflate
-    the risk score.
+  - Scoring (v3): content_risk_score = round((1 - P(legit)) * 100) = overall
+    maliciousness (spam + phishing). Spam keeps its own label but now counts
+    toward the risk score (phishing vs spam is still distinguishable via the
+    label / phishing_probability).
 
 Run:
     cd services/svc-06-nlp/nlp
@@ -366,14 +367,16 @@ class TestPredict:
         assert result["phishing_probability"] > 0.8
         assert result["confidence"] == result["phishing_probability"]
 
-    def test_spam_is_distinct_and_not_a_threat(self):
-        # v2: spam is its OWN class (not collapsed into phishing) and its
-        # content_risk_score stays low because risk = P(phishing) alone.
+    def test_spam_counts_toward_risk(self):
+        # v3: spam is still its OWN class (the label is distinct from phishing),
+        # but it IS a threat, so a high-confidence spam email yields an elevated
+        # content_risk_score (it was ~0 under the v2 P(phishing)-only scheme,
+        # which let spam/scam pass fusion as benign).
         engine = _engine_with_logits([0.0, 5.0, 0.0])
         result = engine.predict("Special offer", "Limited time discount unsubscribe")
         assert result["classification"] == "spam"
         assert result["spam_probability"] > 0.9
-        assert result["content_risk_score"] < 50
+        assert result["content_risk_score"] > 50
 
     def test_legitimate_classification(self):
         engine = _engine_with_logits([5.0, 0.0, 0.0])
@@ -386,9 +389,12 @@ class TestPredict:
         assert 0 <= result["content_risk_score"] <= 100
 
     def test_content_risk_score_formula(self):
-        engine = _engine_with_logits([0.0, 0.0, 10.0])
+        # v3: content_risk = round((1 - P(legit)) * 100) = round((P(spam)+P(phish))*100).
+        engine = _engine_with_logits([0.0, 4.0, 2.0])  # mixed spam+phish, low legit
         result = engine.predict("s", "b")
-        assert result["content_risk_score"] == round(result["phishing_probability"] * 100)
+        malicious = result["spam_probability"] + result["phishing_probability"]
+        assert abs(result["content_risk_score"] - round(malicious * 100)) <= 1
+        assert result["content_risk_score"] > 50
 
     def test_top_tokens_always_empty(self):
         engine = _engine_with_logits([2.0, 1.0, 0.0])

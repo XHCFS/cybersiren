@@ -73,9 +73,10 @@ app = FastAPI(
         "SVC-06 — email text classifier (legitimate / spam / phishing). "
         "Backbone: distilbert-base-uncased (fp32 ONNX). Spec: NLP-SPEC-v2.0 "
         "(cycle-12, generalization-hardened). "
-        "Scoring: content_risk_score = round(P(phishing) * 100). Spam is a "
-        "distinct, non-threat class and does NOT inflate the risk score (the v1 "
-        "spam+phishing collapse is retired now that the phishing class is live). "
+        "Scoring (v3): content_risk_score = round((1 - P(legitimate)) * 100) = "
+        "overall maliciousness (spam + phishing). Spam / advance-fee scams ARE "
+        "threats and contribute to the risk; the 3-class label still "
+        "distinguishes phishing vs spam vs legitimate. "
         "URLs are stripped before tokenization — their reputation is scored "
         "separately by SVC-03 and combined at the aggregator."
     ),
@@ -106,8 +107,8 @@ class PredictResponse(BaseModel):
     classification: str          # "phishing" | "spam" | "legitimate"
     confidence: float            # 0.0 – 1.0
     phishing_probability: float  # 0.0 – 1.0  P(phishing) alone
-    spam_probability: float      # 0.0 – 1.0  P(spam); spam is NOT a threat
-    content_risk_score: int      # 0 – 100  = round(P(phishing) * 100); feeds emails.content_risk_score
+    spam_probability: float      # 0.0 – 1.0  P(spam); now counts toward risk
+    content_risk_score: int      # 0 – 100  = round((1 - P(legit)) * 100); feeds emails.content_risk_score
     intent_labels: list[str]     # e.g. ["credential_harvest", "urgency_threat"]
     urgency_score: float         # 0.0 – 1.0
     obfuscation_detected: bool
