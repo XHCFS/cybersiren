@@ -316,8 +316,19 @@ function bandAdvice(cls){ return cls==='high' ? 'Don’t click links, open attac
 // sentences a non-technical user understands. It reads only fields already in
 // the scanView DTO (see view.go) — no new backend data.
 function consumerReasons(v){
-  const out=[]; const m=v.modules||{}; const ver=v.verdict;
+  const out=[]; const m=v.modules||{}; const ver=(v.verdict&&v.verdict.label)||'';
   const push=(s)=>{ if(s && out.indexOf(s)<0) out.push(s); };
+  // A SAFE (benign) verdict explains why it's safe — it must NOT surface weak,
+  // dismissed signals (e.g. an incidental brand facet) that the scoring already
+  // judged harmless, which would contradict the verdict.
+  if(ver==='benign'){
+    const ok=[]; const h0=m.header, u0=m.url, a0=m.attachment;
+    if(h0 && String(h0.spf||'').toLowerCase()==='pass') ok.push('Passed sender authentication checks.');
+    if(u0 && !(u0.ti_blocked>0)) ok.push('No links matched known threats.');
+    if(a0 && !(a0.malicious>0)) ok.push('No risky attachments found.');
+    ok.push('Language and structure look normal.');
+    return ok.slice(0,4);
+  }
   // Attachment
   const a=m.attachment;
   if(a){
@@ -350,13 +361,16 @@ function consumerReasons(v){
   const n=m.nlp;
   if(n){
     if(n.urgency!=null && n.urgency>=0.6) push('Uses urgent, pressuring language to rush you.');
-    const cls=String(n.classification||n.intent||'').toLowerCase();
-    if(cls.indexOf('cred')>=0||cls.indexOf('phish')>=0||cls.indexOf('account')>=0) push('Tries to get your password or personal details.');
+    const lang=(String(n.classification||'')+' '+String(n.intent||'')).toLowerCase();
+    if(lang.indexOf('cred')>=0||lang.indexOf('phish')>=0||lang.indexOf('account')>=0) push('Tries to get your password or personal details.');
+    else if(lang.indexOf('spam')>=0||lang.indexOf('scam')>=0||lang.indexOf('advance')>=0||lang.indexOf('fraud')>=0) push('Reads like spam or a scam offer — unsolicited reward / “you’ve won” bait.');
     if(n.obfuscation) push('Text is disguised to slip past spam filters.');
     if(n.has_facets && n.impersonated_brand) push('Pretends to be '+n.impersonated_brand+'.');
   }
   if(out.length) return out.slice(0,4);
-  // No risk signals → reassurances for a Safe verdict.
+  // A flagged verdict with no specific mapped signal must NOT read as reassurance.
+  if(ver && ver!=='benign') return ['Flagged as unusual by our content and sender scoring — treat with caution.'];
+  // Benign → reassurances for a Safe verdict.
   const ok=[];
   if(hd && String(hd.spf||'').toLowerCase()==='pass') ok.push('Passed sender authentication checks.');
   if(u && !(u.ti_blocked>0)) ok.push('No links matched known threats.');
