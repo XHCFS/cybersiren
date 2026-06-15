@@ -399,3 +399,35 @@ func TestHandle_FusionShadow(t *testing.T) {
 		testutil.ToFloat64(mDeg.FusionShadowDisagree.WithLabelValues(string(LabelSuspicious), string(LabelPhishing))),
 		1e-9, "degraded path with shadow on → disagreement still recorded")
 }
+
+// TestHandle_FusionShadow_RulesReEvaluated proves the shadow runs rules against
+// its OWN pre-rule band, not the active path's adjustment. Input NLP=20,Header=20:
+// weighted blends to 20 (benign, rule below keyed on band==suspicious does NOT fire
+// → active stays benign), but noisy_or blends to 36 (suspicious, the rule FIRES
+// +20 → 56 → phishing). If the shadow merely reused the active adjustment (0) it
+// would record (benign, suspicious); recording (benign, phishing) proves the rule
+// was re-evaluated against the shadow's higher band.
+func TestHandle_FusionShadow_RulesReEvaluated(t *testing.T) {
+	t.Parallel()
+	rule := rules.CachedRule{
+		ID:          1,
+		Name:        "escalate-suspicious",
+		ScoreImpact: 20,
+		Logic:       json.RawMessage(`{"signal":"verdict.label","op":"eq","value":"suspicious"}`),
+	}
+	reg := prometheus.NewRegistry()
+	m := metrics.New(reg)
+	eng := New(Config{FusionShadow: true}, fakeRules{rules: []rules.CachedRule{rule}}, fakeSimhash{},
+		&fakeWriter{out: persist.Output{CampaignID: 1, VerdictID: 1, EmailCount: 1}},
+		&fakePublisher{}, m, zerolog.Nop())
+
+	comps := Components{NLP: ptrInt(20), Header: ptrInt(20)}
+	require.NoError(t, eng.Handle(context.Background(), makeScoredMessageWith(t, 7004, "e7004", comps)))
+
+	require.InDelta(t, 1.0,
+		testutil.ToFloat64(m.FusionShadowDisagree.WithLabelValues(string(LabelBenign), string(LabelPhishing))),
+		1e-9, "shadow must re-evaluate rules against its own band → (benign, phishing), not (benign, suspicious)")
+	require.InDelta(t, 0.0,
+		testutil.ToFloat64(m.FusionShadowDisagree.WithLabelValues(string(LabelBenign), string(LabelSuspicious))),
+		1e-9, "the no-re-eval label pair must NOT be recorded")
+}

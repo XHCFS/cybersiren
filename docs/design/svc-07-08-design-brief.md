@@ -296,10 +296,11 @@ deployments do not pay for a second blend per email). When enabled, the engine r
 adjustment → reconcile — and increments `decision_fusion_shadow_disagree_total{active_band,
 shadow_band}` when the two would emit different **final verdict labels**, *without* affecting
 the verdict. Comparing reconciled final labels (not the raw blend band) makes the metric a
-faithful measure of the distribution impact of switching before it is enabled. *(The rule
-adjustment is reused from the active evaluation; a rule keyed on the pre-rule band could in
-principle fire differently under the shadow score, but reusing it captures the dominant
-nudge/score/reconcile effects.)*
+faithful measure of the distribution impact of switching before it is enabled. *(Rules are
+**re-evaluated against the shadow score's own pre-rule band** — not the active path's
+adjustment — so a rule keyed on the band fires for the shadow exactly as it would after a
+real switch; the metric therefore reflects the full nudge→rule→reconcile effect, not just the
+blend shift.)*
 
 **Evidence status.** The committed, reproducible evidence is behavioural, in
 `noisyor_blender_test.go`: confirmed-signal preservation (a TI-pinned URL=100 and a

@@ -872,3 +872,48 @@ func TestDecisionConfig_Validate(t *testing.T) {
 		})
 	}
 }
+
+func TestLoad_DecisionDefaultsAndEnvOverride(t *testing.T) {
+	setRequiredEnv(t)
+	// Nested koanf key: CYBERSIREN_DECISION__RELIABILITY__URL -> decision.reliability.url
+	t.Setenv("CYBERSIREN_DECISION__FUSION_MODE", "noisy_or")
+	t.Setenv("CYBERSIREN_DECISION__FUSION_SHADOW", "true")
+	t.Setenv("CYBERSIREN_DECISION__RELIABILITY__URL", "0.5")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() returned error: %v", err)
+	}
+
+	if cfg.Decision.FusionMode != "noisy_or" {
+		t.Errorf("Decision.FusionMode = %q, want %q", cfg.Decision.FusionMode, "noisy_or")
+	}
+	if !cfg.Decision.FusionShadow {
+		t.Errorf("Decision.FusionShadow = false, want true")
+	}
+	if cfg.Decision.Reliability.URL != 0.5 {
+		t.Errorf("nested env override Decision.Reliability.URL = %v, want 0.5", cfg.Decision.Reliability.URL)
+	}
+	// Unset channels keep the 1.0 default.
+	if cfg.Decision.Reliability.Header != 1.0 {
+		t.Errorf("default Decision.Reliability.Header = %v, want 1.0", cfg.Decision.Reliability.Header)
+	}
+}
+
+func TestLoad_DecisionDefaults(t *testing.T) {
+	setRequiredEnv(t)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() returned error: %v", err)
+	}
+	if cfg.Decision.FusionMode != "weighted_average" {
+		t.Errorf("default Decision.FusionMode = %q, want weighted_average", cfg.Decision.FusionMode)
+	}
+	if cfg.Decision.FusionShadow {
+		t.Errorf("default Decision.FusionShadow = true, want false")
+	}
+	r := cfg.Decision.Reliability
+	if r.URL != 1.0 || r.Header != 1.0 || r.NLP != 1.0 || r.Attachment != 1.0 {
+		t.Errorf("default reliabilities = %+v, want all 1.0", r)
+	}
+}

@@ -8,7 +8,7 @@ import "math"
 // signal is averaged down by the clean channels. This under-rates a CONFIRMED
 // single-channel threat — a URL that SVC-03 pinned to 100 (TI/blocklist hit,
 // brand-in-subdomain guard, or L2 fusion verdict) blended against clean text and
-// header scores only `0.25·100/(0.25+0.30+0.35) ≈ 28–41` → "suspicious", not
+// header scores only `0.35·100/(0.35+0.30+0.25) ≈ 39` → "suspicious", not
 // "malware". The same happens to a confirmed-malware attachment (SVC-05 pins it
 // high). See docs/design/svc-07-08-design-brief.md §3.4.
 //
@@ -73,13 +73,16 @@ type ReliabilityNoisyORBlender struct {
 // across all channels is replaced with DefaultReliabilities so a misconfiguration
 // can never produce an all-zero (always-benign) blender.
 func NewReliabilityNoisyORBlender(r Reliabilities) *ReliabilityNoisyORBlender {
-	if r.URL+r.Header+r.NLP+r.Attachment <= 0 {
-		r = DefaultReliabilities()
-	}
+	// Clamp each channel to [0,1] (NaN→0) BEFORE the all-non-positive guard, so an
+	// all-NaN/all-negative set falls back to defaults rather than collapsing to an
+	// always-benign blender — same ordering as Config.Defaults().
 	r.URL = clampUnit(r.URL)
 	r.Header = clampUnit(r.Header)
 	r.NLP = clampUnit(r.NLP)
 	r.Attachment = clampUnit(r.Attachment)
+	if r.URL+r.Header+r.NLP+r.Attachment <= 0 {
+		r = DefaultReliabilities()
+	}
 	return &ReliabilityNoisyORBlender{R: r}
 }
 
