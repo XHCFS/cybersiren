@@ -468,3 +468,79 @@ func TestProcess_FallbackEmitsNeutralFacets(t *testing.T) {
 		t.Fatalf("fallback intent_labels = %s, want []", got)
 	}
 }
+
+// scriptedPredictor returns a sequence of (resp, status, err) results, one per
+// call, so a "fails then recovers" sequence can be driven.
+type scriptedPredictor struct {
+	results []struct {
+		resp   *nlp.PredictResponse
+		status int
+		err    error
+	}
+	calls int
+}
+
+func (s *scriptedPredictor) Predict(ctx context.Context, req nlp.PredictRequest) (*nlp.PredictResponse, int, error) {
+	r := s.results[s.calls]
+	s.calls++
+	return r.resp, r.status, r.err
+}
+
+// TestProcess_TransientErrorRetriesThenFallback proves a transient failure
+// (timeout) is retried up to maxPredictAttempts before the neutral fallback.
+func TestProcess_TransientErrorRetriesThenFallback(t *testing.T) {
+	pred := &fakePredictor{err: context.DeadlineExceeded, status: 0}
+	pub := &capturingPublisher{}
+
+	if err := process(context.Background(), sampleInput(), pred, pub.publish); err != nil {
+		t.Fatalf("process returned error: %v", err)
+	}
+	if pred.calls != maxPredictAttempts {
+		t.Fatalf("transient predict attempts = %d, want %d", pred.calls, maxPredictAttempts)
+	}
+}
+
+// TestProcess_PermanentErrorNoRetry proves a permanent failure (4xx) is NOT
+// retried — retrying a malformed request can't help.
+func TestProcess_PermanentErrorNoRetry(t *testing.T) {
+	pred := &fakePredictor{err: errors.New("nlp service error 400: bad request"), status: 400}
+	pub := &capturingPublisher{}
+
+	if err := process(context.Background(), sampleInput(), pred, pub.publish); err != nil {
+		t.Fatalf("process returned error: %v", err)
+	}
+	if pred.calls != 1 {
+		t.Fatalf("permanent predict attempts = %d, want 1 (no retry)", pred.calls)
+	}
+}
+
+// TestProcess_RecoversAfterTransientRetry proves a transient blip that clears on
+// a later attempt yields the REAL score, not the fallback.
+func TestProcess_RecoversAfterTransientRetry(t *testing.T) {
+	pred := &scriptedPredictor{results: []struct {
+		resp   *nlp.PredictResponse
+		status int
+		err    error
+	}{
+		{nil, 0, context.DeadlineExceeded},
+		{&nlp.PredictResponse{Classification: "phishing", ContentRiskScore: 88}, 200, nil},
+	}}
+	pub := &capturingPublisher{}
+
+	if err := process(context.Background(), sampleInput(), pred, pub.publish); err != nil {
+		t.Fatalf("process returned error: %v", err)
+	}
+	if pred.calls != 2 {
+		t.Fatalf("attempts = %d, want 2 (failed once then recovered)", pred.calls)
+	}
+	var out contracts.ScoreEnvelope //nolint:staticcheck // G13: decoding the sanctioned legacy ScoreEnvelope emit.
+	if err := json.Unmarshal(pub.gotValue, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out.Score != 88 {
+		t.Fatalf("recovered score = %v, want 88 (real, not fallback 50)", out.Score)
+	}
+	if _, isFallback := out.Details["fallback"]; isFallback {
+		t.Fatalf("recovered path must not be a fallback")
+	}
+}

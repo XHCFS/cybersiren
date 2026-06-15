@@ -645,6 +645,72 @@ class TestImpersonationFacet:
         assert result["impersonation_score"] == 0.0
         assert result["impersonated_brand"] is None
 
+    # ── H4: strict-brand cousin-TLD must be caught, real ccTLD must not FP ──
+    def test_strict_cousin_tld_with_cues_flagged(self):
+        # paypal.ru has the right label but wrong TLD; with phishing cues it is a
+        # cousin-TLD impersonation, not legitimate PayPal mail.
+        score, brand = self.engine._detect_impersonation(
+            "Your PayPal account is suspended, verify your account", "paypal.ru"
+        )
+        assert score >= 0.9
+        assert brand == "paypal"
+
+    def test_strict_cousin_tld_no_cues_low(self):
+        # Right label, wrong TLD, but no cue → low (could be a real ccTLD).
+        score, brand = self.engine._detect_impersonation(
+            "Your PayPal statement is ready", "paypal.ru"
+        )
+        assert score <= 0.2
+        assert brand == "paypal"
+
+    def test_strict_real_cctld_label_match_not_false_positive(self):
+        # A real but un-enumerated brand ccTLD (amazon.it) with ordinary order
+        # text must NOT be hard-flagged as 0.9 impersonation.
+        score, _ = self.engine._detect_impersonation(
+            "Your Amazon order has shipped", "amazon.it"
+        )
+        assert score <= 0.2
+
+    def test_strict_real_domain_legit_zero(self):
+        score, brand = self.engine._detect_impersonation(
+            "Your Amazon order has shipped", "amazon.com"
+        )
+        assert score == 0.0
+        assert brand is None
+
+    # ── H5: brand that appears only inside a link (brand_text) ─────────────
+    def test_link_only_brand_with_cues_flagged(self):
+        # Brand is gone from the prose (URL stripped for the model) but present in
+        # the URL-keeping brand_text; with cues it is impersonation.
+        score, brand = self.engine._detect_impersonation(
+            "Click to verify your account",
+            "mailer.sendgrid.net",
+            brand_text="Click http://paypal.com.evil.ru/login to verify your account",
+        )
+        assert score >= 0.9
+        assert brand == "paypal"
+
+    def test_link_only_brand_no_cues_not_false_positive(self):
+        # Legitimate mail that merely links to a brand domain (no phishing cues)
+        # must NOT be flagged as strong impersonation.
+        score, _ = self.engine._detect_impersonation(
+            "Watch our latest update",
+            "newsletter.mycompany.com",
+            brand_text="Watch our latest update at https://youtube.com/xyz",
+        )
+        assert score <= 0.2
+
+    def test_predict_catches_brand_in_link(self):
+        # End-to-end via predict(): brand only in a link is still scored.
+        engine = _engine_with_logits([0.0, 0.0, 10.0])
+        result = engine.predict(
+            "Action required",
+            "Please verify your account at http://paypal.com.evil.ru/login",
+            sender_domain="mailer.example.net",
+        )
+        assert result["impersonation_score"] >= 0.9
+        assert result["impersonated_brand"] == "paypal"
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 7c. Deception facet (heuristic, P4.2)

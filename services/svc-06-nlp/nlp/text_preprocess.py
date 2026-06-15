@@ -150,6 +150,25 @@ def preprocess_email(subject: str, body_plain: str, body_html: str = "") -> tupl
     return _INPUT_FORMAT.format(subject=subj, body=body), obfuscation
 
 
+def normalize_keep_urls(subject: str, body_plain: str, body_html: str = "") -> str:
+    """
+    Normalized subject+body that KEEPS URLs and email addresses.
+
+    Same normalization as preprocess_email (homoglyph/leet/zero-width/whitespace
+    folding) but WITHOUT the URL/email stripping step, so a brand that appears
+    only inside a link ("http://paypal.com/login") is still visible. Used ONLY by
+    the heuristic brand-impersonation keyword scan — the ML model is always fed
+    the URL-stripped preprocess_email() text, so there is no train/serve skew.
+    """
+    subject = subject or ""
+    body_plain = body_plain or ""
+    if not body_plain.strip() and body_html:
+        body_plain = strip_html(body_html)
+    subj = normalize(subject)
+    body = normalize(body_plain)
+    return _INPUT_FORMAT.format(subject=subj, body=body)
+
+
 def preprocess_composed(text: str) -> str:
     """
     Re-run an already-composed 'Subject: .. Body: ..' string through the same

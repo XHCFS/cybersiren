@@ -32,7 +32,7 @@ from typing import Optional
 
 import numpy as np
 
-from text_preprocess import preprocess_email
+from text_preprocess import normalize_keep_urls, preprocess_email
 
 logger = logging.getLogger(__name__)
 
@@ -181,6 +181,47 @@ _BRAND_LEGIT_DOMAINS: dict[str, set[str]] = {
     "netflix": {"netflix", "nflxext", "nflximg"},
 }
 
+# STRICT brands (the most-impersonated): legitimacy is decided by the FULL
+# registrable domain (eTLD+1), NOT the bare label — so cousin-TLD lookalikes
+# (paypal.ru, paypal.xyz, microsoft.co) are caught instead of trusted just
+# because the label says "paypal". Each value is the set of registrable domains
+# the brand legitimately sends from. A brand here whose sender uses the right
+# LABEL but an unlisted TLD (e.g. a real but un-enumerated ccTLD like amazon.it)
+# is NOT hard-failed — it is treated as a weak signal that only scores high with
+# corroborating phishing cues (see _detect_impersonation), so a missing ccTLD
+# costs precision noise, not a false "impersonation" alarm. Brands NOT listed
+# here keep the lenient label-only check (_BRAND_LEGIT_DOMAINS / {token}).
+_BRAND_STRICT_DOMAINS: dict[str, set[str]] = {
+    "paypal": {"paypal.com", "paypal.co.uk", "paypal.de", "paypal.fr",
+               "paypal.ca", "paypal.com.au", "paypal.me"},
+    "microsoft": {"microsoft.com", "outlook.com", "office.com", "office365.com",
+                  "microsoftonline.com", "live.com", "msn.com", "hotmail.com",
+                  "sharepoint.com", "windows.com", "skype.com", "azure.com"},
+    "apple": {"apple.com", "icloud.com", "itunes.com", "me.com", "mac.com"},
+    "google": {"google.com", "gmail.com", "googlemail.com", "youtube.com"},
+    "amazon": {"amazon.com", "amazon.co.uk", "amazon.de", "amazon.co.jp",
+               "amazon.ca", "amazon.in", "amazon.com.au", "amazonses.com",
+               "primevideo.com"},
+    "netflix": {"netflix.com"},
+    "docusign": {"docusign.com", "docusign.net"},
+    "coinbase": {"coinbase.com"},
+    "dropbox": {"dropbox.com", "dropboxmail.com"},
+    "adobe": {"adobe.com"},
+    "linkedin": {"linkedin.com"},
+    "facebook": {"facebook.com", "fb.com", "meta.com", "messenger.com"},
+    "instagram": {"instagram.com"},
+    "whatsapp": {"whatsapp.com"},
+    "bankofamerica": {"bankofamerica.com", "bofa.com"},
+    "wellsfargo": {"wellsfargo.com", "wf.com"},
+    "chase": {"chase.com"},
+    "citi": {"citi.com", "citibank.com", "citigroup.com"},
+    "americanexpress": {"americanexpress.com", "aexp.com"},
+    "dhl": {"dhl.com", "dhl.de"},
+    "fedex": {"fedex.com"},
+    "usps": {"usps.com"},
+    "irs": {"irs.gov"},
+}
+
 # Ambiguous-word KEYWORDS: ordinary English words / short tokens that collide
 # with everyday usage ("I'll chase up the invoice", "the back-ups are ready",
 # "an Apple laptop"). Keyed on the matched KEYWORD, NOT the canonical token —
@@ -210,22 +251,22 @@ _TWO_LABEL_PUBLIC_SUFFIXES: set[str] = {
 }
 
 
-def _registrable_label(domain: str) -> str:
+def _registrable_domain(domain: str) -> str:
     """
-    Dependency-free eTLD+1 approximation → the brand-identifying label.
+    Dependency-free eTLD+1 approximation → the registrable domain.
 
-    Splits the host into dot-separated labels and returns the registrable
-    domain's leading label (the part just before the public suffix). Examples:
-      service.paypal.com  → "paypal"   (suffix "com",   eTLD+1 paypal.com)
-      secure-paypal.com   → "secure-paypal"
-      paypal.com.evil.ru  → "evil"     (suffix "ru",    eTLD+1 evil.ru)
-      bank.barclays.co.uk → "barclays" (suffix "co.uk", eTLD+1 barclays.co.uk)
-      onedrive.live.com   → "live"
+    Splits the host into dot-separated labels and returns the registrable domain
+    (the label just before the public suffix, plus the suffix). Examples:
+      service.paypal.com  → "paypal.com"      (suffix "com")
+      secure-paypal.com   → "secure-paypal.com"
+      paypal.com.evil.ru  → "evil.ru"         (suffix "ru")
+      bank.barclays.co.uk → "barclays.co.uk"  (suffix "co.uk")
+      onedrive.live.com   → "live.com"
 
     Heuristic, NOT a real public-suffix list: we recognise a hand-enumerated set
     of common two-label public suffixes; otherwise (the common single-label
-    suffix case, plus any unknown suffix) we fall back to the second-to-last
-    label as the registrable label.
+    suffix case, plus any unknown suffix) we assume a single-label suffix and
+    take the last two labels.
     """
     labels = [p for p in domain.strip().lower().split(".") if p]
     if not labels:
@@ -234,11 +275,17 @@ def _registrable_label(domain: str) -> str:
         return labels[0]
     last_two = ".".join(labels[-2:])
     if last_two in _TWO_LABEL_PUBLIC_SUFFIXES:
-        # eTLD is 2 labels → registrable label is the 3rd-from-last (if present).
-        return labels[-3] if len(labels) >= 3 else labels[0]
-    # Single-label suffix (known or, as a fallback, assumed) → registrable label
-    # is the 2nd-from-last label.
-    return labels[-2]
+        # eTLD is 2 labels → registrable domain is the last THREE labels.
+        return ".".join(labels[-3:]) if len(labels) >= 3 else ".".join(labels)
+    # Single-label suffix (known or assumed) → registrable domain is the last two.
+    return ".".join(labels[-2:])
+
+
+def _registrable_label(domain: str) -> str:
+    """The brand-identifying leading label of the registrable domain (see
+    _registrable_domain). E.g. service.paypal.com → "paypal"."""
+    rd = _registrable_domain(domain)
+    return rd.split(".", 1)[0] if rd else ""
 
 
 def _legit_labels_for(token: str) -> set[str]:
@@ -650,81 +697,95 @@ class NLPInferenceEngine:
     # ── Brand impersonation (heuristic, CONSTRAINT G4: NO NER) ────────────
 
     def _detect_impersonation(
-        self, text: str, sender_domain: str
+        self, text: str, sender_domain: str, brand_text: Optional[str] = None
     ) -> tuple[float, Optional[str]]:
         """
         Heuristic brand-impersonation facet → (impersonation_score, brand|None).
 
-        Step 1 — claimed brand: scan subject+body for a known-brand keyword from
-        _BRAND_DOMAIN_TOKENS. The longest matching phrase wins (so "bank of
-        america" beats a bare "bank"). If no brand is claimed, return (0.0, None).
+        Step 1 — claimed brand: scan for a known-brand keyword. The scan runs on
+        brand_text (defaults to text) — predict() passes the URL-KEEPING text so
+        a brand that appears only inside a link is still seen, while the ML model
+        keeps getting the URL-stripped text. The longest matching phrase wins (so
+        "bank of america" beats a bare "bank", and "icloud" beats a bare
+        "apple"). A brand found ONLY in a link (not in the prose `text`) is a
+        weaker signal than one written in the body — legitimate mail links to
+        brand domains all the time — so it needs a corroborating cue to score
+        high. If no brand is claimed, return (0.0, None).
 
-        Step 2 — sender comparison: compare the claimed brand's accepted
-        registrable-domain LABELS against the sender's registrable label (the
-        eTLD+1 leading label, see _registrable_label). We match on the
-        registrable label, NOT a raw substring, so lookalike/cousin domains are
-        caught (H1: secure-paypal.com, paypal.com.evil.ru, paypal-support.io all
-        have a registrable label != "paypal" → impersonation).
-          • sender_domain known + registrable label ∈ accepted set → legitimate, 0.
-          • sender_domain known + registrable label ∉ accepted set → mismatch =
-            impersonation. For UNAMBIGUOUS brands this is the strongest signal:
-            score 0.9, +0.1 if extra impersonation cues are present (cap 1.0).
-            For AMBIGUOUS-WORD brands (chase/ups/apple/citi, H3) a mismatch alone
-            is NOT enough (they collide with ordinary words) — we require a
-            corroborating cue: with a cue → 0.9(+0.1); without a cue → 0.15.
-          • sender_domain EMPTY (unknown): we CANNOT prove a mismatch, so we do
-            NOT cry impersonation on the brand name alone (legitimate brand mail
-            mentions the brand too). We emit a MODERATE score (0.5) only when the
-            email also carries impersonation cues (verify/confirm/suspended/...);
-            otherwise a low score (0.15) just flagging that a brand was named.
-            Ambiguous-word brands with no sender and no cues → 0.0 (just a word).
+        Step 2 — sender comparison:
+          • STRICT brands (_BRAND_STRICT_DOMAINS, the most-impersonated): compare
+            the sender's full registrable domain (eTLD+1). In the brand's domain
+            set → legitimate, 0. Right LABEL but unlisted TLD (a real but
+            un-enumerated ccTLD, or a cousin-TLD attack like paypal.ru) → weak:
+            cue → 0.9(+0.1), no cue → 0.15. Different label entirely
+            (secure-paypal.com, paypal.com.evil.ru) → lookalike → strong 0.9.
+          • Non-strict brands: lenient registrable-LABEL match against the
+            accepted set (_BRAND_LEGIT_DOMAINS / {token}).
+          • Either way, AMBIGUOUS-WORD keywords (chase/ups/apple/citi) and
+            link-only mentions need a cue before scoring high; without one → 0.15.
+          • sender_domain EMPTY: cannot prove a mismatch → 0.5 with cues, else
+            0.15 (weak signals with no cue → 0.0, just a word/link).
 
         Returns the matched brand keyword's canonical token as impersonated_brand
         whenever a non-trivial impersonation score is produced.
         """
         text = text or ""
+        brand_text = brand_text if brand_text is not None else text
         sender_domain = sender_domain or ""
         text_lower = text.lower()
+        brand_lower = brand_text.lower()
 
-        # Find all claimed-brand matches; prefer the longest phrase (most specific).
-        matched: list[tuple[str, str]] = []  # (keyword, canonical_token)
+        # Find all claimed-brand matches; track whether each appears in the prose
+        # text or only in a link. Prefer the longest phrase (most specific).
+        matched: list[tuple[str, str, bool]] = []  # (keyword, token, in_prose)
         for pattern, keyword, token in _BRAND_PATTERNS:
-            if pattern.search(text_lower):
-                matched.append((keyword, token))
+            if pattern.search(brand_lower):
+                matched.append((keyword, token, bool(pattern.search(text_lower))))
 
         if not matched:
             return 0.0, None
 
-        # Longest keyword wins (e.g. "bank of america" over "bank"-like cues,
-        # and "icloud" over a bare "apple" so sub-brands aren't downgraded).
-        matched.sort(key=lambda kt: len(kt[0]), reverse=True)
-        claimed_keyword, claimed_token = matched[0]
+        matched.sort(key=lambda m: len(m[0]), reverse=True)
+        claimed_keyword, claimed_token, in_prose = matched[0]
 
-        # Ambiguity is keyed on the matched KEYWORD, not the canonical token:
-        # bare "apple" is ambiguous, but "icloud"/"itunes"/"appleid" are not.
-        has_cues = any(p.search(text_lower) for p in _IMPERSONATION_CUE_RE)
-        is_ambiguous = claimed_keyword in _AMBIGUOUS_WORD_KEYWORDS
+        has_cues = any(p.search(brand_lower) for p in _IMPERSONATION_CUE_RE)
+        # A signal is "weak" — needs a corroborating cue to score high — when the
+        # keyword is an ordinary word (ambiguity keyed on the KEYWORD, so bare
+        # "apple" is weak but "icloud"/"itunes" are not) OR the brand only showed
+        # up inside a link rather than the body prose.
+        weak_signal = (claimed_keyword in _AMBIGUOUS_WORD_KEYWORDS) or (not in_prose)
+
+        def _score_mismatch() -> tuple[float, Optional[str]]:
+            if weak_signal and not has_cues:
+                return 0.15, claimed_token
+            return round(min(1.0, 0.9 + (0.1 if has_cues else 0.0)), 4), claimed_token
 
         sd = sender_domain.strip().lower()
         if sd:
-            # We have a sender domain → confirm or refute via the registrable label.
-            reg_label = _registrable_label(sd)
-            if reg_label in _legit_labels_for(claimed_token):
-                # Sender's registrable domain belongs to the brand → not impersonation.
+            strict = _BRAND_STRICT_DOMAINS.get(claimed_token)
+            if strict is not None:
+                if _registrable_domain(sd) in strict:
+                    # Sender uses one of the brand's real domains → not impersonation.
+                    return 0.0, None
+                if _registrable_label(sd) in _legit_labels_for(claimed_token):
+                    # Right brand label, unlisted TLD: a real ccTLD we don't track
+                    # OR a cousin-TLD attack. Only strong with corroborating cues.
+                    if has_cues:
+                        return round(min(1.0, 1.0), 4), claimed_token
+                    return 0.15, claimed_token
+                # Label doesn't match at all → classic lookalike/cousin domain.
+                return _score_mismatch()
+            # Non-strict brand: lenient registrable-label match (legacy behaviour).
+            if _registrable_label(sd) in _legit_labels_for(claimed_token):
                 return 0.0, None
-            # Brand claimed but the sender's registrable domain is NOT the brand's.
-            if is_ambiguous and not has_cues:
-                # Ordinary word + mismatched domain but no impersonation cue → low.
-                return 0.15, claimed_token
-            score = 0.9 + (0.1 if has_cues else 0.0)
-            return round(min(1.0, score), 4), claimed_token
+            return _score_mismatch()
 
         # sender_domain unknown: cannot prove a mismatch.
         if has_cues:
             # Brand + classic impersonation cues, but unverifiable sender → moderate.
             return 0.5, claimed_token
-        if is_ambiguous:
-            # Ambiguous word, no cue, no sender → almost certainly just a word.
+        if weak_signal:
+            # Ambiguous word / link-only mention, no cue, no sender → just noise.
             return 0.0, None
         # Just a brand mention with no cues and no sender to check → low confidence.
         return 0.15, claimed_token
@@ -827,10 +888,14 @@ class NLPInferenceEngine:
 
         # 8. Heuristic facets (CONSTRAINT G4: rule-based only, no NER / no model).
         #    Brand impersonation compares the claimed brand against sender_domain;
-        #    deception scores phishing linguistic cues. Both run on the
-        #    preprocessed text so they share the train/serve-safe canonicalization.
+        #    deception scores phishing linguistic cues. Deception runs on the
+        #    model's preprocessed text. The brand scan additionally gets a
+        #    URL-KEEPING copy (brand_text) so a brand that appears only inside a
+        #    link is still caught — the model itself never sees that copy, so
+        #    there is no train/serve skew.
+        brand_text = normalize_keep_urls(subject, body_plain, body_html)
         impersonation_score, impersonated_brand = self._detect_impersonation(
-            text, sender_domain
+            text, sender_domain, brand_text=brand_text
         )
         deception_score = self._compute_deception(text)
 

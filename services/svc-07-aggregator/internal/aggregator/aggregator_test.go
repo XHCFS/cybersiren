@@ -363,6 +363,72 @@ func TestPackager_FlatHeaderShapeForwardedRaw(t *testing.T) {
 	assert.JSONEq(t, string(headerBody), string(out.ComponentDetails.Header))
 }
 
+// A fail-soft NLP score (details.fallback=true, the neutral 50 svc-06 emits on
+// a model timeout) must be COUNTED (score present, analysis not partial) but
+// flagged in DegradedComponents so the best-effort nature is visible.
+func TestPackager_FallbackScoreMarkedDegraded(t *testing.T) {
+	t.Parallel()
+
+	nlpBody, err := json.Marshal(contracts.ScoreEnvelope{ //nolint:staticcheck // G13: sanctioned legacy ScoreEnvelope test producer.
+		Meta:      contracts.NewMeta("e1", 1),
+		Component: contracts.ComponentNLP,
+		Score:     50,
+		Details:   map[string]interface{}{"fallback": true, "fallback_reason": "nlp_predict_timeout"},
+	})
+	require.NoError(t, err)
+
+	planBody, err := json.Marshal(contracts.AnalysisPlan{
+		ExpectedScores: []string{contracts.TopicScoresNLP},
+	})
+	require.NoError(t, err)
+
+	ft := testPartitionFetchedAt(t).UTC().Format(startedLayout)
+	state := map[string]string{
+		fieldPartitionFetchedAt:  ft,
+		fieldPlan:                string(planBody),
+		fieldOrgID:               "1",
+		fieldStartedAt:           time.Now().UTC().Format(startedLayout),
+		contracts.TopicScoresNLP: string(nlpBody),
+	}
+	out, err := packageState("e1", 1, state, time.Now().UTC(), false)
+	require.NoError(t, err)
+	require.NotNil(t, out.NLPScore)
+	assert.Equal(t, 50, *out.NLPScore)
+	assert.False(t, out.PartialAnalysis, "a present fallback score is not a partial analysis")
+	assert.Empty(t, out.MissingComponents)
+	assert.Equal(t, []string{contracts.TopicScoresNLP}, out.DegradedComponents)
+}
+
+// A normal (non-fallback) score must NOT be flagged degraded.
+func TestPackager_NormalScoreNotDegraded(t *testing.T) {
+	t.Parallel()
+
+	nlpBody, err := json.Marshal(contracts.ScoreEnvelope{ //nolint:staticcheck // G13: sanctioned legacy ScoreEnvelope test producer.
+		Meta:      contracts.NewMeta("e1", 1),
+		Component: contracts.ComponentNLP,
+		Score:     72,
+		Details:   map[string]interface{}{"classification": "phishing"},
+	})
+	require.NoError(t, err)
+
+	planBody, err := json.Marshal(contracts.AnalysisPlan{
+		ExpectedScores: []string{contracts.TopicScoresNLP},
+	})
+	require.NoError(t, err)
+
+	ft := testPartitionFetchedAt(t).UTC().Format(startedLayout)
+	state := map[string]string{
+		fieldPartitionFetchedAt:  ft,
+		fieldPlan:                string(planBody),
+		fieldOrgID:               "1",
+		fieldStartedAt:           time.Now().UTC().Format(startedLayout),
+		contracts.TopicScoresNLP: string(nlpBody),
+	}
+	out, err := packageState("e1", 1, state, time.Now().UTC(), false)
+	require.NoError(t, err)
+	assert.Empty(t, out.DegradedComponents)
+}
+
 // emails.scored must carry the DB-assigned internal_id forwarded from
 // scores.header (svc-02 -> analysis.headers -> svc-04), NOT email_id — so SVC-08
 // updates the parser-owned row. email_id is a UUIDv7 string and can NOT

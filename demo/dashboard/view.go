@@ -118,6 +118,7 @@ type fileView struct {
 type aggView struct {
 	Partial   bool     `json:"partial_analysis"`
 	Missing   []string `json:"missing_components,omitempty"`
+	Degraded  []string `json:"degraded_components,omitempty"`
 	Timeout   bool     `json:"timeout_triggered"`
 	LatencyMS int64    `json:"aggregation_latency_ms,omitempty"`
 }
@@ -150,6 +151,7 @@ func viewOf(sc *scan) scanView {
 		v.Aggregation = &aggView{
 			Partial:   es.PartialAnalysis,
 			Missing:   es.MissingComponents,
+			Degraded:  es.DegradedComponents,
 			Timeout:   es.TimeoutTriggered,
 			LatencyMS: es.AggregationLatencyMS,
 		}

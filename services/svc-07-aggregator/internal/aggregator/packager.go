@@ -77,6 +77,7 @@ func packageState(
 	}
 
 	missing := []string{}
+	degraded := []string{}
 	for _, expected := range plan.ExpectedScores {
 		raw, ok := state[expected]
 		if !ok {
@@ -102,6 +103,12 @@ func packageState(
 			out.NLPScore = &s
 			out.ComponentDetails.NLP = json.RawMessage(raw)
 		}
+		// A present-but-fail-soft score (e.g. svc-06's neutral 50 after a model
+		// timeout) is flagged degraded so the score is still counted but the
+		// best-effort nature is visible downstream.
+		if isFallbackScore([]byte(raw)) {
+			degraded = append(degraded, expected)
+		}
 	}
 
 	if len(missing) > 0 {
@@ -109,7 +116,28 @@ func packageState(
 		out.MissingComponents = missing
 		out.PartialAnalysis = true
 	}
+	if len(degraded) > 0 {
+		sort.Strings(degraded)
+		out.DegradedComponents = degraded
+	}
 	return out, nil
+}
+
+// isFallbackScore reports whether a component's score envelope was produced on
+// a fail-soft fallback path, signalled by details.fallback == true.
+func isFallbackScore(raw []byte) bool {
+	if len(raw) == 0 {
+		return false
+	}
+	var env struct {
+		Details struct {
+			Fallback bool `json:"fallback"`
+		} `json:"details"`
+	}
+	if err := json.Unmarshal(raw, &env); err != nil {
+		return false
+	}
+	return env.Details.Fallback
 }
 
 // completionStatus determines whether the gathered state is sufficient

@@ -27,6 +27,16 @@ import (
 const (
 	serviceName    = "svc-06-nlp"
 	predictTimeout = 10 * time.Second
+
+	// Bounded in-handler retries for TRANSIENT predict failures (timeout,
+	// unreachable, 5xx) before falling back to the neutral score. This rides
+	// out brief model blips (e.g. a FastAPI restart) without NACKing the
+	// message — so we keep the spec §6 "never stall the partition" guarantee
+	// while not committing a permanent neutral 50 on a one-second hiccup.
+	// Permanent failures (4xx) are NOT retried. Kept small so the worst case
+	// stays bounded.
+	maxPredictAttempts  = 3
+	predictRetryBackoff = 250 * time.Millisecond
 )
 
 // versionHeuristic is the version string recorded for every facet in the
@@ -205,11 +215,26 @@ func handle(ctx context.Context, msg kafkaconsumer.Message, deps svckit.Deps) er
 	return process(ctx, input, nlpClient, publish)
 }
 
+// isTransientPredictErr reports whether a predict failure is worth retrying.
+// Transient: a deadline/timeout, an unreachable service (status 0), or a 5xx.
+// Permanent: a 4xx (e.g. a malformed request) — retrying can't help, so we go
+// straight to the fallback. nlp.Client.Predict returns status 0 + err when the
+// service is unreachable and the HTTP status + err on a non-2xx response.
+func isTransientPredictErr(err error, status int) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	return status == 0 || status >= 500
+}
+
 // process is the testable core of the handler: it predicts a content risk
-// score (falling back to a neutral 50 on any predict failure/timeout) and
-// publishes the scores.nlp envelope. It depends only on the predictor and
-// publishFunc abstractions so tests can drive it without a live FastAPI
-// service or real Kafka.
+// score (with bounded retries for transient failures, then falling back to a
+// neutral 50 on persistent failure/timeout) and publishes the scores.nlp
+// envelope. It depends only on the predictor and publishFunc abstractions so
+// tests can drive it without a live FastAPI service or real Kafka.
 func process(ctx context.Context, input contracts.AnalysisText, pred predictor, publish publishFunc) error {
 	log := zerolog.Ctx(ctx).With().Str("email_id", input.Meta.EmailID).Logger()
 
@@ -219,14 +244,38 @@ func process(ctx context.Context, input contracts.AnalysisText, pred predictor, 
 	}
 	meta := contracts.NewMetaWithFetched(input.Meta.EmailID, input.Meta.OrgID, ft)
 
-	predCtx, cancel := context.WithTimeout(ctx, predictTimeout)
-	resp, status, err := pred.Predict(predCtx, nlp.PredictRequest{
+	req := nlp.PredictRequest{
 		Subject:      input.Subject,
 		BodyPlain:    input.Body,
 		SenderName:   input.SenderName,
 		SenderDomain: input.SenderDomain,
-	})
-	cancel()
+	}
+	var (
+		resp   *nlp.PredictResponse
+		status int
+		err    error
+	)
+	for attempt := 1; attempt <= maxPredictAttempts; attempt++ {
+		predCtx, cancel := context.WithTimeout(ctx, predictTimeout)
+		resp, status, err = pred.Predict(predCtx, req)
+		cancel()
+		if err == nil || !isTransientPredictErr(err, status) || attempt == maxPredictAttempts {
+			break
+		}
+		log.Warn().
+			Err(err).
+			Int("status", status).
+			Int("attempt", attempt).
+			Int("max_attempts", maxPredictAttempts).
+			Msg("nlp predict transient failure; retrying")
+		// Short backoff, but abort immediately if the consumer context is done.
+		select {
+		case <-ctx.Done():
+			err = ctx.Err()
+			attempt = maxPredictAttempts
+		case <-time.After(predictRetryBackoff):
+		}
+	}
 
 	// Per-branch values. The defaults describe the fallback (no model ran)
 	// state; the success branch overwrites them. Both paths then build ONE
