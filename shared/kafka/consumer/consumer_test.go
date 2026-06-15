@@ -9,9 +9,9 @@ import "testing"
 type recordOutcome int
 
 const (
-	outcomeCommit recordOutcome = iota // handler succeeded; commit + advance
-	outcomeRetry                       // transient failure; rewind + retry
-	outcomeDeadLetter                  // poison; dead-letter + commit to advance
+	outcomeCommit     recordOutcome = iota // handler succeeded; commit + advance
+	outcomeRetry                           // transient failure; rewind + retry
+	outcomeDeadLetter                      // poison; dead-letter + commit to advance
 )
 
 // step replays one record through the consumer's retry bookkeeping and returns

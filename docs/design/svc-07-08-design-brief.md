@@ -236,17 +236,88 @@ Produces to `emails.verdict` (7-day retention).
 
 Receives `url_score`, `header_score`, `attachment_score` (nullable), `nlp_score` (nullable) from SVC-07.
 
-**Current stub:** simple average — `sum / len(component_scores)`.
+SVC-08 supports two fusion methods, selected by `CYBERSIREN_DECISION__FUSION_MODE`
+(or `decision.fusion_mode` in `config.yaml` — both feed `DecisionConfig` via
+`shared/config`; an unrecognized value fails fast at startup). **Default:
+`weighted_average`** (the v1 behaviour, unchanged). `noisy_or` is **opt-in** and runs in
+**shadow** (see below) until its verdict-band recalibration lands.
 
-**Required:** Configurable weighted blend. Starting weights (equal by default, env-var overrides):
-- `url_weight` = 0.35 (URL is usually the strongest signal)
-- `header_weight` = 0.30
-- `nlp_weight` = 0.25
-- `attachment_weight` = 0.10
+#### `weighted_average` — v1 weighted mean (default)
 
-**Null components:** If `partial_analysis: true` in emails.scored, some scores may be missing. The blender must handle null scores gracefully — divide by the sum of weights of **present** components only, not total. Flag this condition in the output (`partial_analysis: true` passes through).
+`risk = Σ wₑ·sₑ / Σ wₑ` over **present** components, weights `url=0.35, header=0.30,
+nlp=0.25, attachment=0.10` (`engine.DefaultWeights`). A missing component never shifts the
+result; `partial_analysis: true` passes through.
 
-**Explainability invariant:** Individual component scores must be preserved in the `emails.verdict` message and in the `emails` DB UPDATE regardless of the blending method.
+**Known weakness it has:** it *dilutes* a confident single channel. A URL that SVC-03
+**pinned to 100** (TI/blocklist hit, brand-in-subdomain guard, or L2 fusion verdict) with
+clean text and header blends to only `0.35·100/(0.35+0.30+0.25) ≈ 39` → "suspicious", not
+"malware" — it under-rates a *confirmed* threat. This motivates `noisy_or`.
+
+#### `noisy_or` — probabilistic OR (opt-in, shadow)
+
+For each **present** component `c` with score `sₑ ∈ [0,100]` and reliability `rₑ ∈ [0,1]`:
+
+$$\text{risk} \;=\; 100\cdot\Big(1 \;-\!\!\prod_{c\,\in\,\text{present}}\!\!\big(1 - r_c\,\tfrac{s_c}{100}\big)\Big)$$
+
+`pₑ = rₑ·sₑ/100` = P(channel *c* signals phishing); the product = P(*all* quiet); `1 −`
+that = **P(at least one channel fires)**.
+
+**Reliabilities** (`engine.DefaultReliabilities`) default to **1.0 for every channel** —
+full trust, *not* tuned per channel. Each upstream score is already a fused/calibrated
+signal in its own service (the URL score is SVC-03's TI+guard+L2-fused verdict, not a raw
+lexical score; attachment is SVC-05's AV/TI-aware score), so the blender does not
+second-guess it. Operators may lower a value if a channel proves noisy in production via
+`CYBERSIREN_DECISION__RELIABILITY__{URL,HEADER,NLP,ATTACHMENT}` (or `decision.reliability.*`
+in `config.yaml`) — a float in `[0,1]`; an out-of-range/non-finite value, or all-zero,
+fails fast at startup (`DecisionConfig.Validate`). No channel ships at a fabricated sub-1.0
+default. *(An earlier draft down-weighted URL to 0.22 based on an offline lexical-only
+proxy; that incorrectly crushed the TI-confirmed production score to "benign" and was
+removed.)*
+
+**What it fixes — confirmed-signal preservation (the OR-floor):**
+`risk ≥ 100·maxₑ(rₑ·sₑ/100)`, so at reliability 1.0 a channel pinned to 100 yields risk
+100 (malware band) regardless of the other channels. Confirmed signals can never be diluted
+below their own score, and a clean channel contributes a factor of 1 (nothing) — no
+dilution. Monotone, bounded [0,100], pure arithmetic (no model / sidecar).
+
+**Why it is opt-in, not default — two honest caveats:**
+1. **Independence assumption.** The OR assumes channels are conditionally independent; real
+   channels are correlated, so correlated evidence is combined optimistically and the score
+   distribution sits 1–2 bands higher than the weighted mean.
+2. **Bands not yet recalibrated.** The §3.6 verdict bands and rule `score_impact` values
+   were tuned to the weighted-mean distribution. They must be recalibrated for the OR
+   distribution **on real `emails.verdict` traffic** before this becomes the default. The
+   characterization in `noisyor_blender_test.go` pins the current band map as the input to
+   that work.
+
+**Shadow.** Opt-in via `CYBERSIREN_DECISION__FUSION_SHADOW=true` (default off, so steady-state
+deployments do not pay for a second blend per email). When enabled, the engine runs the
+*other* fusion method through the **same pipeline the active verdict took** — nudge → rule
+adjustment → reconcile — and increments `decision_fusion_shadow_disagree_total{active_band,
+shadow_band}` when the two would emit different **final verdict labels**, *without* affecting
+the verdict. Comparing reconciled final labels (not the raw blend band) makes the metric a
+faithful measure of the distribution impact of switching before it is enabled. *(Rules are
+**re-evaluated against the shadow score's own pre-rule band** — not the active path's
+adjustment — so a rule keyed on the band fires for the shadow exactly as it would after a
+real switch; the metric therefore reflects the full nudge→rule→reconcile effect, not just the
+blend shift.)*
+
+**Evidence status.** The committed, reproducible evidence is behavioural, in
+`noisyor_blender_test.go`: confirmed-signal preservation (a TI-pinned URL=100 and a
+confirmed-malware attachment each reach the malware band), no-dilution, the OR-floor, and a
+pinned four-band characterization. Any recall/FPR figures explored during design came from a
+**synthetic** corpus with a lexical-proxy URL channel (not the production fused score); they
+justify the *shape* of the fix, **not** a production accuracy claim. A real held-out
+multi-channel corpus and the §3.6 band recalibration are required before `noisy_or` is
+promoted to default.
+
+#### Common
+
+**Null components:** both blenders combine **present** components only. **Explainability:**
+individual component scores are preserved in `emails.verdict` and the `emails` DB UPDATE
+regardless of method. Both return per-component `Contributions`, but note the semantics
+differ: the weighted blender's contributions sum to the blended score; the noisy-OR's are
+per-channel probabilities `pₑ` and do **not** sum to the score.
 
 ### 3.5 Rule Engine (Step ii)
 
@@ -293,6 +364,12 @@ After score blending + rule adjustments:
 | 51–75 | — | `phishing` |
 | 76–100 | a high (malware-grade) attachment is present | `malware` |
 | 76–100 | otherwise | `phishing` (high) |
+
+> **Band ↔ fusion coupling.** These ranges (and the rule `score_impact` magnitudes that add
+> to the blended score) were calibrated for the **`weighted_average`** distribution. The
+> `noisy_or` blender (§3.4) shifts scores up by 1–2 bands, so these bands **must be
+> recalibrated on real `emails.verdict` traffic before `noisy_or` is made the default** —
+> until then it runs in shadow. `noisyor_blender_test.go` pins the current band map.
 
 **Malware-vs-phishing reconcile (76–100 band).** The top band covers both "phishing(high)" and "malware". We disambiguate by the attachment: a top-band verdict that carries a malware-grade attachment is `malware`; a top-band verdict driven only by URL/header/NLP signals (no malware-grade attachment) is high-band `phishing` (i.e. `phishing(high)`). "High" here means the score band, not the confidence value — see the confidence note below: a `phishing(high)` verdict near a band edge can carry a confidence close to 0. This is `ReconcileLabel(score, components)`; `engine.LabelFor` is left pure (score→band only) and the reconcile wraps it.
 
@@ -553,12 +630,18 @@ Study this as the canonical pattern for a decision-service processor. Key patter
 
 These questions are flagged in the spec as "under research" or have trade-offs that require deliberate choices. Answers from research in §6 should inform the design.
 
-### Q1 — Score Blending Method
-**Status:** Spec says "combination method is under research — must be explainable."  
-**Current stub:** simple average.  
-**Constraint:** Individual component scores must be preserved (not lossy).  
-**Options:** weighted average (simplest, explainable), log-odds blending (Bayesian, less interpretable), max-score (conservative, high recall), rank aggregation, calibrated ensemble.  
-**Decision needed:** Which method to implement first, and how to make it configurable for future A/B testing?
+### Q1 — Score Blending Method — ✅ RESOLVED (see §3.4)
+**Decision:** the **weighted average stays the default**; a **probabilistic OR (`noisy_or`)**
+is added opt-in/shadow to fix the weighted mean's one real defect — it *dilutes* a
+confident single channel and so under-rates a *confirmed* threat (a TI-pinned URL=100 with
+clean text/header → "suspicious", not "malware"). The OR has a single-channel floor that
+preserves such signals. Reliabilities default to **1.0 (full trust)**, not per-channel
+tuned — an earlier draft down-weighted URL based on an offline lexical proxy and was
+rejected for crushing the TI-confirmed production score. A learnable meta-classifier
+(gradient boosting) was also prototyped and **rejected** (overfit synthetic data;
+false-positived on lexical-noise links). `noisy_or` is **not** default because it assumes
+channel independence and shifts the §3.6 bands up — those bands need recalibration on real
+verdict traffic first. Selector: `CYBERSIREN_DECISION__FUSION_MODE`.
 
 ### Q2 — SimHash for Campaign Near-Deduplication
 **Status:** Spec says "SimHash near-duplicate detection (per-org scoped via Redis)."  
@@ -584,23 +667,28 @@ Use these as literal web search queries (Google Scholar, arXiv, Semantic Scholar
 
 ---
 
-### 6.1 Score Blending / Ensemble Combination Methods for Security Classifiers
+### 6.1 Score Blending / Ensemble Combination Methods — ✅ RESOLVED
 
-**Search prompt 1 (academic):**
-> "ensemble score combination methods phishing detection explainability weighted average versus log-odds calibration precision recall"
+Findings that drove the §3.4 / Q1 decision:
+- **The OR family avoids dilution.** A weighted mean dilutes a confident channel and
+  provably cannot catch both single-channel threat types at threshold ≥ 50; a probabilistic
+  OR has a single-channel floor that preserves a confirmed signal (e.g. a TI-pinned URL).
+- **Per-channel reliability is *not* derivable here.** We have no real multi-channel
+  labelled corpus, so per-channel reliabilities cannot be honestly *measured*. Each upstream
+  score is already fused/calibrated in its own service, so the OR defaults to full trust
+  (1.0); operators tune downward only on observed production noise. (An offline lexical URL
+  proxy made a high URL look unreliable; that proxy is not the production signal, so
+  down-weighting URL was wrong.)
+- **A learnable meta-classifier is *not* appropriate yet.** A gradient-boosted stacker was
+  prototyped; it overfit the synthetic corpus and false-positived on lexical-noise links.
+  All recall/FPR figures here are on **synthetic** data with a lexical-proxy URL channel —
+  they justify the *shape* of the fix, not a production accuracy claim. A learned layer (and
+  default-on for `noisy_or`) becomes appropriate once a *real* full-email multi-channel
+  corpus exists.
 
-**Search prompt 2 (applied):**
-> "multi-classifier email threat scoring fusion method calibrated probability combination site:arxiv.org OR site:usenix.org"
-
-**Search prompt 3 (tooling):**
-> "scikit-learn VotingClassifier soft voting weighted average vs stacking ensemble explainability phishing URL"
-
-**What to find:**
-- Whether log-odds blending or weighted average gives better AUC for binary phishing classification when individual classifiers are of different modality (URL features vs. text vs. headers)
-- Whether calibration (Platt scaling, isotonic regression) is needed before blending when classifiers output raw scores (0–100 int) rather than calibrated probabilities
-- Whether a learnable blending layer (trained meta-classifier) is appropriate, or whether a simple configurable weighted average with equal initial weights is sufficient for a first implementation
-
-**Decision this informs:** §3.4 score blending algorithm, and whether the blending weights should be static (config) or learned.
+**Outcome:** static, config-selectable structural fusion — `weighted_average` default,
+`noisy_or` opt-in/shadow pending band recalibration on real traffic. See §3.4 and
+`internal/engine/noisyor_blender.go`.
 
 ---
 
@@ -714,8 +802,10 @@ services/svc-08-decision/
 │   ├── engine/
 │   │   ├── engine.go               (orchestrator: blend → rules → verdict → campaign → DB)
 │   │   ├── engine_test.go
-│   │   ├── blender.go              (weighted score combination)
+│   │   ├── blender.go              (Blender interface + weighted_average blender)
 │   │   ├── blender_test.go
+│   │   ├── noisyor_blender.go      (probabilistic-OR blender — opt-in/shadow, §3.4)
+│   │   ├── noisyor_blender_test.go
 │   │   ├── confidence.go           (confidence formula)
 │   │   └── confidence_test.go
 │   ├── campaign/

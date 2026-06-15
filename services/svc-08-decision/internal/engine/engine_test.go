@@ -7,10 +7,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/require"
 
 	"github.com/saif/cybersiren/services/svc-08-decision/internal/campaign"
+	"github.com/saif/cybersiren/services/svc-08-decision/internal/metrics"
 	"github.com/saif/cybersiren/services/svc-08-decision/internal/persist"
 	"github.com/saif/cybersiren/services/svc-08-decision/internal/rules"
 	contracts "github.com/saif/cybersiren/shared/contracts/kafka"
@@ -352,4 +355,79 @@ func TestHandle_UsesStoredKafkaWireOnDedupeReplay(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, pub.records, 1)
 	require.JSONEq(t, string(stored), string(pub.records[0].value))
+}
+
+// TestHandle_FusionShadow drives an input where weighted_average (active, default)
+// and noisy_or (shadow) land in different verdict bands — NLP=40,Header=40 blends
+// to 40 (suspicious) under the weighted mean but 64 (phishing) under the OR. It
+// asserts (a) shadow OFF records nothing, and (b) shadow ON records exactly one
+// disagreement labelled by the two reconciled verdict labels.
+func TestHandle_FusionShadow(t *testing.T) {
+	t.Parallel()
+	comps := Components{NLP: ptrInt(40), Header: ptrInt(40)}
+
+	// (a) shadow disabled (default): the second blend never runs, nothing recorded.
+	regOff := prometheus.NewRegistry()
+	mOff := metrics.New(regOff)
+	engOff := New(Config{}, fakeRules{}, fakeSimhash{},
+		&fakeWriter{out: persist.Output{CampaignID: 1, VerdictID: 1, EmailCount: 1}},
+		&fakePublisher{}, mOff, zerolog.Nop())
+	require.NoError(t, engOff.Handle(context.Background(), makeScoredMessageWith(t, 7001, "e7001", comps)))
+	require.Equal(t, 0, testutil.CollectAndCount(mOff.FusionShadowDisagree),
+		"shadow disabled by default → no disagreement series")
+
+	// (b) shadow enabled: weighted (active) = suspicious, noisy_or (shadow) = phishing.
+	regOn := prometheus.NewRegistry()
+	mOn := metrics.New(regOn)
+	engOn := New(Config{FusionShadow: true}, fakeRules{}, fakeSimhash{},
+		&fakeWriter{out: persist.Output{CampaignID: 1, VerdictID: 1, EmailCount: 1}},
+		&fakePublisher{}, mOn, zerolog.Nop())
+	require.NoError(t, engOn.Handle(context.Background(), makeScoredMessageWith(t, 7002, "e7002", comps)))
+	require.InDelta(t, 1.0,
+		testutil.ToFloat64(mOn.FusionShadowDisagree.WithLabelValues(string(LabelSuspicious), string(LabelPhishing))),
+		1e-9, "shadow enabled → one disagreement: active suspicious vs shadow phishing")
+
+	// (c) degraded path (rules cache unavailable) still records shadow disagreement,
+	// so the calibration sample is not biased toward healthy traffic.
+	regDeg := prometheus.NewRegistry()
+	mDeg := metrics.New(regDeg)
+	engDeg := New(Config{FusionShadow: true}, nil, fakeSimhash{}, // nil rules cache → degraded path
+		&fakeWriter{out: persist.Output{CampaignID: 1, VerdictID: 1, EmailCount: 1}},
+		&fakePublisher{}, mDeg, zerolog.Nop())
+	require.NoError(t, engDeg.Handle(context.Background(), makeScoredMessageWith(t, 7003, "e7003", comps)))
+	require.InDelta(t, 1.0,
+		testutil.ToFloat64(mDeg.FusionShadowDisagree.WithLabelValues(string(LabelSuspicious), string(LabelPhishing))),
+		1e-9, "degraded path with shadow on → disagreement still recorded")
+}
+
+// TestHandle_FusionShadow_RulesReEvaluated proves the shadow runs rules against
+// its OWN pre-rule band, not the active path's adjustment. Input NLP=20,Header=20:
+// weighted blends to 20 (benign, rule below keyed on band==suspicious does NOT fire
+// → active stays benign), but noisy_or blends to 36 (suspicious, the rule FIRES
+// +20 → 56 → phishing). If the shadow merely reused the active adjustment (0) it
+// would record (benign, suspicious); recording (benign, phishing) proves the rule
+// was re-evaluated against the shadow's higher band.
+func TestHandle_FusionShadow_RulesReEvaluated(t *testing.T) {
+	t.Parallel()
+	rule := rules.CachedRule{
+		ID:          1,
+		Name:        "escalate-suspicious",
+		ScoreImpact: 20,
+		Logic:       json.RawMessage(`{"signal":"verdict.label","op":"eq","value":"suspicious"}`),
+	}
+	reg := prometheus.NewRegistry()
+	m := metrics.New(reg)
+	eng := New(Config{FusionShadow: true}, fakeRules{rules: []rules.CachedRule{rule}}, fakeSimhash{},
+		&fakeWriter{out: persist.Output{CampaignID: 1, VerdictID: 1, EmailCount: 1}},
+		&fakePublisher{}, m, zerolog.Nop())
+
+	comps := Components{NLP: ptrInt(20), Header: ptrInt(20)}
+	require.NoError(t, eng.Handle(context.Background(), makeScoredMessageWith(t, 7004, "e7004", comps)))
+
+	require.InDelta(t, 1.0,
+		testutil.ToFloat64(m.FusionShadowDisagree.WithLabelValues(string(LabelBenign), string(LabelPhishing))),
+		1e-9, "shadow must re-evaluate rules against its own band → (benign, phishing), not (benign, suspicious)")
+	require.InDelta(t, 0.0,
+		testutil.ToFloat64(m.FusionShadowDisagree.WithLabelValues(string(LabelBenign), string(LabelSuspicious))),
+		1e-9, "the no-re-eval label pair must NOT be recorded")
 }

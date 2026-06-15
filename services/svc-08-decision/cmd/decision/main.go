@@ -12,6 +12,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 
 	"github.com/rs/zerolog"
@@ -72,9 +73,26 @@ func main() {
 			simhash := campaign.NewComputer(deps.Valkey, campaign.SimHashThreshold, deps.Log, m.SimhashLookupIndex)
 			writer := persist.NewWriter(deps.Pool, defaultDBRetries, deps.Log)
 
+			// Fail fast on a bad fusion mode / out-of-range reliability, like the
+			// rest of the fleet (HeaderConfig.Validate etc.). Both env
+			// (CYBERSIREN_DECISION__FUSION_MODE) and config.yaml (decision.fusion_mode)
+			// feed deps.Cfg.Decision via shared/config.
+			dc := deps.Cfg.Decision
+			if err := dc.Validate(); err != nil {
+				return fmt.Errorf("svc-08: invalid decision config: %w", err)
+			}
+
 			eng = engine.New(
 				engine.Config{
-					BlendWeights:         engine.DefaultWeights(),
+					FusionMode:   dc.FusionMode,
+					FusionShadow: dc.FusionShadow,
+					BlendWeights: engine.DefaultWeights(),
+					Reliabilities: engine.Reliabilities{
+						URL:        dc.Reliability.URL,
+						Header:     dc.Reliability.Header,
+						NLP:        dc.Reliability.NLP,
+						Attachment: dc.Reliability.Attachment,
+					},
 					Shrinkage:            campaign.DefaultShrinkage(),
 					SimHashThreshold:     campaign.SimHashThreshold,
 					PublishRetryAttempts: defaultPubRetries,
@@ -90,6 +108,8 @@ func main() {
 
 			deps.Log.Info().
 				Str("model_version", defaultModelVersion).
+				Str("fusion_mode", dc.FusionMode).
+				Bool("fusion_shadow", dc.FusionShadow).
 				Int("simhash_threshold", campaign.SimHashThreshold).
 				Msg("decision engine ready")
 			return nil

@@ -183,6 +183,27 @@
           "refId": "A"
         }
       ]
+    },
+    {
+      "title": "Fusion shadow disagreement (active → shadow verdict / 5m)",
+      "description": "Emails where the non-active fusion method would emit a different final verdict label (requires CYBERSIREN_DECISION__FUSION_SHADOW=true). Measures the impact of switching the blender before enabling it.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 40 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "fillOpacity": 20, "lineWidth": 2 }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "sum by (active_band, shadow_band) (increase(decision_fusion_shadow_disagree_total[5m]))",
+          "legendFormat": "{{active_band}} → {{shadow_band}}",
+          "refId": "A"
+        }
+      ]
     }
   ]
 }

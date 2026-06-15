@@ -1,6 +1,7 @@
 package config
 
 import (
+	"math"
 	"net/url"
 	"os"
 	"strings"
@@ -826,5 +827,93 @@ func TestGmailConfig_Validate(t *testing.T) {
 				t.Fatalf("expected error containing %q, got %q", tt.wantErr, err.Error())
 			}
 		})
+	}
+}
+
+func TestDecisionConfig_Validate(t *testing.T) {
+	valid := DecisionConfig{
+		FusionMode:   "noisy_or",
+		FusionShadow: true,
+		Reliability:  ReliabilityConfig{URL: 1.0, Header: 0.8, NLP: 1.0, Attachment: 0.0},
+	}
+	if err := valid.Validate(); err != nil {
+		t.Fatalf("valid decision config rejected: %v", err)
+	}
+	// empty fusion mode is allowed (engine defaults it to weighted_average).
+	if err := (DecisionConfig{Reliability: ReliabilityConfig{URL: 1}}).Validate(); err != nil {
+		t.Fatalf("empty fusion mode should be allowed: %v", err)
+	}
+
+	tests := []struct {
+		name    string
+		mutate  func(*DecisionConfig)
+		wantErr string
+	}{
+		{"bad mode", func(d *DecisionConfig) { d.FusionMode = "noisyor" }, "decision.fusion_mode"},
+		{"reliability > 1", func(d *DecisionConfig) { d.Reliability.URL = 1.5 }, "decision.reliability.url"},
+		{"reliability < 0", func(d *DecisionConfig) { d.Reliability.Header = -0.2 }, "decision.reliability.header"},
+		{"reliability NaN", func(d *DecisionConfig) { d.Reliability.NLP = math.NaN() }, "decision.reliability.nlp"},
+		{"reliability Inf", func(d *DecisionConfig) { d.Reliability.Attachment = math.Inf(1) }, "decision.reliability.attachment"},
+		{"all-zero reliability", func(d *DecisionConfig) {
+			d.Reliability = ReliabilityConfig{}
+		}, "at least one channel must be > 0"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d := valid
+			tt.mutate(&d)
+			err := d.Validate()
+			if err == nil {
+				t.Fatalf("expected error containing %q, got nil", tt.wantErr)
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("expected error containing %q, got %q", tt.wantErr, err.Error())
+			}
+		})
+	}
+}
+
+func TestLoad_DecisionDefaultsAndEnvOverride(t *testing.T) {
+	setRequiredEnv(t)
+	// Nested koanf key: CYBERSIREN_DECISION__RELIABILITY__URL -> decision.reliability.url
+	t.Setenv("CYBERSIREN_DECISION__FUSION_MODE", "noisy_or")
+	t.Setenv("CYBERSIREN_DECISION__FUSION_SHADOW", "true")
+	t.Setenv("CYBERSIREN_DECISION__RELIABILITY__URL", "0.5")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() returned error: %v", err)
+	}
+
+	if cfg.Decision.FusionMode != "noisy_or" {
+		t.Errorf("Decision.FusionMode = %q, want %q", cfg.Decision.FusionMode, "noisy_or")
+	}
+	if !cfg.Decision.FusionShadow {
+		t.Errorf("Decision.FusionShadow = false, want true")
+	}
+	if cfg.Decision.Reliability.URL != 0.5 {
+		t.Errorf("nested env override Decision.Reliability.URL = %v, want 0.5", cfg.Decision.Reliability.URL)
+	}
+	// Unset channels keep the 1.0 default.
+	if cfg.Decision.Reliability.Header != 1.0 {
+		t.Errorf("default Decision.Reliability.Header = %v, want 1.0", cfg.Decision.Reliability.Header)
+	}
+}
+
+func TestLoad_DecisionDefaults(t *testing.T) {
+	setRequiredEnv(t)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() returned error: %v", err)
+	}
+	if cfg.Decision.FusionMode != "weighted_average" {
+		t.Errorf("default Decision.FusionMode = %q, want weighted_average", cfg.Decision.FusionMode)
+	}
+	if cfg.Decision.FusionShadow {
+		t.Errorf("default Decision.FusionShadow = true, want false")
+	}
+	r := cfg.Decision.Reliability
+	if r.URL != 1.0 || r.Header != 1.0 || r.NLP != 1.0 || r.Attachment != 1.0 {
+		t.Errorf("default reliabilities = %+v, want all 1.0", r)
 	}
 }
