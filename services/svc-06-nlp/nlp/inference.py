@@ -12,9 +12,11 @@ Expected artifacts (relative to service root):
     tokenizer/             HuggingFace DistilBertTokenizerFast files
     config.json            Thresholds (T, phish_threshold), label map, intent taxonomy
 
-Scoring (v2): content_risk_score = round(P(phishing) * 100). Spam is a distinct,
-NON-threat class and never inflates the risk score. URLs are stripped before
-tokenization — their reputation is SVC-03's job (combined at the aggregator).
+Scoring (v3): content_risk_score = round((1 - P(legitimate)) * 100), i.e. overall
+maliciousness (spam + phishing). Spam / advance-fee scams ARE threats and DO
+contribute to the risk; the 3-class label still distinguishes phishing vs spam vs
+legitimate. URLs are stripped before tokenization — their reputation is SVC-03's
+job (combined at the aggregator).
 ALL preprocessing is delegated to the canonical text_preprocess.preprocess_email
 so the serving path is byte-identical to training (no train/serve skew).
 
@@ -861,15 +863,17 @@ class NLPInferenceEngine:
         spam_prob = float(probs[1])
         phish_prob = float(probs[2])
 
-        # 5. Scoring scheme (v2): spam != threat. The CONTENT RISK is the
-        #    phishing probability ALONE — spam is inbox noise, not a phishing/
-        #    malware threat, so it must not inflate the risk score. (The old
-        #    checkpoint collapsed spam+phish into the risk because its phishing
-        #    class was dead; the v2 model has a live phishing class, so the
-        #    collapse is retired.) URL maliciousness is scored separately by
-        #    SVC-03 and combined at the aggregator.
+        # 5. Scoring scheme (v3): content risk = overall maliciousness, i.e.
+        #    1 - P(legitimate) = P(spam) + P(phishing). Spam and advance-fee
+        #    scams ARE threats for this deployment, so they must contribute to the
+        #    risk fed to the aggregator. The v2 scheme scored P(phishing) ALONE,
+        #    which left high-confidence spam/scam at ~0 content_risk and let it
+        #    pass fusion as benign — the dominant whole-system recall leak. The
+        #    3-class label below still distinguishes phishing vs spam vs
+        #    legitimate (so callers that only care about phishing can read the
+        #    label / phishing_probability); only the numeric risk broadens.
         phish_prob_rounded = round(phish_prob, 4)
-        content_risk_score = round(phish_prob_rounded * 100)
+        content_risk_score = round((1.0 - leg_prob) * 100)
 
         # 6. Label: phishing if P(phish) clears the tuned operating point
         #    (phish_threshold, fitted for recall target at min FPR); otherwise
