@@ -288,7 +288,7 @@ func (c *Consumer) Run(ctx context.Context, handler Handler) error {
 						recLog.Error().Err(err).
 							Int("failures", fails).
 							Int("max_retries", maxHandlerRetries).
-							Msg("kafka handler error budget exhausted; dead-lettering poison message and committing offset to advance partition")
+							Msg("kafka handler error budget exhausted; dead-lettering poison message")
 						c.observeError(c.cfg.Topic, c.cfg.GroupID, "deadletter")
 						c.clearFailure(rec.Partition)
 						span.RecordError(err)
