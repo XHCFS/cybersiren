@@ -16,6 +16,28 @@ import (
 
 var clientTracer = otel.Tracer("svc-03-url-analysis/phishing-client")
 
+const (
+	// sidecarMaxConcurrency bounds in-flight sidecar HTTP calls from this
+	// process. svc-03 scans up to 8 URLs per email concurrently and the fusion
+	// sidecar is a single shared instance, so a burst of emails could otherwise
+	// stampede it into timeouts. The cap is set above the per-email fan-out so it
+	// is a safety ceiling under load, not a routine bottleneck.
+	sidecarMaxConcurrency = 16
+	// sidecarMaxRetries is the number of ADDITIONAL attempts made on a transient
+	// sidecar failure (a connection error while the context still has budget, or
+	// a 5xx). One retry covers a sidecar that is momentarily busy or restarting
+	// without amplifying load during a real outage.
+	sidecarMaxRetries = 1
+	// sidecarRetryBackoff is the pause between attempts.
+	sidecarRetryBackoff = 25 * time.Millisecond
+	// sidecarHTTPTimeout is the transport-level ceiling on a single sidecar
+	// request. The per-call context deadline (set by the caller) is the real
+	// budget; this is only a backstop so a wedged TCP connection cannot hang a
+	// worker indefinitely. Lowered from 45s, which was far too long for a hot
+	// path.
+	sidecarHTTPTimeout = 10 * time.Second
+)
+
 // ScoreRequest is a URL to score via the v2 sidecar.
 type ScoreRequest struct {
 	URL string
@@ -37,6 +59,13 @@ type Client struct {
 	httpClient *http.Client
 	cache      *Cache
 	metrics    *Metrics
+	// sem bounds concurrent sidecar HTTP calls so a burst cannot overwhelm the
+	// single fusion sidecar.
+	sem chan struct{}
+	// maxRetries is the number of additional attempts on a transient sidecar
+	// error; retryBackoff is the pause between attempts.
+	maxRetries   int
+	retryBackoff time.Duration
 }
 
 // NewClient creates a Client pointing at baseURL with no metrics reporting.
@@ -54,11 +83,83 @@ func NewClientWithMetrics(baseURL string, m *Metrics) (*Client, error) {
 	return &Client{
 		baseURL: baseURL,
 		httpClient: &http.Client{
-			Timeout: 45 * time.Second,
+			Timeout: sidecarHTTPTimeout,
 		},
-		cache:   cache,
-		metrics: m,
+		cache:        cache,
+		metrics:      m,
+		sem:          make(chan struct{}, sidecarMaxConcurrency),
+		maxRetries:   sidecarMaxRetries,
+		retryBackoff: sidecarRetryBackoff,
 	}, nil
+}
+
+// doPost sends a JSON POST to path with a concurrency cap and bounded retry on
+// transient errors. It first acquires a semaphore slot (respecting ctx) so a
+// burst of callers cannot overwhelm the single sidecar, then sends the request,
+// retrying on a transient failure — a connection error while ctx still has
+// budget, or a 5xx response — up to maxRetries times with a short backoff. A
+// 4xx, an exhausted context, or a request-construction error are terminal and
+// not retried. On success it returns the 200 response with its Body still open
+// for the caller to decode and close.
+func (c *Client) doPost(ctx context.Context, path string, body []byte) (*http.Response, error) {
+	// Bound concurrent sidecar calls. A full semaphore means the sidecar is
+	// already saturated; wait for a slot but give up if the caller's deadline
+	// elapses first (load-shed rather than pile on).
+	select {
+	case c.sem <- struct{}{}:
+		defer func() { <-c.sem }()
+	case <-ctx.Done():
+		c.metrics.incSidecarError("saturated")
+		return nil, fmt.Errorf("sidecar %s: %w", path, ctx.Err())
+	}
+
+	var lastErr error
+	for attempt := 0; ; attempt++ {
+		if attempt > 0 {
+			timer := time.NewTimer(c.retryBackoff)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return nil, fmt.Errorf("sidecar %s: %w", path, ctx.Err())
+			case <-timer.C:
+			}
+		}
+
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+path, bytes.NewReader(body))
+		if err != nil {
+			c.metrics.incSidecarError("encode")
+			return nil, fmt.Errorf("create request: %w", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			c.metrics.incSidecarError("http")
+			lastErr = fmt.Errorf("sidecar request: %w", err)
+			// Retry a transient connection error only while the context still has
+			// budget; a deadline/cancel is terminal (a retry fails the same way and
+			// wastes the caller's remaining time).
+			if attempt < c.maxRetries && ctx.Err() == nil {
+				continue
+			}
+			return nil, lastErr
+		}
+		if resp.StatusCode >= 500 {
+			resp.Body.Close()
+			c.metrics.incSidecarError("status")
+			lastErr = fmt.Errorf("sidecar returned status %d", resp.StatusCode)
+			if attempt < c.maxRetries && ctx.Err() == nil {
+				continue
+			}
+			return nil, lastErr
+		}
+		if resp.StatusCode != http.StatusOK {
+			resp.Body.Close()
+			c.metrics.incSidecarError("status")
+			return nil, fmt.Errorf("sidecar returned status %d", resp.StatusCode)
+		}
+		return resp, nil
+	}
 }
 
 // Score enriches one URL and returns a score result.
@@ -113,31 +214,14 @@ func (c *Client) ScoreBatch(ctx context.Context, reqs []ScoreRequest) ([]ScoreRe
 		return nil, fmt.Errorf("marshal score request: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/score", bytes.NewReader(body))
-	if err != nil {
-		c.metrics.incSidecarError("encode")
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-		return nil, fmt.Errorf("create request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-
 	start := time.Now()
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.doPost(ctx, "/score", body)
 	if err != nil {
-		c.metrics.incSidecarError("http")
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		return nil, fmt.Errorf("sidecar request: %w", err)
+		return nil, err
 	}
 	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		c.metrics.incSidecarError("status")
-		statusErr := fmt.Errorf("sidecar returned status %d", resp.StatusCode)
-		span.SetStatus(codes.Error, statusErr.Error())
-		return nil, statusErr
-	}
 
 	var wireResp wireResponse
 	if err := json.NewDecoder(resp.Body).Decode(&wireResp); err != nil {
@@ -147,8 +231,8 @@ func (c *Client) ScoreBatch(ctx context.Context, reqs []ScoreRequest) ([]ScoreRe
 		return nil, fmt.Errorf("decode sidecar response: %w", err)
 	}
 
-	// Only observe latency on success — error paths above already counted
-	// distinct failure modes and would skew the duration histogram.
+	// Only observe latency on success — error paths already counted distinct
+	// failure modes and would skew the duration histogram.
 	c.metrics.observeDuration(time.Since(start).Seconds())
 
 	results := make([]ScoreResult, len(wireResp.Results))
@@ -246,31 +330,14 @@ func (c *Client) ScoreFeaturesBatch(ctx context.Context, reqs []FeatureRequest) 
 		return nil, fmt.Errorf("marshal score-features request: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/score-features", bytes.NewReader(body))
-	if err != nil {
-		c.metrics.incSidecarError("encode")
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-		return nil, fmt.Errorf("create request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-
 	start := time.Now()
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.doPost(ctx, "/score-features", body)
 	if err != nil {
-		c.metrics.incSidecarError("http")
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		return nil, fmt.Errorf("sidecar request: %w", err)
+		return nil, err
 	}
 	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		c.metrics.incSidecarError("status")
-		statusErr := fmt.Errorf("sidecar returned status %d", resp.StatusCode)
-		span.SetStatus(codes.Error, statusErr.Error())
-		return nil, statusErr
-	}
 
 	var wireResp wireResponse
 	if err := json.NewDecoder(resp.Body).Decode(&wireResp); err != nil {
