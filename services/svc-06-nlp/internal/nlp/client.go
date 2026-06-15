@@ -23,6 +23,11 @@ type PredictRequest struct {
 	Subject   string `json:"subject"`
 	BodyPlain string `json:"body_plain"`
 	BodyHTML  string `json:"body_html,omitempty"`
+	// SenderName / SenderDomain feed the Python heuristic brand-impersonation
+	// facet. Optional: when empty the facet degrades gracefully (Python cannot
+	// prove a domain mismatch and returns a neutral impersonation score).
+	SenderName   string `json:"sender_name,omitempty"`
+	SenderDomain string `json:"sender_domain,omitempty"`
 }
 
 // TokenScore holds a token and its LIME importance weight.
@@ -48,6 +53,11 @@ type PredictResponse struct {
 	UrgencyScore        float64      `json:"urgency_score"` // 0.0 – 1.0
 	ObfuscationDetected bool         `json:"obfuscation_detected"`
 	TopTokens           []TokenScore `json:"top_tokens"` // always [] in production
+	// Heuristic facets added by the Python engine (P4.2). impersonated_brand is
+	// nullable (no impersonation detected → null).
+	ImpersonationScore float64 `json:"impersonation_score"` // 0.0 – 1.0
+	ImpersonatedBrand  *string `json:"impersonated_brand"`
+	DeceptionScore     float64 `json:"deception_score"` // 0.0 – 1.0
 }
 
 // healthResponse is the Python /healthz response shape.

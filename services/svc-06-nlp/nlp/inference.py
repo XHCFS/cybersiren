@@ -32,7 +32,7 @@ from typing import Optional
 
 import numpy as np
 
-from text_preprocess import preprocess_email
+from text_preprocess import normalize_keep_urls, preprocess_email
 
 logger = logging.getLogger(__name__)
 
@@ -100,6 +100,298 @@ _URGENCY_PATTERNS = [
     r"\bverify now\b", r"\bwithin \d+ hours?\b", r"\bfailure to\b",
     r"\byour account will\b",
 ]
+
+# ── Brand-impersonation facet (heuristic, CONSTRAINT G4: NO NER) ────────────
+# A curated keyword list of frequently-impersonated brands. Each entry maps a
+# brand keyword (matched case-insensitively in subject+body) to its canonical
+# *brand token* — the human-readable brand identity returned as
+# impersonated_brand (e.g. paypal.com / gmail keyword -> "google"). This is a
+# deliberately small, hand-maintained allow-list — NOT named-entity recognition
+# and NOT a model. Order does not matter; the longest/most-specific textual
+# match wins (we sort matches by phrase length so "bank of america" beats a bare
+# "bank"-like cue). Keep this a module-level constant, mirroring _INTENT_PATTERNS,
+# so it is trivially auditable and extendable.
+_BRAND_DOMAIN_TOKENS: dict[str, str] = {
+    "paypal": "paypal",
+    "amazon": "amazon",
+    "microsoft": "microsoft",
+    "office365": "microsoft",
+    "office 365": "microsoft",
+    "outlook": "microsoft",
+    "onedrive": "microsoft",
+    "windows": "microsoft",
+    "apple": "apple",
+    "icloud": "apple",
+    "itunes": "apple",
+    "appleid": "apple",
+    "apple id": "apple",
+    "google": "google",
+    "gmail": "google",
+    "netflix": "netflix",
+    "dhl": "dhl",
+    "fedex": "fedex",
+    "ups": "ups",
+    "usps": "usps",
+    "irs": "irs",
+    "bank of america": "bankofamerica",
+    "bankofamerica": "bankofamerica",
+    "bofa": "bankofamerica",
+    "chase": "chase",
+    "chase bank": "chase",
+    "wells fargo": "wellsfargo",
+    "wellsfargo": "wellsfargo",
+    "citibank": "citi",
+    "citi": "citi",
+    "docusign": "docusign",
+    "linkedin": "linkedin",
+    "facebook": "facebook",
+    "instagram": "instagram",
+    "whatsapp": "whatsapp",
+    "dropbox": "dropbox",
+    "adobe": "adobe",
+    "coinbase": "coinbase",
+    "binance": "binance",
+    "amex": "americanexpress",
+    "american express": "americanexpress",
+    "hsbc": "hsbc",
+    "barclays": "barclays",
+    "santander": "santander",
+}
+
+# For each canonical brand token, the SET of registrable-domain (eTLD+1) LABELS
+# that are LEGITIMATELY operated by that brand. A claimed brand is treated as
+# legitimate ONLY when the sender's registrable label exactly equals one of
+# these (H2: a single brand ships from several first-party product domains —
+# google from gmail.com, apple from icloud.com/itunes.com, microsoft from
+# outlook.com/onedrive.live.com/outlook.office365.com, etc.). Any token not
+# listed here defaults to {token} (the brand's own name).
+_BRAND_LEGIT_DOMAINS: dict[str, set[str]] = {
+    "google": {"google", "gmail", "youtube", "googlemail"},
+    "apple": {"apple", "icloud", "itunes", "me", "mac"},
+    "microsoft": {
+        "microsoft", "outlook", "office365", "office", "onedrive",
+        "live", "msn", "hotmail", "windows", "sharepoint", "microsoftonline",
+    },
+    "bankofamerica": {"bankofamerica", "bofa"},
+    "americanexpress": {"americanexpress", "amex", "aexp"},
+    "wellsfargo": {"wellsfargo", "wf"},
+    "citi": {"citi", "citibank", "citigroup"},
+    "amazon": {"amazon", "aws", "amazonses", "primevideo"},
+    "facebook": {"facebook", "fb", "meta", "messenger"},
+    "netflix": {"netflix", "nflxext", "nflximg"},
+}
+
+# STRICT brands (the most-impersonated): legitimacy is decided by the FULL
+# registrable domain (eTLD+1), NOT the bare label — so cousin-TLD lookalikes
+# (paypal.ru, paypal.xyz, microsoft.co) are caught instead of trusted just
+# because the label says "paypal". Each value is the set of registrable domains
+# the brand legitimately sends from. A brand here whose sender uses the right
+# LABEL but an unlisted TLD (e.g. a real but un-enumerated ccTLD like amazon.it)
+# is NOT hard-failed — it is treated as a weak signal that only scores high with
+# corroborating phishing cues (see _detect_impersonation), so a missing ccTLD
+# costs precision noise, not a false "impersonation" alarm. Brands NOT listed
+# here keep the lenient label-only check (_BRAND_LEGIT_DOMAINS / {token}).
+_BRAND_STRICT_DOMAINS: dict[str, set[str]] = {
+    "paypal": {"paypal.com", "paypal.co.uk", "paypal.de", "paypal.fr",
+               "paypal.ca", "paypal.com.au", "paypal.me"},
+    "microsoft": {"microsoft.com", "outlook.com", "office.com", "office365.com",
+                  "microsoftonline.com", "live.com", "msn.com", "hotmail.com",
+                  "sharepoint.com", "windows.com", "skype.com", "azure.com"},
+    "apple": {"apple.com", "icloud.com", "itunes.com", "me.com", "mac.com"},
+    "google": {"google.com", "gmail.com", "googlemail.com", "youtube.com"},
+    "amazon": {"amazon.com", "amazon.co.uk", "amazon.de", "amazon.co.jp",
+               "amazon.ca", "amazon.in", "amazon.com.au", "amazonses.com",
+               "primevideo.com"},
+    "netflix": {"netflix.com"},
+    "docusign": {"docusign.com", "docusign.net"},
+    "coinbase": {"coinbase.com"},
+    "dropbox": {"dropbox.com", "dropboxmail.com"},
+    "adobe": {"adobe.com"},
+    "linkedin": {"linkedin.com"},
+    "facebook": {"facebook.com", "fb.com", "meta.com", "messenger.com"},
+    "instagram": {"instagram.com"},
+    "whatsapp": {"whatsapp.com"},
+    "bankofamerica": {"bankofamerica.com", "bofa.com"},
+    "wellsfargo": {"wellsfargo.com", "wf.com"},
+    "chase": {"chase.com"},
+    "citi": {"citi.com", "citibank.com", "citigroup.com"},
+    "americanexpress": {"americanexpress.com", "aexp.com"},
+    "dhl": {"dhl.com", "dhl.de"},
+    "fedex": {"fedex.com"},
+    "usps": {"usps.com"},
+    "irs": {"irs.gov"},
+}
+
+# Ambiguous-word KEYWORDS: ordinary English words / short tokens that collide
+# with everyday usage ("I'll chase up the invoice", "the back-ups are ready",
+# "an Apple laptop"). Keyed on the matched KEYWORD, NOT the canonical token —
+# the bare word "apple" is ambiguous, but "icloud"/"itunes"/"appleid" (which
+# also map to the "apple" token) are not, so they must keep the strong-signal
+# behaviour. For an ambiguous keyword we do NOT grant the strong "provable
+# impersonation" band on a domain mismatch alone — we require a corroborating
+# impersonation cue (_IMPERSONATION_CUE_PATTERNS). Without a cue it stays low
+# (H3). Unambiguous keywords (paypal, microsoft, docusign, netflix…) keep the
+# strong-signal behaviour on mismatch.
+_AMBIGUOUS_WORD_KEYWORDS: set[str] = {"chase", "ups", "apple", "citi"}
+
+# Common TWO-label public suffixes (eTLD = 2 labels) → registrable domain is the
+# last THREE labels. Hand-enumerated; not exhaustive (we keep this self-contained
+# and heuristic per CONSTRAINT G4 — NO public-suffix-list dependency).
+_TWO_LABEL_PUBLIC_SUFFIXES: set[str] = {
+    "co.uk", "org.uk", "gov.uk", "ac.uk", "me.uk",
+    "com.au", "net.au", "org.au", "gov.au", "edu.au",
+    "co.jp", "ne.jp", "or.jp", "go.jp", "ac.jp",
+    "com.br", "net.br", "org.br", "gov.br",
+    "co.nz", "net.nz", "org.nz",
+    "co.za", "org.za",
+    "com.cn", "net.cn", "org.cn", "gov.cn",
+    "co.in", "net.in", "org.in",
+    "com.mx", "com.sg", "com.hk", "com.tr",
+    "co.kr", "or.kr",
+}
+
+
+def _registrable_domain(domain: str) -> str:
+    """
+    Dependency-free eTLD+1 approximation → the registrable domain.
+
+    Splits the host into dot-separated labels and returns the registrable domain
+    (the label just before the public suffix, plus the suffix). Examples:
+      service.paypal.com  → "paypal.com"      (suffix "com")
+      secure-paypal.com   → "secure-paypal.com"
+      paypal.com.evil.ru  → "evil.ru"         (suffix "ru")
+      bank.barclays.co.uk → "barclays.co.uk"  (suffix "co.uk")
+      onedrive.live.com   → "live.com"
+
+    Heuristic, NOT a real public-suffix list: we recognise a hand-enumerated set
+    of common two-label public suffixes; otherwise (the common single-label
+    suffix case, plus any unknown suffix) we assume a single-label suffix and
+    take the last two labels.
+    """
+    labels = [p for p in domain.strip().lower().split(".") if p]
+    if not labels:
+        return ""
+    if len(labels) == 1:
+        return labels[0]
+    last_two = ".".join(labels[-2:])
+    if last_two in _TWO_LABEL_PUBLIC_SUFFIXES:
+        # eTLD is 2 labels → registrable domain is the last THREE labels.
+        return ".".join(labels[-3:]) if len(labels) >= 3 else ".".join(labels)
+    # Single-label suffix (known or assumed) → registrable domain is the last two.
+    return ".".join(labels[-2:])
+
+
+def _registrable_label(domain: str) -> str:
+    """The brand-identifying leading label of the registrable domain (see
+    _registrable_domain). E.g. service.paypal.com → "paypal"."""
+    rd = _registrable_domain(domain)
+    return rd.split(".", 1)[0] if rd else ""
+
+
+def _legit_labels_for(token: str) -> set[str]:
+    """Accepted registrable labels for a brand token (defaults to {token})."""
+    return _BRAND_LEGIT_DOMAINS.get(token, {token})
+
+
+# Precompiled brand-keyword matchers, built once at import (NOT recompiled per
+# email). Each is a word-ish boundary match so "ups" doesn't fire inside
+# "groups" — and the boundary class includes "-" so it also doesn't fire inside
+# hyphenated words ("back-ups", "start-ups", "follow-ups"). Tuple carries the
+# matched keyword (for longest-match + ambiguity gating) and its canonical token.
+_BRAND_PATTERNS: list[tuple[re.Pattern[str], str, str]] = [
+    (
+        re.compile(r"(?<![a-z0-9-])" + re.escape(keyword) + r"(?![a-z0-9-])"),
+        keyword,
+        token,
+    )
+    for keyword, token in _BRAND_DOMAIN_TOKENS.items()
+]
+
+# Cues (beyond the bare brand name) that an email is *pretending* to act on a
+# brand's behalf — used to grant a moderate impersonation score when the sender
+# domain is unknown (empty) and we therefore cannot prove a mismatch.
+_IMPERSONATION_CUE_PATTERNS = [
+    r"\bverify your (?:account|identity|email|details|information)\b",
+    r"\bconfirm your (?:account|identity|details|payment|information)\b",
+    r"\bupdate your (?:account|billing|payment|details|information)\b",
+    r"\byour account (?:has been |is |will be )?(?:suspended|locked|limited|disabled|closed)\b",
+    r"\bunusual (?:activity|sign[\s-]?in|login|access)\b",
+    r"\bsecurity (?:alert|notice|warning)\b",
+    r"\bsign[\s-]?in to (?:your )?account\b",
+    r"\blog[\s-]?in to (?:your )?account\b",
+]
+# Precompiled once at import (not per email).
+_IMPERSONATION_CUE_RE: list[re.Pattern[str]] = [
+    re.compile(p) for p in _IMPERSONATION_CUE_PATTERNS
+]
+
+# ── Deception facet (heuristic linguistic patterns, CONSTRAINT G4: NO model) ─
+# Weighted phishing-deception signals. Each signal contributes its weight when
+# any of its patterns match; the total is normalized against a saturation
+# constant. Pure rule-based — no NER, no zero-shot, no model. Mirrors the
+# _INTENT_PATTERNS style so it is auditable and extendable.
+_DECEPTION_SIGNALS: list[tuple[str, float, list[str]]] = [
+    # (signal_name, weight, patterns)
+    ("urgency_pressure", 1.0, [
+        r"\bact now\b", r"\bact immediately\b", r"\bwithin \d+ hours?\b",
+        r"\bwithin \d+ days?\b", r"\burgent\b", r"\bimmediately\b",
+        r"\bas soon as possible\b", r"\basap\b", r"\bexpires? (?:soon|today|in)\b",
+        r"\bfinal (?:notice|warning|reminder)\b", r"\bdo not (?:delay|ignore)\b",
+    ]),
+    ("generic_greeting", 1.0, [
+        r"\bdear (?:customer|user|account holder|member|client|valued)\b",
+        r"\bdear (?:sir|madam|sir/madam)\b",
+        r"\bhello (?:customer|user|member)\b",
+        r"\battention (?:customer|user|account holder)\b",
+    ]),
+    ("credential_request", 1.5, [
+        r"\bverify your (?:password|account|identity|login|credentials?)\b",
+        r"\bconfirm your (?:password|details|identity|payment|billing)\b",
+        r"\bupdate your (?:password|billing|payment|account|details)\b",
+        r"\benter your (?:username|password|pin|otp|credentials?)\b",
+        r"\bre[\s-]?enter your (?:password|details)\b",
+        r"\bprovide your (?:password|ssn|card|account) (?:number|details)?\b",
+    ]),
+    ("account_threat", 1.5, [
+        r"\byour account (?:has been |is |will be )?(?:suspended|locked|limited|disabled|deactivated|closed|deleted|terminated)\b",
+        r"\baccount (?:suspension|termination|closure|deletion)\b",
+        r"\bfailure to (?:respond|verify|comply|act)\b",
+        r"\bto avoid (?:suspension|closure|deactivation|losing)\b",
+        r"\bpermanently (?:closed|deleted|disabled)\b",
+    ]),
+    ("reward_lure", 1.0, [
+        r"\byou(?:'ve| have)? won\b", r"\bclaim your (?:prize|reward|gift|refund)\b",
+        r"\bcongratulations?\b", r"\bfree (?:gift|prize|voucher|reward)\b",
+        r"\bgift card\b", r"\byou(?:'ve| have)? been selected\b",
+        r"\bclaim now\b", r"\byou are (?:a|the) winner\b",
+    ]),
+    ("click_secrecy", 0.75, [
+        r"\bclick (?:here|the link|below)\b", r"\bopen the (?:attachment|link|file)\b",
+        r"\bkeep this (?:confidential|private|between us)\b",
+        r"\bdo not (?:tell|share|forward|reply to)\b",
+        r"\bstrictly confidential\b", r"\bthis is not (?:a |spam)\b",
+    ]),
+    ("unusual_activity", 1.0, [
+        r"\bunusual (?:activity|sign[\s-]?in|login|access)\b",
+        r"\bsuspicious (?:activity|login|sign[\s-]?in)\b",
+        r"\bdetected (?:a |an )?(?:unusual|unauthorized|suspicious)\b",
+        r"\bsecurity (?:alert|notice|warning|breach)\b",
+        r"\bsomeone (?:has |may have )?(?:accessed|tried to access)\b",
+    ]),
+]
+
+# Precompiled deception signals (patterns compiled once at import, not per
+# email): (signal_name, weight, [compiled patterns]).
+_DECEPTION_SIGNALS_COMPILED: list[tuple[str, float, list[re.Pattern[str]]]] = [
+    (name, weight, [re.compile(p) for p in patterns])
+    for name, weight, patterns in _DECEPTION_SIGNALS
+]
+
+# Saturation constant: the total weighted deception score at (or above) which
+# the facet saturates to 1.0. Chosen so that ~2-3 independent strong signals
+# (e.g. credential_request + account_threat) push the score near the top, while
+# a single weak cue stays modest.
+_DECEPTION_SATURATION = 4.0
 
 
 class NLPInferenceEngine:
@@ -402,6 +694,121 @@ class NLPInferenceEngine:
         hits = sum(1 for p in _URGENCY_PATTERNS if re.search(p, text_lower))
         return round(min(1.0, hits / 5.0), 4)
 
+    # ── Brand impersonation (heuristic, CONSTRAINT G4: NO NER) ────────────
+
+    def _detect_impersonation(
+        self, text: str, sender_domain: str, brand_text: Optional[str] = None
+    ) -> tuple[float, Optional[str]]:
+        """
+        Heuristic brand-impersonation facet → (impersonation_score, brand|None).
+
+        Step 1 — claimed brand: scan for a known-brand keyword. The scan runs on
+        brand_text (defaults to text) — predict() passes the URL-KEEPING text so
+        a brand that appears only inside a link is still seen, while the ML model
+        keeps getting the URL-stripped text. The longest matching phrase wins (so
+        "bank of america" beats a bare "bank", and "icloud" beats a bare
+        "apple"). A brand found ONLY in a link (not in the prose `text`) is a
+        weaker signal than one written in the body — legitimate mail links to
+        brand domains all the time — so it needs a corroborating cue to score
+        high. If no brand is claimed, return (0.0, None).
+
+        Step 2 — sender comparison:
+          • STRICT brands (_BRAND_STRICT_DOMAINS, the most-impersonated): compare
+            the sender's full registrable domain (eTLD+1). In the brand's domain
+            set → legitimate, 0. Right LABEL but unlisted TLD (a real but
+            un-enumerated ccTLD, or a cousin-TLD attack like paypal.ru) → weak:
+            cue → 0.9(+0.1), no cue → 0.15. Different label entirely
+            (secure-paypal.com, paypal.com.evil.ru) → lookalike → strong 0.9.
+          • Non-strict brands: lenient registrable-LABEL match against the
+            accepted set (_BRAND_LEGIT_DOMAINS / {token}).
+          • Either way, AMBIGUOUS-WORD keywords (chase/ups/apple/citi) and
+            link-only mentions need a cue before scoring high; without one → 0.15.
+          • sender_domain EMPTY: cannot prove a mismatch → 0.5 with cues, else
+            0.15 (weak signals with no cue → 0.0, just a word/link).
+
+        Returns the matched brand keyword's canonical token as impersonated_brand
+        whenever a non-trivial impersonation score is produced.
+        """
+        text = text or ""
+        brand_text = brand_text if brand_text is not None else text
+        sender_domain = sender_domain or ""
+        text_lower = text.lower()
+        brand_lower = brand_text.lower()
+
+        # Find all claimed-brand matches; track whether each appears in the prose
+        # text or only in a link. Prefer the longest phrase (most specific).
+        matched: list[tuple[str, str, bool]] = []  # (keyword, token, in_prose)
+        for pattern, keyword, token in _BRAND_PATTERNS:
+            if pattern.search(brand_lower):
+                matched.append((keyword, token, bool(pattern.search(text_lower))))
+
+        if not matched:
+            return 0.0, None
+
+        matched.sort(key=lambda m: len(m[0]), reverse=True)
+        claimed_keyword, claimed_token, in_prose = matched[0]
+
+        has_cues = any(p.search(brand_lower) for p in _IMPERSONATION_CUE_RE)
+        # A signal is "weak" — needs a corroborating cue to score high — when the
+        # keyword is an ordinary word (ambiguity keyed on the KEYWORD, so bare
+        # "apple" is weak but "icloud"/"itunes" are not) OR the brand only showed
+        # up inside a link rather than the body prose.
+        weak_signal = (claimed_keyword in _AMBIGUOUS_WORD_KEYWORDS) or (not in_prose)
+
+        def _score_mismatch() -> tuple[float, Optional[str]]:
+            if weak_signal and not has_cues:
+                return 0.15, claimed_token
+            return round(min(1.0, 0.9 + (0.1 if has_cues else 0.0)), 4), claimed_token
+
+        sd = sender_domain.strip().lower()
+        if sd:
+            strict = _BRAND_STRICT_DOMAINS.get(claimed_token)
+            if strict is not None:
+                if _registrable_domain(sd) in strict:
+                    # Sender uses one of the brand's real domains → not impersonation.
+                    return 0.0, None
+                if _registrable_label(sd) in _legit_labels_for(claimed_token):
+                    # Right brand label, unlisted TLD: a real ccTLD we don't track
+                    # OR a cousin-TLD attack. Only strong with corroborating cues.
+                    if has_cues:
+                        return round(min(1.0, 1.0), 4), claimed_token
+                    return 0.15, claimed_token
+                # Label doesn't match at all → classic lookalike/cousin domain.
+                return _score_mismatch()
+            # Non-strict brand: lenient registrable-label match (legacy behaviour).
+            if _registrable_label(sd) in _legit_labels_for(claimed_token):
+                return 0.0, None
+            return _score_mismatch()
+
+        # sender_domain unknown: cannot prove a mismatch.
+        if has_cues:
+            # Brand + classic impersonation cues, but unverifiable sender → moderate.
+            return 0.5, claimed_token
+        if weak_signal:
+            # Ambiguous word / link-only mention, no cue, no sender → just noise.
+            return 0.0, None
+        # Just a brand mention with no cues and no sender to check → low confidence.
+        return 0.15, claimed_token
+
+    # ── Deception (heuristic linguistic patterns, CONSTRAINT G4: NO model) ─
+
+    def _compute_deception(self, text: str) -> float:
+        """
+        Heuristic deception score 0.0–1.0 from weighted linguistic signals.
+
+        Sums the weight of every _DECEPTION_SIGNALS group that fires at least
+        once (urgency/pressure, generic greeting, credential request, account
+        threat, reward lure, click/secrecy, unusual-activity), then normalizes
+        against _DECEPTION_SATURATION and caps at 1.0. Pure rule-based — no NER,
+        no zero-shot, no model retrain.
+        """
+        text_lower = (text or "").lower()
+        total = 0.0
+        for _name, weight, patterns in _DECEPTION_SIGNALS_COMPILED:
+            if any(p.search(text_lower) for p in patterns):
+                total += weight
+        return round(min(1.0, total / _DECEPTION_SATURATION), 4)
+
     # ── Inference ─────────────────────────────────────────────────────────
 
     @staticmethod
@@ -409,9 +816,24 @@ class NLPInferenceEngine:
         e = np.exp(x - x.max())
         return e / e.sum()
 
-    def predict(self, subject: str, body_plain: str, body_html: str = "") -> dict:
+    def predict(
+        self,
+        subject: str,
+        body_plain: str,
+        body_html: str = "",
+        sender_domain: str = "",
+        sender_name: str = "",
+    ) -> dict:
         """
         Run the full pipeline for one email and return the spec §8.3 response dict.
+
+        sender_domain / sender_name are OPTIONAL (defaulted) so existing callers
+        passing only (subject, body, html) keep working. They are plumbed from the
+        Kafka AnalysisText contract (sender_domain / sender_name) and used solely
+        by the heuristic brand-impersonation facet — when sender_domain is empty
+        the facet degrades gracefully (see _detect_impersonation). sender_name is
+        accepted for forward-compatibility; the current heuristic keys off the
+        domain only.
 
         Raises RuntimeError if the model has not been loaded successfully.
         """
@@ -464,6 +886,19 @@ class NLPInferenceEngine:
         intent_labels = self._detect_intent(text, classification)
         urgency_score = self._compute_urgency(text)
 
+        # 8. Heuristic facets (CONSTRAINT G4: rule-based only, no NER / no model).
+        #    Brand impersonation compares the claimed brand against sender_domain;
+        #    deception scores phishing linguistic cues. Deception runs on the
+        #    model's preprocessed text. The brand scan additionally gets a
+        #    URL-KEEPING copy (brand_text) so a brand that appears only inside a
+        #    link is still caught — the model itself never sees that copy, so
+        #    there is no train/serve skew.
+        brand_text = normalize_keep_urls(subject, body_plain, body_html)
+        impersonation_score, impersonated_brand = self._detect_impersonation(
+            text, sender_domain, brand_text=brand_text
+        )
+        deception_score = self._compute_deception(text)
+
         return {
             "classification": classification,
             "confidence": round(confidence, 4),
@@ -473,6 +908,10 @@ class NLPInferenceEngine:
             "intent_labels": intent_labels,
             "urgency_score": urgency_score,
             "obfuscation_detected": obfuscation_detected,
+            # Heuristic facets (P4.2).
+            "impersonation_score": impersonation_score,
+            "impersonated_brand": impersonated_brand,
+            "deception_score": deception_score,
             # LIME attributions are expensive offline analysis (spec §7.3);
             # top_tokens is always empty in the production inference path.
             "top_tokens": [],

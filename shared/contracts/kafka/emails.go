@@ -83,8 +83,16 @@ type EmailsScored struct {
 	AttachmentScore *int `json:"attachment_score,omitempty"`
 	NLPScore        *int `json:"nlp_score,omitempty"`
 
-	PartialAnalysis      bool     `json:"partial_analysis"`
-	MissingComponents    []string `json:"missing_components,omitempty"`
+	PartialAnalysis   bool     `json:"partial_analysis"`
+	MissingComponents []string `json:"missing_components,omitempty"`
+	// DegradedComponents lists components that DID produce a score but on a
+	// fail-soft fallback path (e.g. svc-06 emitting the neutral content score
+	// of 50 after the model timed out). Unlike MissingComponents these scores
+	// are present, so PartialAnalysis is not forced — but downstream consumers
+	// and operators can see the score is a degraded best-effort rather than a
+	// real model output. Populated from each component's
+	// component_details.<x>.details.fallback flag.
+	DegradedComponents   []string `json:"degraded_components,omitempty"`
 	TimeoutTriggered     bool     `json:"timeout_triggered,omitempty"`
 	AggregationLatencyMS int64    `json:"aggregation_latency_ms,omitempty"`
 

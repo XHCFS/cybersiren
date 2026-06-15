@@ -90,6 +90,11 @@ class PredictRequest(BaseModel):
     subject: str
     body_plain: str
     body_html: str = ""
+    # Plumbed from the Kafka AnalysisText contract. Optional/defaulted so older
+    # callers (subject/body/html only) keep working. Used by the heuristic
+    # brand-impersonation facet to compare the claimed brand against the sender.
+    sender_domain: str = ""
+    sender_name: str = ""
 
 
 class TokenScore(BaseModel):
@@ -106,6 +111,13 @@ class PredictResponse(BaseModel):
     intent_labels: list[str]     # e.g. ["credential_harvest", "urgency_threat"]
     urgency_score: float         # 0.0 – 1.0
     obfuscation_detected: bool
+    # Heuristic facets (P4.2). impersonation_score is high when the email claims
+    # a known brand the sender domain does not belong to; impersonated_brand is
+    # the matched brand token (None when no brand claimed). deception_score is a
+    # weighted linguistic phishing-cue score.
+    impersonation_score: float        # 0.0 – 1.0
+    impersonated_brand: str | None = None
+    deception_score: float            # 0.0 – 1.0
     top_tokens: list[TokenScore] # always [] in production (LIME is offline)
 
 
@@ -149,7 +161,13 @@ def predict(req: PredictRequest):
             ),
         )
     try:
-        result = engine.predict(req.subject, req.body_plain, req.body_html)
+        result = engine.predict(
+            req.subject,
+            req.body_plain,
+            req.body_html,
+            sender_domain=req.sender_domain,
+            sender_name=req.sender_name,
+        )
         return result
     except Exception:
         logger.exception("Inference error")
