@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/rs/zerolog"
 	"go.opentelemetry.io/otel"
@@ -34,6 +35,13 @@ var detectorTracer = otel.Tracer("svc-03-url-analysis/phishing-detector")
 // detector, the Python sidecar default, and the UI red-band threshold.
 // Keep these in sync.
 const DefaultThreshold = 0.50
+
+// l2SidecarReserve is the minimum slice of the per-URL L2 deadline budget held
+// back for the sidecar inference call so a slow enrichment leg cannot starve it.
+// The sidecar /score-features call is cheap (model inference over precomputed
+// features), so a few hundred ms is ample; live enrichment keeps the rest. See
+// l2EnrichCtx for how the split is applied.
+const l2SidecarReserve = 700 * time.Millisecond
 
 // Config configures the Detector.
 type Config struct {
@@ -220,7 +228,21 @@ func (d *Detector) Score(ctx context.Context, rawURL string) (Result, error) {
 // /score-features. On enrichment failure it falls back to /score so that a
 // transient enricher problem doesn't take down L2 entirely.
 func (d *Detector) scoreViaFeatures(ctx context.Context, rawURL string) (phclient.ScoreResult, bool, error) {
-	eu, enrichErr := d.enricher.Enrich(ctx, rawURL)
+	// Reserve the tail of the L2 budget for the sidecar inference call so a slow
+	// enrichment leg cannot starve it of the deadline. Enrichment runs on
+	// enrichCtx (the parent budget minus l2SidecarReserve); the sidecar calls
+	// below run on the parent ctx, which then still holds ~l2SidecarReserve.
+	//
+	// Without this split, live enrichment of a slow/old domain consumed the whole
+	// per-URL L2 budget and the healthy sidecar /score-features call then failed
+	// instantly with "context deadline exceeded" — the dominant cause of
+	// "phishing ML check failed" under load. With no L2 verdict (mlVerdict ""),
+	// svc-03's de-escalation could not fire, so the L1 model's over-flag (98-100
+	// on obscure benign domains) stood and the URL drove a false phishing verdict.
+	enrichCtx, cancelEnrich := l2EnrichCtx(ctx, l2SidecarReserve)
+	defer cancelEnrich()
+
+	eu, enrichErr := d.enricher.Enrich(enrichCtx, rawURL)
 	// Report the enrichment outcome to the breaker so repeated failures in a
 	// degraded-network window trip it OPEN (and a clean run closes a half-open
 	// probe). Done here, immediately after the call, so only the network leg's
@@ -259,6 +281,30 @@ func (d *Detector) scoreViaFeatures(ctx context.Context, rawURL string) (phclien
 		return phclient.ScoreResult{}, false, fmt.Errorf("/score-features: %w", err)
 	}
 	return result, hit, nil
+}
+
+// l2EnrichCtx returns a child of ctx whose deadline reserves the final `reserve`
+// slice of ctx's remaining budget for the (cheap) sidecar inference call. The
+// caller runs enrichment on the returned context and the sidecar call on the
+// original ctx, which then still holds ~reserve — so a slow enrichment leg can
+// no longer starve the sidecar of the deadline (the dominant cause of
+// "phishing ML check failed: context deadline exceeded" under load).
+//
+// When ctx carries no deadline the original ctx is returned unchanged (with a
+// no-op cancel) and the enricher's own internal cap bounds the call. When too
+// little budget remains to carve a meaningful enrichment slice, enrichment is
+// bounded to a sliver so the sidecar still gets the remainder rather than being
+// starved again.
+func l2EnrichCtx(ctx context.Context, reserve time.Duration) (context.Context, context.CancelFunc) {
+	dl, ok := ctx.Deadline()
+	if !ok {
+		return ctx, func() {}
+	}
+	enrichBudget := time.Until(dl) - reserve
+	if enrichBudget <= 0 {
+		enrichBudget = time.Millisecond
+	}
+	return context.WithTimeout(ctx, enrichBudget)
 }
 
 func apexFromRawURL(rawURL string) string {
