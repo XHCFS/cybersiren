@@ -12,6 +12,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 
 	"github.com/rs/zerolog"
@@ -78,7 +79,7 @@ func main() {
 			// feed deps.Cfg.Decision via shared/config.
 			dc := deps.Cfg.Decision
 			if err := dc.Validate(); err != nil {
-				return err
+				return fmt.Errorf("svc-08: invalid decision config: %w", err)
 			}
 
 			eng = engine.New(
