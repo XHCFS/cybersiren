@@ -39,16 +39,17 @@ type TokenScore struct {
 // PredictResponse mirrors the Python PredictResponse model (spec §8.3).
 //
 // The v2 model has a live 3-class head (legitimate / spam / phishing) and
-// classification can be any of the three. ContentRiskScore = round(P(phishing)
-// * 100): spam is a distinct, non-threat class and does NOT inflate the risk
-// score (the v1 spam+phishing collapse is retired). URL reputation is scored
-// separately by SVC-03 and combined at the aggregator.
+// classification can be any of the three. Scoring (v3): ContentRiskScore =
+// round((1 - P(legitimate)) * 100) = overall maliciousness (spam + phishing).
+// Spam / advance-fee scams ARE threats and contribute to the risk; the label
+// still distinguishes phishing vs spam. URL reputation is scored separately by
+// SVC-03 and combined at the aggregator.
 type PredictResponse struct {
 	Classification      string       `json:"classification"`       // "phishing" | "spam" | "legitimate"
 	Confidence          float64      `json:"confidence"`           // 0.0 – 1.0
 	PhishingProbability float64      `json:"phishing_probability"` // 0.0 – 1.0  P(phishing) alone
-	SpamProbability     float64      `json:"spam_probability"`     // 0.0 – 1.0  P(spam); not a threat
-	ContentRiskScore    int          `json:"content_risk_score"`   // 0 – 100  = round(P(phishing)*100)
+	SpamProbability     float64      `json:"spam_probability"`     // 0.0 – 1.0  P(spam); now counts toward risk
+	ContentRiskScore    int          `json:"content_risk_score"`   // 0 – 100  = round((1 - P(legit))*100)
 	IntentLabels        []string     `json:"intent_labels"`
 	UrgencyScore        float64      `json:"urgency_score"` // 0.0 – 1.0
 	ObfuscationDetected bool         `json:"obfuscation_detected"`
