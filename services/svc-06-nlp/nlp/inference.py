@@ -541,7 +541,16 @@ class NLPInferenceEngine:
             # (~60-130s on first run → ~5-15s on subsequent runs).
             cache_path = model_path.parent / "model_int8_opt.onnx"
 
-            if cache_path.exists():
+            # Only trust the optimized-graph cache if it is at least as new as the
+            # model file. A model swap (e.g. replacing a stale/wrong export with the
+            # correct one) gives model_int8.onnx a newer mtime, which MUST invalidate
+            # a graph optimized from the old model — otherwise the service silently
+            # keeps serving the stale model even after the file is fixed.
+            cache_fresh = (
+                cache_path.exists()
+                and cache_path.stat().st_mtime >= model_path.stat().st_mtime
+            )
+            if cache_fresh:
                 # Load from the pre-optimized cache directly. Don't set
                 # optimized_model_filepath when loading an already-optimized
                 # graph, otherwise ORT may re-write it and trigger optimization.
@@ -549,7 +558,17 @@ class NLPInferenceEngine:
                 logger.info("Loading pre-optimized ONNX graph from cache: %s", cache_path)
                 load_path = cache_path
             else:
-                # First run: load original model, write optimized cache for next time.
+                if cache_path.exists():
+                    logger.warning(
+                        "Optimized cache %s is older than the model file — discarding and "
+                        "re-optimizing (the model changed since the cache was built)",
+                        cache_path,
+                    )
+                    try:
+                        cache_path.unlink()
+                    except OSError as exc:
+                        logger.warning("could not remove stale ONNX cache %s: %s", cache_path, exc)
+                # First run / invalidated cache: load original model, write optimized cache.
                 opts.optimized_model_filepath = str(cache_path)
                 self.loading_stage = "loading_onnx"
                 logger.info(

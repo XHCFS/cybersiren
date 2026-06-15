@@ -313,32 +313,54 @@ NLP_MODEL_SRC := python/svc-06-nlp/onnx/model_int8.onnx
 FUSION_URL_MODEL := fusion_export/models/url_char_lr.joblib
 FUSION_HGB_MODEL := fusion_export/models/hgb_operational.joblib
 
-## check-nlp-model: Ensure the NLP ONNX model is present at the path the
-## FastAPI service expects. Pulls via Git LFS if the source copy is also a
-## stub, then copies the source into place.
+## check-nlp-model: Ensure the model deployed at the path the FastAPI service
+## loads is the REAL source-of-truth model, verified byte-for-byte (sha256).
+## Pulls the LFS source if it is a pointer, then reinstalls the deployed copy on
+## ANY mismatch: a symlink (ships a dangling link), a <1MB stub, OR a stale/wrong
+## real file (e.g. an old int8 export). A size-or-symlink-only check let the last
+## case through — which is exactly how a broken model shipped before.
 check-nlp-model:
-	@size=$$(wc -c < "$(NLP_MODEL)" 2>/dev/null || echo 0); \
-	if [ -f "$(NLP_MODEL)" ] && [ ! -L "$(NLP_MODEL)" ] && [ "$$size" -ge 1000000 ]; then \
-	    echo "  [svc-06] ONNX model present at $(NLP_MODEL) ($$(du -shL $(NLP_MODEL) | cut -f1))"; \
+	@if [ "$$(wc -c < "$(NLP_MODEL_SRC)" 2>/dev/null || echo 0)" -lt 1000000 ]; then \
+	    echo "  [svc-06] model source is a stub — pulling via Git LFS..."; \
+	    git lfs pull --include="$(NLP_MODEL_SRC)"; \
+	fi
+	@if [ "$$(wc -c < "$(NLP_MODEL_SRC)" 2>/dev/null || echo 0)" -lt 1000000 ]; then \
+	    echo "  [svc-06] ERROR: source $(NLP_MODEL_SRC) is not a real >=1MB model (Git LFS pull failed?)"; \
+	    exit 1; \
+	fi
+	@want_oid=$$(git cat-file -p "HEAD:$(NLP_MODEL_SRC)" 2>/dev/null | sed -n 's/^oid sha256://p'); \
+	if [ -n "$$want_oid" ]; then \
+	    src_sha=$$(sha256sum "$(NLP_MODEL_SRC)" | cut -d' ' -f1); \
+	    if [ "$$src_sha" != "$$want_oid" ]; then \
+	        echo "  [svc-06] ERROR: $(NLP_MODEL_SRC) (sha $$(echo $$src_sha | cut -c1-12)...) is NOT the committed"; \
+	        echo "           canonical model (LFS oid $$(echo $$want_oid | cut -c1-12)..., the 266MB fp32)."; \
+	        echo "           Refusing to ship a non-canonical model — restore it from Git LFS."; \
+	        exit 1; \
+	    fi; \
+	    echo "  [svc-06] source verified == committed LFS model (oid $$(echo $$want_oid | cut -c1-12)..., $$(du -sh "$(NLP_MODEL_SRC)" | cut -f1))"; \
+	fi
+	@want=$$(sha256sum "$(NLP_MODEL_SRC)" | cut -d' ' -f1); \
+	have=$$(sha256sum "$(NLP_MODEL)" 2>/dev/null | cut -d' ' -f1); \
+	if [ -f "$(NLP_MODEL)" ] && [ ! -L "$(NLP_MODEL)" ] && [ "$$have" = "$$want" ]; then \
+	    echo "  [svc-06] ONNX model present and matches source ($$(du -shL "$(NLP_MODEL)" | cut -f1), sha $$(echo $$want | cut -c1-12)...)"; \
 	    exit 0; \
 	fi; \
 	if [ -L "$(NLP_MODEL)" ]; then \
 	    echo "  [svc-06] $(NLP_MODEL) is a SYMLINK — Docker COPY would ship a dangling link"; \
-	    echo "           (.dockerignore excludes python/), so the container model would be"; \
-	    echo "           unloadable and every verdict fallback-driven. Replacing with a real copy."; \
+	    echo "           (.dockerignore excludes python/) — replacing with a real copy."; \
+	elif [ -n "$$have" ] && [ "$$have" != "$$want" ]; then \
+	    echo "  [svc-06] $(NLP_MODEL) is STALE/WRONG (sha $$(echo $$have | cut -c1-12)... != source $$(echo $$want | cut -c1-12)...) — replacing."; \
+	else \
+	    echo "  [svc-06] $(NLP_MODEL) missing or a stub — installing from source."; \
 	fi; \
-	src_size=$$(wc -c < "$(NLP_MODEL_SRC)" 2>/dev/null || echo 0); \
-	if [ "$$src_size" -lt 1000000 ]; then \
-	    echo "  [svc-06] ONNX model missing — pulling via Git LFS (this downloads ~64 MB)..."; \
-	    git lfs pull --include="$(NLP_MODEL_SRC)"; \
-	fi; \
-	echo "  [svc-06] copying $(NLP_MODEL_SRC) → $(NLP_MODEL) (real file, not a symlink)"; \
 	rm -f "$(NLP_MODEL)"; \
 	cp -L "$(NLP_MODEL_SRC)" "$(NLP_MODEL)"; \
-	if [ -L "$(NLP_MODEL)" ] || [ "$$(wc -c < "$(NLP_MODEL)" 2>/dev/null || echo 0)" -lt 1000000 ]; then \
-	    echo "  [svc-06] ERROR: $(NLP_MODEL) is still not a real >=1MB file after copy"; exit 1; \
+	got=$$(sha256sum "$(NLP_MODEL)" 2>/dev/null | cut -d' ' -f1); \
+	if [ -L "$(NLP_MODEL)" ] || [ "$$got" != "$$want" ]; then \
+	    echo "  [svc-06] ERROR: $(NLP_MODEL) does not match source after copy (got $$(echo $$got | cut -c1-12)... want $$(echo $$want | cut -c1-12)...)"; \
+	    exit 1; \
 	fi; \
-	echo "  [svc-06] ONNX model ready ($$(du -sh $(NLP_MODEL) | cut -f1), real file)"
+	echo "  [svc-06] ONNX model ready (real file, $$(du -sh "$(NLP_MODEL)" | cut -f1), sha $$(echo $$got | cut -c1-12)...)"
 
 ## check-fusion-models: Ensure the L2 fusion bundles (url_char_lr.joblib +
 ## hgb_operational.joblib) are present at the path the sidecar loads from.
