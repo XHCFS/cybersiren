@@ -27,10 +27,16 @@ import (
 const (
 	// FusionWeightedAverage is the v1 weighted mean (design brief §3.4).
 	FusionWeightedAverage = "weighted_average"
-	// FusionNoisyOR is the probabilistic-OR blender (see noisyor_blender.go): never
-	// dilutes a confident channel and preserves a confirmed single-channel signal
-	// (OR-floor). Opt-in/shadow until the §3.6 bands are recalibrated for it.
+	// FusionNoisyOR is the hand-set reliability probabilistic-OR blender (see
+	// noisyor_blender.go): never dilutes a confident channel but uses hand-set
+	// reliabilities. Kept as a rollback/shadow.
 	FusionNoisyOR = "noisy_or"
+	// FusionCalibratedOR is the calibrated probabilistic-OR blender (see
+	// calibrated_blender.go): per-channel learned calibration → OR → final
+	// calibration. It is the production fusion — on the consistent real-model base
+	// it scores 83.5% recall@1%FPR (vs weighted_average 58.4%, NLP-alone 79.4%) and
+	// is well calibrated (ECE ≈ 0.005) so the §3.6 bands hold. See benchmark/FINDINGS.md.
+	FusionCalibratedOR = "calibrated_or"
 )
 
 // Config holds the runtime knobs for the decision engine.
@@ -89,11 +95,16 @@ func (c Config) Defaults() Config {
 // both here removes the duplicated, mutually-inverted selector logic.
 func buildBlenders(cfg Config) (active, other Blender) {
 	wa := NewWeightedAverageBlender(cfg.BlendWeights)
-	no := NewReliabilityNoisyORBlender(cfg.Reliabilities)
-	if cfg.FusionMode == FusionNoisyOR {
-		return no, wa
+	switch cfg.FusionMode {
+	case FusionCalibratedOR:
+		// Shadow against the current default (weighted_average) to measure the
+		// verdict-band shift before/while ramping the calibrated fusion.
+		return NewCalibratedORBlender(), wa
+	case FusionNoisyOR:
+		return NewReliabilityNoisyORBlender(cfg.Reliabilities), wa
+	default:
+		return wa, NewReliabilityNoisyORBlender(cfg.Reliabilities)
 	}
-	return wa, no
 }
 
 // Publisher is the producer for emails.verdict (subset of

@@ -1,0 +1,7 @@
+# Large generated benchmark data + intermediates — regenerate via the scripts here.
+# (Committed: the .py harnesses/analysis, FINDINGS.md, README.md, DEPLOYMENT.md.)
+*.csv
+*.jsonl
+_*.txt
+_*.log
+artifacts/

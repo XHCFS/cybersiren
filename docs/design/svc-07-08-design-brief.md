@@ -236,13 +236,49 @@ Produces to `emails.verdict` (7-day retention).
 
 Receives `url_score`, `header_score`, `attachment_score` (nullable), `nlp_score` (nullable) from SVC-07.
 
-SVC-08 supports two fusion methods, selected by `CYBERSIREN_DECISION__FUSION_MODE`
+SVC-08 supports three fusion methods, selected by `CYBERSIREN_DECISION__FUSION_MODE`
 (or `decision.fusion_mode` in `config.yaml` — both feed `DecisionConfig` via
 `shared/config`; an unrecognized value fails fast at startup). **Default:
-`weighted_average`** (the v1 behaviour, unchanged). `noisy_or` is **opt-in** and runs in
-**shadow** (see below) until its verdict-band recalibration lands.
+`calibrated_or`.** `weighted_average` (v1) and `noisy_or` are kept as rollbacks.
 
-#### `weighted_average` — v1 weighted mean (default)
+#### `calibrated_or` — calibrated probabilistic-OR (default)
+
+Each present component's raw 0–100 score is mapped through a per-channel **calibration
+curve** to a maliciousness probability `pₑ = calibₑ(scoreₑ)`; the channels combine with a
+probabilistic-OR and the fused raw score passes through a **final calibration curve** so
+the output is a true `P(malicious)·100`:
+
+$$\text{raw}=100\Big(1-\!\!\prod_{c\,\in\,\text{present}}\!\!\big(1-\mathrm{clip}(\text{calib}_c(s_c),0,0.999)\big)\Big),\qquad \text{risk}=100\cdot\text{final}(\text{raw})$$
+
+The curves are a **versioned, embedded artifact** (`internal/engine/calibration/fusion_calibration_v1.json`,
+piecewise-linear isotonic knots) fit on the consistent real-model base (`benchmark/`). Why
+this is the production choice (objective = *maliciousness*, positive = `label != legitimate`):
+
+- **No dilution.** A clean channel calibrates low → contributes a factor ≈ 1, so a single
+  confident channel is never averaged below threshold.
+- **Reliability is *learned*, not hand-set.** Each curve is the channel's measured
+  `P(malicious|score)`; the noisy lexical-URL channel calibrates to ≈ 0 automatically (no
+  magic `0.22`). Raw OR *without* calibration scores 29% — calibration is essential.
+- **Calibrated output** (ECE ≈ 0.005), so the §3.6 bands stay meaningful.
+- A channel with no curve (attachment) uses **identity** (`p = score/100`), preserving a
+  confirmed-malware signal without inventing a weight.
+
+**Measured on the consistent real-model base** (real svc-06 ONNX v3 NLP, real svc-04 Go
+header, real svc-03 L1 URL; graded on maliciousness): recall@1%FPR — `weighted_average`
+**58.4%** (worse than NLP-alone 71.6%) → `calibrated_or` **83.5% held-out (5-seed), AUC
+0.985, OOD 99.6%**, beating NLP-alone on 5/5 seeds. It rescues text-only BEC (0→100%) and
+header-spoof (0→100%) that the weighted mean dropped to 0%. See `benchmark/FINDINGS.md`.
+
+> **URL is deliberately neutralised** in the shipped artifact: the lexical/L2 URL score is
+> noise on offline data and the L2 operational model needs **live enrichment** (SSL/WHOIS/
+> page/IP — 44 features) that a static corpus cannot provide. URL must re-enter as an
+> **authoritative** channel (TI match / domain-guard → reliability ≈ 1.0), which requires
+> SVC-03 forwarding `ti_matched`/`guard_hit` through SVC-07. Until then the lexical URL
+> score does not drive `calibrated_or` (and a confirmed-malware *attachment* keeps its
+> identity passthrough). This also closes the `weighted_average` "confirmed-URL diluted to
+> 39" gap below by not trusting an ambiguous composite.
+
+#### `weighted_average` — v1 weighted mean (rollback)
 
 `risk = Σ wₑ·sₑ / Σ wₑ` over **present** components, weights `url=0.35, header=0.30,
 nlp=0.25, attachment=0.10` (`engine.DefaultWeights`). A missing component never shifts the
