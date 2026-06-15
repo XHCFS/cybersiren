@@ -23,6 +23,14 @@ type EnrichedURL struct {
 	TLS   TLSResult
 	HTTP  HTTPResult
 
+	// DNSNetworkError is set when DNS resolution failed with a network-level
+	// error (timeout / SERVFAIL) rather than a clean NXDOMAIN. It signals the
+	// enrichment leg could not run because the network is degraded — the L2
+	// circuit breaker uses it to fail open (Degraded) so a high L1 score is not
+	// silently de-escalated during an outage. A normal dead/deregistered domain
+	// (NXDOMAIN) does NOT set this.
+	DNSNetworkError bool
+
 	Features FeatureVector
 }
 
@@ -48,14 +56,25 @@ func (e *Enricher) Close() {
 	}
 }
 
-// Enrich runs all enrichment steps concurrently for one URL.
-// The whole operation is bounded by an 8-second timeout.
+// enricherTimeout bounds the whole enrichment operation. Lowered from 8s: the
+// per-email URL loop now runs these concurrently with a tight per-URL budget,
+// and the two slow legs (WHOIS, HTTP) are themselves capped at ~1.5-2s, so a
+// 2s overall cap keeps the worst-case per-URL latency near that of the slowest
+// single leg rather than letting one host stall the whole email.
+const enricherTimeout = 2 * time.Second
+
+// Enrich runs enrichment for one URL. DNS resolution runs FIRST as a gate: if
+// the host does not resolve (NXDOMAIN / no A or AAAA), the expensive WHOIS and
+// HTTP-GET legs are skipped entirely — you can't fetch a dead host, and most
+// phishing domains are already taken down by the time the email is scored. The
+// remaining cheap legs (GeoIP needs the IP anyway; TLS) still run when there is
+// an IP. The whole operation is bounded by enricherTimeout.
 func (e *Enricher) Enrich(ctx context.Context, rawURL string) (EnrichedURL, error) {
 	ctx, span := enricherTracer.Start(ctx, "enricher.Enrich")
 	defer span.End()
 	span.SetAttributes(attribute.String("enricher.url", rawURL))
 
-	ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, enricherTimeout)
 	defer cancel()
 
 	eu := EnrichedURL{OriginalURL: rawURL}
@@ -77,14 +96,35 @@ func (e *Enricher) Enrich(ctx context.Context, rawURL string) (EnrichedURL, erro
 	hostname := extractHostname(effectiveURL)
 	apex := apexDomain(hostname)
 
+	// DNS gate: resolve first. A dead host short-circuits the two 5s legs.
+	eu.IP, eu.DNSNetworkError = resolveIPStatus(ctx, hostname)
+	span.SetAttributes(
+		attribute.Bool("enricher.resolved", eu.IP != ""),
+		attribute.Bool("enricher.dns_network_error", eu.DNSNetworkError),
+	)
+
+	if eu.IP == "" {
+		// Host does not resolve: skip WHOIS + HTTP (and TLS, which also needs a
+		// reachable host). Return with whatever cheap signal exists. Features
+		// computed from the zero-value WHOIS/HTTP/TLS correctly read as "unknown".
+		span.SetAttributes(attribute.Bool("enricher.dns_gate_skip", true))
+		eu.Features = ComputeFeatures(eu)
+		return eu, nil
+	}
+
 	g, gctx := errgroup.WithContext(ctx)
 
-	// DNS + GeoIP (sequential: GeoIP needs the IP)
-	ipCh := make(chan string, 1)
+	// GeoIP (DNS already delivered the IP). GeoIPLookup.Lookup has no ctx of its
+	// own, so wrap it in a span here for trace continuity.
 	g.Go(func() error {
-		ip := ResolveIP(gctx, hostname)
-		eu.IP = ip
-		ipCh <- ip
+		_, geoSpan := enricherTracer.Start(gctx, "enricher.geoip.Lookup")
+		geoSpan.SetAttributes(attribute.String("enricher.ip", eu.IP))
+		eu.Geo = e.geo.Lookup(eu.IP)
+		geoSpan.SetAttributes(
+			attribute.String("enricher.country", eu.Geo.Country),
+			attribute.Int64("enricher.asn", int64(eu.Geo.ASN)),
+		)
+		geoSpan.End()
 		return nil
 	})
 
@@ -103,26 +143,6 @@ func (e *Enricher) Enrich(ctx context.Context, rawURL string) (EnrichedURL, erro
 	// HTTP
 	g.Go(func() error {
 		eu.HTTP = FetchHTTP(gctx, effectiveURL)
-		return nil
-	})
-
-	// GeoIP (starts after DNS delivers the IP). GeoIPLookup.Lookup has no
-	// ctx of its own, so wrap it in a span here for trace continuity.
-	g.Go(func() error {
-		select {
-		case ip := <-ipCh:
-			if ip != "" {
-				_, geoSpan := enricherTracer.Start(gctx, "enricher.geoip.Lookup")
-				geoSpan.SetAttributes(attribute.String("enricher.ip", ip))
-				eu.Geo = e.geo.Lookup(ip)
-				geoSpan.SetAttributes(
-					attribute.String("enricher.country", eu.Geo.Country),
-					attribute.Int64("enricher.asn", int64(eu.Geo.ASN)),
-				)
-				geoSpan.End()
-			}
-		case <-gctx.Done():
-		}
 		return nil
 	})
 

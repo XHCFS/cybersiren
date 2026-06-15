@@ -15,6 +15,12 @@ type Metrics struct {
 	PartialCompletions  prometheus.Counter
 	ActiveBuckets       prometheus.Gauge
 	PublishErrors       *prometheus.CounterVec // labels: kind=publish|del|hsetnx|hset
+	// LateDrops counts scores discarded after the email_id was already
+	// finalized (reason=after_finalization, P1 tombstone) or because the
+	// resolved internal_id was unresolved/0 (reason=internal_id_unresolved).
+	// These were previously silent; surfacing them turns the "url_risk_score
+	// NULL" symptom into an observable signal.
+	LateDrops *prometheus.CounterVec // labels: reason
 }
 
 // New registers the metrics on reg and returns the holder. Re-registering
@@ -59,6 +65,14 @@ func New(reg *prometheus.Registry) *Metrics {
 			Help: "Errors during emails.scored publish or Valkey housekeeping, by kind.",
 		},
 		[]string{"kind"},
+	))
+
+	m.LateDrops = registerCounterVec(reg, prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "aggregator_late_drops_total",
+			Help: "Component scores dropped without emit, by reason (after_finalization|internal_id_unresolved).",
+		},
+		[]string{"reason"},
 	))
 
 	return m

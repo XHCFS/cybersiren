@@ -11,7 +11,11 @@ import (
 // (cmd/url-pipeline). All instance methods are nil-safe so callers can pass a
 // nil holder in tests.
 type ScanMetrics struct {
-	ScansTotal    *prometheus.CounterVec // outcome=guard_allowlisted|guard_typosquat|guard_brand|ti_phishing|ml_phishing|ml_benign|fallback
+	// ScansTotal records exactly one outcome per scan. outcome is one of:
+	// guard_allowlisted, guard_typosquat, guard_brand, ti_phishing,
+	// ti_low_confidence, ml_phishing, ml_benign, l2_error, l2_skipped_confident,
+	// l1_uncorroborated_deescalated, fallback_legitimate.
+	ScansTotal    *prometheus.CounterVec
 	ScanDuration  prometheus.Histogram   // wall-clock end-to-end /scan
 	StageErrors   *prometheus.CounterVec // stage=normalize|guard|l1|ti|l2
 	GuardChecks   *prometheus.CounterVec // hit=allowlisted|typosquat|brand_in_subdomain|none

@@ -393,7 +393,9 @@ func Load() (*Config, error) {
 		ML: MLConfig{
 			NLPServiceURL:    "http://localhost:8001",
 			URLModelPath:     "./ml/inference_script.py",
-			URLModelPoolSize: 3,
+			// Sized to match svc-03's per-email URL concurrency (maxURLConcurrency=8)
+			// so concurrent L1 predictions don't serialize on a smaller worker pool.
+			URLModelPoolSize: 8,
 		},
 		Enrichment: EnrichmentConfig{
 			WorkerCount: 10,

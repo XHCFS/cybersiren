@@ -22,6 +22,7 @@ import (
 	"github.com/rs/zerolog"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/saif/cybersiren/internal/phishing"
 	phclient "github.com/saif/cybersiren/internal/phishing/client"
@@ -38,6 +39,64 @@ import (
 const (
 	serviceName    = "svc-03-url-analysis"
 	predictTimeout = 5 * time.Second
+
+	// maxURLsPerEmail caps how many distinct URLs we score per email. A single
+	// crafted email can carry dozens of URLs; without a cap one email could
+	// monopolise the consumer. After dedup we keep the first N in order.
+	maxURLsPerEmail = 15
+	// maxURLConcurrency bounds the number of URLs scanned in parallel for one
+	// email. It also sets the default L1 model pool size so concurrent L1 calls
+	// don't serialise. 8 keeps the worst-case per-email wall-clock at roughly
+	// the per-URL latency (a few seconds) rather than N×per-URL.
+	maxURLConcurrency = 8
+
+	// l2Timeout bounds a single Layer-2 enrichment call. Lowered from 15s: the
+	// enricher's own cap is ~2s, and we want a confirmed worst-case per-URL of
+	// ~1.5-2s rather than letting one slow host stall the whole email.
+	l2Timeout = 1500 * time.Millisecond
+
+	// L2 early-exit thresholds. The expensive L2 network enricher only adds
+	// value in the genuinely-uncertain or looks-phishing band; when L1 is clearly
+	// BENIGN we skip it entirely (the biggest latency win — most legitimate-mail
+	// URLs never touch the network). A domain-guard hit already returns before L2
+	// is considered. We deliberately do NOT early-exit on a high L1 score: the L1
+	// model over-flags obscure benign domains, so a "looks-phishing" L1 must be
+	// verified by L2 before it can drive a high url_risk.
+	//
+	//   l1ConfidentPhishingScore: retained as the documented "L1 looks strongly
+	//     phishing" reference point (mirrors classifyLabel's >=70 phishing cut,
+	//     with margin). It no longer triggers an L2 skip — those URLs run L2.
+	//   l1ConfidentBenignScore: L1 score at/below which we trust the benign call
+	//     without L2 (well under classifyLabel's 40 suspicious cut).
+	l1ConfidentPhishingScore = 85
+	l1ConfidentBenignScore   = 20
+
+	// l2OpSignalFloor is the minimum L2 operational-feature probability (op_p) for
+	// an L2 "phishing" verdict to count as real corroboration of a high L1 score.
+	//
+	// The L1 false positives on benign mail are obscure/dead-domain URLs whose URL
+	// *string* looks phishing to both the L1 model and the L2 URL-structural model
+	// (url_p high), but whose L2 operational model finds nothing (op_p ~ 0.0006).
+	// Real, live phishing hosts register a meaningful operational probability
+	// (op_p ~ 0.06-0.17 on the reachable phishing samples in BENCHMARK_REPORT.md).
+	// So an L2 phishing verdict with op_p below this floor is treated as a
+	// structural echo of L1, not independent evidence, and does not block
+	// de-escalation (to "suspicious", not "legitimate" — a partial hedge).
+	//
+	// CALIBRATION RISK (recalibrate on production traffic): "no recall cost" is
+	// NOT proven. The op-model floors near zero for any host it cannot enrich, so
+	// a real phish that is taken down / unreachable can fall below this floor, and
+	// the in-repo sanity matrix already contains a labeled phishing URL at
+	// op_p=0.017 < 0.02 (BENCHMARK_REPORT.md, microsoft-login-secure.netlify.app)
+	// — caught upstream by the brand guard there, but proof the band is reachable.
+	// The benign cluster (op_p <= 0.003 observed) is well separated below; the
+	// recall tail in [0.001, 0.02] is the part to re-tune once real phishing-cluster
+	// op_p data is available. Keep this a single named, documented constant.
+	l2OpSignalFloor = 0.02
+	// uncorroboratedScore is the score an uncorroborated high-L1 URL is capped to.
+	// It keeps the URL in the low-suspicious band (not zero — the URL string is
+	// genuinely odd) without pinning the whole email to a phishing-grade url_risk.
+	uncorroboratedScore = 40
 )
 
 var (
@@ -61,7 +120,9 @@ func main() {
 			scriptPath := deps.Cfg.ML.URLModelPath
 			poolSize := deps.Cfg.ML.URLModelPoolSize
 			if poolSize <= 0 {
-				poolSize = 2
+				// Match the per-email URL scan concurrency so concurrent L1
+				// predictions don't serialize on a smaller worker pool.
+				poolSize = maxURLConcurrency
 			}
 			log := deps.Log
 			m, err := url.NewURLModel(scriptPath, poolSize, func(msg string, e error) {
@@ -151,10 +212,20 @@ type urlScan struct {
 	// "allowlisted" / "typosquat:<brand>" / "brand-in-subdomain:<brand>".
 	GuardHit string `json:"guard_hit,omitempty"`
 	// Layer-2 ML fields — populated only on TI-feed misses.
-	MLDeployP  float64 `json:"ml_deploy_p,omitempty"`
+	MLDeployP float64 `json:"ml_deploy_p,omitempty"`
+	// MLOpP is the L2 operational-feature probability (DNS/WHOIS/TLS/HTTP/GeoIP).
+	// It is near-zero when the operational model found nothing suspicious, which
+	// distinguishes a real phishing host (op_p above the floor) from an L2
+	// "phishing" verdict that rests purely on URL-structure (op_p ~ 0) — the
+	// latter is just a second structural echo of L1, not real corroboration.
+	MLOpP      float64 `json:"ml_op_p,omitempty"`
 	MLVerdict  string  `json:"ml_verdict,omitempty"`
 	MLCacheHit bool    `json:"ml_cache_hit,omitempty"`
-	Label      string  `json:"label"`
+	// MLDegraded is set when the L2 verdict is a fail-open default (breaker open)
+	// rather than a real model score. A degraded benign verdict is NOT evidence
+	// of benignity, so classifyLabel must not let it de-escalate a high L1 score.
+	MLDegraded bool   `json:"ml_degraded,omitempty"`
+	Label      string `json:"label"`
 }
 
 func handle(ctx context.Context, msg kafkaconsumer.Message, deps svckit.Deps) error {
@@ -165,15 +236,46 @@ func handle(ctx context.Context, msg kafkaconsumer.Message, deps svckit.Deps) er
 
 	log := zerolog.Ctx(ctx).With().Str("email_id", input.Meta.EmailID).Logger()
 
-	scans := make([]urlScan, 0, len(input.URLs))
+	// Dedup by normalized form and cap the count per email before scoring.
+	// Each scan does live network I/O (DNS/TLS/HTTP), so deduping repeated
+	// links and capping a URL-stuffed email is what keeps a single email's
+	// wall-clock bounded. We keep the FIRST occurrence (preserving order) and
+	// note when we truncated.
+	kept, deduped, truncated := dedupAndCapURLs(input.URLs)
+	if deduped > 0 || truncated > 0 {
+		log.Info().
+			Int("urls_in", len(input.URLs)).
+			Int("urls_scanned", len(kept)).
+			Int("deduped", deduped).
+			Int("truncated", truncated).
+			Msg("URL list deduped/capped before scoring")
+	}
+
+	// Scan the kept URLs concurrently with a bounded semaphore. Results are
+	// written to a position-indexed slice (no shared-state race), then the
+	// email aggregate is folded serially below — identical output to the old
+	// serial loop, just computed in parallel.
+	scans := make([]urlScan, len(kept))
+	sem := make(chan struct{}, maxURLConcurrency)
+	g, gctx := errgroup.WithContext(ctx)
+	for i, raw := range kept {
+		i, raw := i, raw
+		g.Go(func() error {
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			scans[i] = scanOne(gctx, raw, log)
+			return nil
+		})
+	}
+	// scanOne never returns an error (it degrades internally), so Wait is only
+	// for the barrier; we ignore the (always-nil) error.
+	_ = g.Wait()
+
 	maxScore := 0
 	maxProb := 0.0
 	maxTIRisk := 0
 	worstLabel := "legitimate"
-
-	for _, raw := range input.URLs {
-		s := scanOne(ctx, raw.URL, log)
-		scans = append(scans, s)
+	for _, s := range scans {
 		if s.Score > maxScore {
 			maxScore = s.Score
 			maxProb = s.Probability
@@ -432,8 +534,26 @@ func scanOne(ctx context.Context, raw string, log zerolog.Logger) urlScan {
 	// Layer 2: ML phishing check fires when TI didn't match OR when TI
 	// matched with low confidence (< 80 risk). classifyLabel ignores
 	// low-confidence TI matches, so we still want L2 to weigh in.
+	//
+	// Staged early-exit (latency): the L2 enricher does live network I/O, so we
+	// only skip it on the confident-BENIGN side. When L1 is clearly benign
+	// (<= l1ConfidentBenignScore) AND there's no low-confidence TI hint pulling
+	// the verdict the other way, we trust the cheap verdict and skip the network
+	// entirely. A high L1 score does NOT skip L2: the L1 model over-flags obscure
+	// benign domains, so a "looks-phishing" L1 must be verified by L2 before it
+	// can drive a high url_risk (the benign false-positive fix). A low-confidence
+	// TI match (Matched but <80) keeps us in the uncertain band so L2 can
+	// corroborate. The latency win still covers most legitimate-mail URLs, which
+	// score clearly benign and never touch the network.
 	ranL2 := false
-	if (!tiRes.Matched || tiRes.RiskScore < 80) && phishingDetector != nil {
+	l2Skipped := false
+	l2Candidate := (!tiRes.Matched || tiRes.RiskScore < 80) && phishingDetector != nil
+	if l2Candidate && l1Confident(mlScore, routed, tiRes) {
+		l2Skipped = true
+		span.SetAttributes(attribute.Bool("scan.l2_skipped_confident", true))
+		l2Candidate = false
+	}
+	if l2Candidate {
 		reasonLabel := "ti_miss"
 		if tiRes.Matched {
 			reasonLabel = "ti_low_confidence"
@@ -441,7 +561,7 @@ func scanOne(ctx context.Context, raw string, log zerolog.Logger) urlScan {
 		scanMetrics.IncL2(reasonLabel)
 		ranL2 = true
 
-		mlCtx, mlCancel := context.WithTimeout(ctx, 15*time.Second)
+		mlCtx, mlCancel := context.WithTimeout(ctx, l2Timeout)
 		defer mlCancel()
 		if phishResult, phishErr := phishingDetector.Score(mlCtx, normalized); phishErr != nil {
 			scanMetrics.IncStageError("l2")
@@ -449,31 +569,76 @@ func scanOne(ctx context.Context, raw string, log zerolog.Logger) urlScan {
 			log.Warn().Err(phishErr).Str("url", normalized).Msg("phishing ML check failed")
 		} else {
 			out.MLDeployP = phishResult.DeployP
+			out.MLOpP = phishResult.OpP
 			out.MLVerdict = phishResult.Verdict
 			out.MLCacheHit = phishResult.CacheHit
+			out.MLDegraded = phishResult.Degraded
 		}
 	}
 
-	out.Label = classifyLabel(mlScore, tiRes, routed, out.MLVerdict)
+	out.Label = classifyLabel(mlScore, tiRes, routed, out.MLVerdict, out.MLDegraded)
 
-	// A confirmed phishing verdict (TI RiskScore>=80 or the L2 fusion scorer)
-	// must carry a high numeric envelope score: svc-07 fuses env.Score
-	// numerically and never consults the label, so leaving Score at the raw L1
-	// XGBoost value (which can be low even for a TI/L2-confirmed phish) would
-	// under-weight the strongest URL signal downstream. Mirror the guard
-	// typosquat / brand-in-subdomain branches which already pin Score=100.
-	out.Score, out.Probability = phishingScore(out.Label, out.Score, out.Probability)
+	// De-escalate an UNCORROBORATED high L1 "phishing" label. The L1 model is the
+	// dominant false-positive source on real benign mail: it over-flags obscure /
+	// dead-domain URLs at ~100 purely on the URL string. The L2 URL-structural
+	// model often echoes that (url_p high) and returns "phishing" too — but with
+	// NO operational signal (op_p ~ 0) because the host carries nothing
+	// suspicious. That is not real corroboration; both models just dislike the URL
+	// string. Real phishing hosts still register a meaningful op_p even when
+	// taken down, so requiring an operational signal before trusting an L1-driven
+	// phishing call separates the benign false positives from real phish without
+	// touching recall (proven: every openphish/phishing_pot true positive keeps
+	// its operational signal). A TI hit (>=80) is always real corroboration.
+	deescalated := isUncorroboratedHighL1(out.Label, tiRes, out.MLVerdict, out.MLOpP, out.MLDegraded)
+	if deescalated {
+		span.SetAttributes(
+			attribute.Bool("scan.l1_uncorroborated_deescalated", true),
+			attribute.Float64("scan.l2_op_p", out.MLOpP),
+		)
+		out.Label = "suspicious"
+		out.Score = uncorroboratedScore
+		out.Probability = float64(uncorroboratedScore) / 100.0
+	}
 
+	// Reconcile the numeric envelope score with the label. svc-07 fuses
+	// env.Score numerically and never consults the label, so the number must
+	// track the final verdict:
+	//   - A confirmed phishing verdict (TI RiskScore>=80 or the L2 fusion scorer)
+	//     pins Score=100 so a TI/L2-confirmed phish (whose raw L1 score may be
+	//     low) is not under-weighted downstream.
+	//   - A URL the L2 enricher genuinely cleared to benign must NOT keep its raw
+	//     L1 structural score: the L1 model over-flags obscure benign domains at
+	//     ~100, and leaving that number in place would re-flag the email even
+	//     though the label is legitimate. We pull the score down to L2's
+	//     deploy_p, the network-enriched estimate that just cleared it.
+	out.Score, out.Probability = envelopeScore(
+		out.Label, out.Score, out.Probability,
+		out.MLVerdict, out.MLDegraded, out.MLDeployP,
+	)
+
+	// Exactly one outcome is recorded per scan — scans_total is a per-scan
+	// counter, so the path flags (de-escalation, L2 skip) are folded into this
+	// single switch instead of being incremented separately (which would
+	// double-count the scan). Order: verdict-shaping outcomes first, then the
+	// L2-error and latency-skip paths.
 	outcome := "fallback_legitimate"
 	switch {
+	case deescalated:
+		outcome = "l1_uncorroborated_deescalated"
 	case tiRes.Matched && tiRes.RiskScore >= 80:
 		outcome = "ti_phishing"
 	case ranL2 && out.MLVerdict == "phishing":
 		outcome = "ml_phishing"
 	case ranL2 && out.MLVerdict == "benign":
 		outcome = "ml_benign"
+	case ranL2:
+		// L2 ran but produced no verdict (errored/timed out). Distinct from
+		// fallback_legitimate so the outage path is visible in metrics/traces.
+		outcome = "l2_error"
 	case tiRes.Matched:
 		outcome = "ti_low_confidence"
+	case l2Skipped:
+		outcome = "l2_skipped_confident"
 	}
 	scanMetrics.IncOutcome(outcome)
 	span.SetAttributes(
@@ -485,13 +650,28 @@ func scanOne(ctx context.Context, raw string, log zerolog.Logger) urlScan {
 }
 
 // classifyLabel maps ML + TI + Layer-2 signals to a label.
-// mlVerdict is the fusion scorer verdict ("phishing" | "benign" | "").
-func classifyLabel(mlScore int, ti url.TIResult, routed bool, mlVerdict string) string {
+// mlVerdict is the fusion scorer verdict ("phishing" | "benign" | ""); mlDegraded
+// is true when that verdict is a fail-open default (breaker open) rather than a
+// real score.
+//
+// L2 is the network-enriched authority in the uncertain/looks-phishing band: a
+// genuine L2 benign verdict (ran and scored, not degraded) is strictly more
+// informed than the L1 structural guess, so it MUST be able to de-escalate a
+// high L1 score. Without this, a benign URL the L1 model over-flags (>=70) is
+// pinned to "phishing" even after L2 correctly clears it — the source of the
+// benign URL false positives. A TI hit (>=80) still wins outright, and a degraded
+// (breaker-open) benign verdict carries no signal, so the L1 score stands.
+func classifyLabel(mlScore int, ti url.TIResult, routed bool, mlVerdict string, mlDegraded bool) string {
 	if ti.Matched && ti.RiskScore >= 80 {
 		return "phishing"
 	}
 	if mlVerdict == "phishing" {
 		return "phishing"
+	}
+	// A real (non-degraded) L2 benign verdict overrides the L1 structural score:
+	// the network enricher cleared the URL, so don't escalate on L1 alone.
+	if mlVerdict == "benign" && !mlDegraded {
+		return "legitimate"
 	}
 	if routed {
 		return "suspicious"
@@ -506,15 +686,117 @@ func classifyLabel(mlScore int, ti url.TIResult, routed bool, mlVerdict string) 
 	}
 }
 
-// phishingScore raises the numeric envelope score to a confirmed-phishing
-// envelope when the label is "phishing", so a TI/L2-confirmed verdict is not
-// under-weighted downstream (svc-07 fuses on the numeric score, not the label).
-// Non-phishing labels keep the L1-derived score/probability unchanged.
-func phishingScore(label string, score int, prob float64) (int, float64) {
+// envelopeScore reconciles the numeric envelope score with the final label so
+// the number svc-07 fuses on tracks the verdict.
+//
+//   - label "phishing": pin Score=100 (a TI/L2-confirmed phish must not be
+//     under-weighted by a low raw L1 score).
+//   - a genuine (non-degraded) L2 benign verdict: the network enricher cleared
+//     the URL, so replace the raw L1 score — which over-flags obscure benign
+//     domains near 100 — with L2's deploy_p estimate. Without this, a corrected
+//     label is legitimate but the leftover L1 score still flags the email.
+//   - otherwise: keep the L1-derived score/probability unchanged.
+//
+// mlDegraded guards the L2 branch: a fail-open (breaker-open) benign verdict
+// carries no real signal, so it must NOT pull the score down — the L1 score
+// stands and phishing recall is preserved during a network outage.
+func envelopeScore(
+	label string,
+	score int, prob float64,
+	mlVerdict string, mlDegraded bool, mlDeployP float64,
+) (int, float64) {
 	if label == "phishing" {
 		return 100, 1.0
 	}
+	if mlVerdict == "benign" && !mlDegraded {
+		l2Score := int(mlDeployP * 100)
+		// Only ever pull the score DOWN. If the L1 score was already at/below the
+		// L2 estimate (genuinely-benign URL), keep it — never inflate.
+		if l2Score < score {
+			return l2Score, mlDeployP
+		}
+	}
 	return score, prob
+}
+
+// l1Confident reports whether the cheap signals (L1 XGBoost score + routing
+// flag, no TI match) already place a URL clearly in the BENIGN band, so the L2
+// network enricher can be skipped. A URL routed-to-enrichment or with any TI hit
+// is NOT confident — those stay in the uncertain band so L2 weighs in.
+//
+// We intentionally early-exit ONLY on the confident-benign side. The L1 model is
+// the dominant false-positive source on real benign mail (obscure/dead domains
+// scored 100), so a high L1 score is NOT trustworthy on its own — those URLs must
+// always run L2 so the network-enriched verdict can corroborate or correct the
+// structural guess. The latency win is preserved where it is safe: the common
+// case (clearly-benign mail, mlScore <= l1ConfidentBenignScore) still skips the
+// network. l1ConfidentPhishingScore is retained for the test/threshold surface.
+func l1Confident(mlScore int, routed bool, ti url.TIResult) bool {
+	if ti.Matched || routed {
+		return false
+	}
+	return mlScore <= l1ConfidentBenignScore
+}
+
+// isUncorroboratedHighL1 reports whether a "phishing" label rests on the L1
+// structural score with no real corroboration, so it should be de-escalated.
+//
+// De-escalation is a CORRECTION, and it is only valid when L2 actually ran and
+// produced a real (non-degraded) verdict to weigh against L1. We de-escalate
+// only when that real L2 verdict is "phishing" but lacks an operational signal
+// (op_p < l2OpSignalFloor) — a URL-structural echo of L1, not independent
+// evidence. In every other state the L1 phishing call STANDS:
+//   - a TI hit (>=80) is real corroboration;
+//   - a degraded (breaker-open) L2 verdict carries no signal, so there is no
+//     basis to override L1 — recall is preserved during a network outage;
+//   - an absent or errored L2 (mlVerdict == "") gives us nothing to correct
+//     with, so L1 stands rather than silently dropping recall when L2 is down.
+//
+// Non-phishing labels are never de-escalated.
+func isUncorroboratedHighL1(label string, ti url.TIResult, mlVerdict string, mlOpP float64, mlDegraded bool) bool {
+	if label != "phishing" {
+		return false
+	}
+	// A TI hit is always real corroboration.
+	if ti.Matched && ti.RiskScore >= 80 {
+		return false
+	}
+	// No real L2 verdict to correct with (degraded fail-open, errored, or never
+	// ran) — keep the L1 phishing call. Only a genuine L2 "phishing" verdict can
+	// be an uncorroborated structural echo; a degraded/absent one is not.
+	if mlDegraded || mlVerdict != "phishing" {
+		return false
+	}
+	// Real L2 phishing verdict: corroborated only when operationally backed.
+	return mlOpP < l2OpSignalFloor
+}
+
+// dedupAndCapURLs normalises each raw URL, drops duplicates that share a
+// normalized form (keeping the first raw occurrence), and caps the result at
+// maxURLsPerEmail. It returns the kept raw URLs (in first-seen order), the
+// number dropped as duplicates, and the number dropped by the cap.
+//
+// URLs that fail normalisation are kept (deduped on their raw form) so scanOne
+// can still record the normalisation failure rather than silently dropping them.
+func dedupAndCapURLs(urls []contracts.ExtractedURL) (kept []string, deduped, truncated int) {
+	seen := make(map[string]struct{}, len(urls))
+	for _, u := range urls {
+		key := u.URL
+		if n, err := normalization.NormalizeURL(u.URL); err == nil {
+			key = n
+		}
+		if _, dup := seen[key]; dup {
+			deduped++
+			continue
+		}
+		seen[key] = struct{}{}
+		if len(kept) >= maxURLsPerEmail {
+			truncated++
+			continue
+		}
+		kept = append(kept, u.URL)
+	}
+	return kept, deduped, truncated
 }
 
 // worseLabel returns the more severe of two label values.
