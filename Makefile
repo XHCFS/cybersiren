@@ -318,18 +318,27 @@ FUSION_HGB_MODEL := fusion_export/models/hgb_operational.joblib
 ## stub, then copies the source into place.
 check-nlp-model:
 	@size=$$(wc -c < "$(NLP_MODEL)" 2>/dev/null || echo 0); \
-	if [ "$$size" -ge 1000000 ]; then \
-	    echo "  [svc-06] ONNX model present at $(NLP_MODEL) ($$(du -sh $(NLP_MODEL) | cut -f1))"; \
+	if [ -f "$(NLP_MODEL)" ] && [ ! -L "$(NLP_MODEL)" ] && [ "$$size" -ge 1000000 ]; then \
+	    echo "  [svc-06] ONNX model present at $(NLP_MODEL) ($$(du -shL $(NLP_MODEL) | cut -f1))"; \
 	    exit 0; \
+	fi; \
+	if [ -L "$(NLP_MODEL)" ]; then \
+	    echo "  [svc-06] $(NLP_MODEL) is a SYMLINK — Docker COPY would ship a dangling link"; \
+	    echo "           (.dockerignore excludes python/), so the container model would be"; \
+	    echo "           unloadable and every verdict fallback-driven. Replacing with a real copy."; \
 	fi; \
 	src_size=$$(wc -c < "$(NLP_MODEL_SRC)" 2>/dev/null || echo 0); \
 	if [ "$$src_size" -lt 1000000 ]; then \
 	    echo "  [svc-06] ONNX model missing — pulling via Git LFS (this downloads ~64 MB)..."; \
 	    git lfs pull --include="$(NLP_MODEL_SRC)"; \
 	fi; \
-	echo "  [svc-06] copying $(NLP_MODEL_SRC) → $(NLP_MODEL)"; \
-	cp "$(NLP_MODEL_SRC)" "$(NLP_MODEL)"; \
-	echo "  [svc-06] ONNX model ready ($$(du -sh $(NLP_MODEL) | cut -f1))"
+	echo "  [svc-06] copying $(NLP_MODEL_SRC) → $(NLP_MODEL) (real file, not a symlink)"; \
+	rm -f "$(NLP_MODEL)"; \
+	cp -L "$(NLP_MODEL_SRC)" "$(NLP_MODEL)"; \
+	if [ -L "$(NLP_MODEL)" ] || [ "$$(wc -c < "$(NLP_MODEL)" 2>/dev/null || echo 0)" -lt 1000000 ]; then \
+	    echo "  [svc-06] ERROR: $(NLP_MODEL) is still not a real >=1MB file after copy"; exit 1; \
+	fi; \
+	echo "  [svc-06] ONNX model ready ($$(du -sh $(NLP_MODEL) | cut -f1), real file)"
 
 ## check-fusion-models: Ensure the L2 fusion bundles (url_char_lr.joblib +
 ## hgb_operational.joblib) are present at the path the sidecar loads from.
