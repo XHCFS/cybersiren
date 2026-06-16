@@ -1,0 +1,162 @@
+{
+  "version": "fusion-calibration-v1",
+  "objective": "maliciousness: positive = (label != legitimate)",
+  "method": "per-channel calibration -> probabilistic-OR -> final isotonic calibration",
+  "fused_formula": "raw = 100*(1 - prod_present(1 - clip(calib_c(score_c),0,cap))); risk = 100*final(raw)",
+  "interpolation": "piecewise-linear between knots; clip below x[0]->y[0], above x[-1]->y[-1]",
+  "trained_on": "benchmark/consistent_base.csv real current-model scores (n=10677, malicious=1580)",
+  "cap": 0.999,
+  "final": {
+    "kind": "isotonic",
+    "x": [
+      4.3238,
+      4.5082,
+      6.0606,
+      25.8065,
+      28.5714,
+      36.1111,
+      38.7033,
+      50.0,
+      52.4665,
+      59.0684,
+      66.6667,
+      67.9666,
+      78.5714,
+      78.6444,
+      81.25,
+      82.3529,
+      86.2714,
+      96.875,
+      97.9979,
+      98.913,
+      99.3036,
+      99.9999
+    ],
+    "y": [
+      0.000642,
+      0.004739,
+      0.060606,
+      0.083333,
+      0.083333,
+      0.137255,
+      0.267583,
+      0.267583,
+      0.467742,
+      0.467742,
+      0.5,
+      0.666667,
+      0.666667,
+      0.785714,
+      0.785714,
+      0.823529,
+      0.971014,
+      0.971014,
+      0.9875,
+      0.9875,
+      1.0,
+      1.0
+    ],
+    "comment": "maps fused raw score -> calibrated P(malicious)"
+  },
+  "channels": {
+    "nlp": {
+      "kind": "isotonic",
+      "x": [
+        0.0,
+        1.0,
+        2.0,
+        3.0,
+        4.0,
+        5.0,
+        16.0,
+        17.0,
+        21.0,
+        22.0,
+        24.0,
+        25.0,
+        36.0,
+        37.0,
+        45.0,
+        46.0,
+        61.0,
+        62.0,
+        94.0,
+        95.0,
+        96.0,
+        97.0,
+        98.0,
+        99.0,
+        100.0
+      ],
+      "y": [
+        0.043238,
+        0.045082,
+        0.060606,
+        0.258065,
+        0.285714,
+        0.361111,
+        0.361111,
+        0.454545,
+        0.454545,
+        0.5,
+        0.5,
+        0.529412,
+        0.529412,
+        0.666667,
+        0.666667,
+        0.785714,
+        0.785714,
+        0.8125,
+        0.8125,
+        0.823529,
+        0.823529,
+        0.928571,
+        0.96875,
+        0.98913,
+        1.0
+      ],
+      "n_fit": 10677
+    },
+    "header": {
+      "kind": "isotonic",
+      "x": [
+        10.0,
+        25.0,
+        60.0,
+        80.0
+      ],
+      "y": [
+        0.359331,
+        0.359331,
+        1.0,
+        1.0
+      ],
+      "n_fit": 1770
+    },
+    "url": {
+      "kind": "neutral",
+      "x": [
+        0.0,
+        100.0
+      ],
+      "y": [
+        0.0,
+        0.0
+      ],
+      "n_fit": 0,
+      "note": "placeholder; lexical URL excluded pending live-enrichment/authoritative forwarding"
+    },
+    "attachment": {
+      "kind": "identity",
+      "x": [
+        0.0,
+        100.0
+      ],
+      "y": [
+        0.0,
+        1.0
+      ],
+      "n_fit": 0
+    }
+  }
+}
