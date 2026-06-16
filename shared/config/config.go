@@ -58,8 +58,9 @@ type Config struct {
 // Set via env (e.g. CYBERSIREN_DECISION__FUSION_MODE=noisy_or) or config.yaml
 // (decision.fusion_mode). See docs/design/svc-07-08-design-brief.md §3.4/§3.6.
 type DecisionConfig struct {
-	// FusionMode selects the blender: "weighted_average" (default, v1) or
-	// "noisy_or" (probabilistic OR, opt-in until §3.6 bands are recalibrated).
+	// FusionMode selects the blender: "calibrated_or" (default; calibrated
+	// probabilistic-OR — see §3.4), "weighted_average" (v1 rollback), or
+	// "noisy_or" (hand-set probabilistic OR, rollback).
 	FusionMode string `koanf:"fusion_mode"`
 	// FusionShadow, when true, computes the non-active method per email and records
 	// decision_fusion_shadow_disagree_total so a switch can be measured first.
@@ -81,9 +82,9 @@ type ReliabilityConfig struct {
 // startup, like HeaderConfig.Validate) so other services are unaffected.
 func (d DecisionConfig) Validate() error {
 	switch d.FusionMode {
-	case "", "weighted_average", "noisy_or":
+	case "", "weighted_average", "noisy_or", "calibrated_or":
 	default:
-		return fmt.Errorf("decision.fusion_mode must be one of: weighted_average, noisy_or; got %q", d.FusionMode)
+		return fmt.Errorf("decision.fusion_mode must be one of: calibrated_or, weighted_average, noisy_or; got %q", d.FusionMode)
 	}
 	channels := map[string]float64{
 		"url": d.Reliability.URL, "header": d.Reliability.Header,
@@ -488,7 +489,7 @@ func Load() (*Config, error) {
 			HTTPTimeout:  30 * time.Second,
 		},
 		Decision: DecisionConfig{
-			FusionMode:   "weighted_average",
+			FusionMode:   "calibrated_or",
 			FusionShadow: false,
 			Reliability:  ReliabilityConfig{URL: 1.0, Header: 1.0, NLP: 1.0, Attachment: 1.0},
 		},

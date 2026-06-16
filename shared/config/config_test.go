@@ -906,8 +906,8 @@ func TestLoad_DecisionDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load() returned error: %v", err)
 	}
-	if cfg.Decision.FusionMode != "weighted_average" {
-		t.Errorf("default Decision.FusionMode = %q, want weighted_average", cfg.Decision.FusionMode)
+	if cfg.Decision.FusionMode != "calibrated_or" {
+		t.Errorf("default Decision.FusionMode = %q, want calibrated_or", cfg.Decision.FusionMode)
 	}
 	if cfg.Decision.FusionShadow {
 		t.Errorf("default Decision.FusionShadow = true, want false")

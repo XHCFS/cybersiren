@@ -1,0 +1,124 @@
+{
+  "version": "fusion-calibration-v1",
+  "objective": "phishing: positive = (label == phishing). Scams are phishing-labelled; benign marketing spam is negative.",
+  "method": "per-channel isotonic P(phishing|score) -> probabilistic-OR -> final isotonic",
+  "fused_formula": "raw=100*(1-prod_present(1-clip(calib_c(s_c),0,cap))); risk=100*final(raw)",
+  "interpolation": "piecewise-linear; clip outside [x0,xN] to y0/yN",
+  "trained_on": "corrected fp32 full capture (raw_rich_fp32_full.json), NLP=round(P(phishing)*100); n=10677, phish=1010",
+  "cap": 0.999,
+  "final": {
+    "kind": "isotonic",
+    "x": [
+      7.9792,
+      11.455,
+      35.7434,
+      41.4669,
+      57.1623,
+      62.6143,
+      87.2549,
+      98.1583,
+      98.5046,
+      99.9015,
+      99.9999
+    ],
+    "y": [
+      0.008464,
+      0.052632,
+      0.255102,
+      0.255102,
+      0.3125,
+      0.6,
+      0.863636,
+      0.980296,
+      0.983607,
+      1.0,
+      1.0
+    ]
+  },
+  "channels": {
+    "nlp": {
+      "kind": "isotonic",
+      "x": [
+        0.0,
+        1.0,
+        2.0,
+        3.0,
+        4.0,
+        16.0,
+        17.0,
+        36.0,
+        37.0,
+        43.0,
+        46.0,
+        57.0,
+        58.0,
+        89.0,
+        90.0,
+        99.0,
+        100.0
+      ],
+      "y": [
+        0.015443,
+        0.052632,
+        0.052632,
+        0.3125,
+        0.373737,
+        0.373737,
+        0.541667,
+        0.541667,
+        0.6,
+        0.6,
+        0.863636,
+        0.863636,
+        0.980296,
+        0.980296,
+        0.984,
+        0.984,
+        1.0
+      ],
+      "n_fit": 10677,
+      "note": "input is svc-06 v4 content_risk = round(P(phishing)*100)"
+    },
+    "header": {
+      "kind": "isotonic",
+      "x": [
+        10.0,
+        25.0,
+        60.0,
+        80.0
+      ],
+      "y": [
+        0.065358,
+        0.065358,
+        1.0,
+        1.0
+      ],
+      "n_fit": 10677
+    },
+    "url": {
+      "kind": "neutral",
+      "x": [
+        0.0,
+        100.0
+      ],
+      "y": [
+        0.0,
+        0.0
+      ],
+      "n_fit": 0,
+      "note": "NEUTRAL: composite url_score conflates authoritative(guard/TI) with lexical noise; re-enable as an authoritative curve once guard_hit/ti_matched is forwarded (follow-up)"
+    },
+    "attachment": {
+      "kind": "identity",
+      "x": [
+        0.0,
+        100.0
+      ],
+      "y": [
+        0.0,
+        1.0
+      ],
+      "n_fit": 0
+    }
+  }
+}

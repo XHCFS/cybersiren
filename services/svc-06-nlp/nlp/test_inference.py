@@ -367,16 +367,16 @@ class TestPredict:
         assert result["phishing_probability"] > 0.8
         assert result["confidence"] == result["phishing_probability"]
 
-    def test_spam_counts_toward_risk(self):
-        # v3: spam is still its OWN class (the label is distinct from phishing),
-        # but it IS a threat, so a high-confidence spam email yields an elevated
-        # content_risk_score (it was ~0 under the v2 P(phishing)-only scheme,
-        # which let spam/scam pass fusion as benign).
+    def test_spam_low_phishing_risk(self):
+        # v4: content_risk = P(phishing). Benign marketing spam keeps its own (spam)
+        # label but is NOT a phishing threat, so its content_risk is LOW — it must not
+        # pollute the phishing-detection score fed to the aggregator. (Advance-fee SCAMS
+        # are labelled *phishing*, score high under P(phishing), and stay caught.)
         engine = _engine_with_logits([0.0, 5.0, 0.0])
         result = engine.predict("Special offer", "Limited time discount unsubscribe")
         assert result["classification"] == "spam"
         assert result["spam_probability"] > 0.9
-        assert result["content_risk_score"] > 50
+        assert result["content_risk_score"] < 50
 
     def test_legitimate_classification(self):
         engine = _engine_with_logits([5.0, 0.0, 0.0])
@@ -389,11 +389,10 @@ class TestPredict:
         assert 0 <= result["content_risk_score"] <= 100
 
     def test_content_risk_score_formula(self):
-        # v3: content_risk = round((1 - P(legit)) * 100) = round((P(spam)+P(phish))*100).
-        engine = _engine_with_logits([0.0, 4.0, 2.0])  # mixed spam+phish, low legit
+        # v4: content_risk = round(P(phishing) * 100).
+        engine = _engine_with_logits([0.0, 2.0, 4.0])  # phishing-dominant
         result = engine.predict("s", "b")
-        malicious = result["spam_probability"] + result["phishing_probability"]
-        assert abs(result["content_risk_score"] - round(malicious * 100)) <= 1
+        assert abs(result["content_risk_score"] - round(result["phishing_probability"] * 100)) <= 1
         assert result["content_risk_score"] > 50
 
     def test_top_tokens_always_empty(self):
