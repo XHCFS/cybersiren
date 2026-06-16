@@ -12,11 +12,15 @@ Expected artifacts (relative to service root):
     tokenizer/             HuggingFace DistilBertTokenizerFast files
     config.json            Thresholds (T, phish_threshold), label map, intent taxonomy
 
-Scoring (v3): content_risk_score = round((1 - P(legitimate)) * 100), i.e. overall
-maliciousness (spam + phishing). Spam / advance-fee scams ARE threats and DO
-contribute to the risk; the 3-class label still distinguishes phishing vs spam vs
-legitimate. URLs are stripped before tokenization — their reputation is SVC-03's
-job (combined at the aggregator).
+Scoring (v4): content_risk_score = round(P(phishing) * 100). SVC-08 detects phishing,
+so the numeric risk must be phishing-specific. v3 used maliciousness (1 - P(legitimate)
+= P(spam) + P(phishing)); that conflates benign marketing spam with threats and is the
+dominant View-A false-positive source on real traffic (see benchmark/FINDINGS.md).
+Advance-fee / 419 scams are *phishing*-labelled, so they stay high under P(phishing);
+only benign marketing spam drops to ~0 (correct — it is not a phishing threat). The
+3-class label and spam_probability are unchanged, so callers wanting a spam signal keep
+it. URLs are stripped before tokenization — their reputation is SVC-03's job (combined
+at the aggregator).
 ALL preprocessing is delegated to the canonical text_preprocess.preprocess_email
 so the serving path is byte-identical to training (no train/serve skew).
 
@@ -882,17 +886,18 @@ class NLPInferenceEngine:
         spam_prob = float(probs[1])
         phish_prob = float(probs[2])
 
-        # 5. Scoring scheme (v3): content risk = overall maliciousness, i.e.
-        #    1 - P(legitimate) = P(spam) + P(phishing). Spam and advance-fee
-        #    scams ARE threats for this deployment, so they must contribute to the
-        #    risk fed to the aggregator. The v2 scheme scored P(phishing) ALONE,
-        #    which left high-confidence spam/scam at ~0 content_risk and let it
-        #    pass fusion as benign — the dominant whole-system recall leak. The
-        #    3-class label below still distinguishes phishing vs spam vs
-        #    legitimate (so callers that only care about phishing can read the
-        #    label / phishing_probability); only the numeric risk broadens.
+        # 5. Scoring scheme (v4): content risk = P(phishing). SVC-08 detects PHISHING
+        #    (the verdict pipeline has no automated spam label), so the numeric risk it
+        #    consumes must be phishing-specific. v3 scored maliciousness (1 - P(legitimate)
+        #    = P(spam) + P(phishing)) to stop advance-fee scams passing as benign, but that
+        #    conflated benign MARKETING spam with threats: on the corrected-model benchmark
+        #    (benchmark/FINDINGS.md) a maliciousness-based fusion flags ~55-94% of held-out
+        #    real spam as phishing (the dominant View-A false-positive source). Advance-fee
+        #    / 419 scams are *phishing*-labelled, so they stay high under P(phishing); only
+        #    benign marketing spam drops to ~0, which is correct. The 3-class label and
+        #    spam_probability below are unchanged, so callers wanting a spam signal keep it.
         phish_prob_rounded = round(phish_prob, 4)
-        content_risk_score = round((1.0 - leg_prob) * 100)
+        content_risk_score = round(phish_prob * 100)
 
         # 6. Label: phishing if P(phish) clears the tuned operating point
         #    (phish_threshold, fitted for recall target at min FPR); otherwise
