@@ -9,6 +9,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -60,7 +61,7 @@ func main() {
 		msg := rec.Msg
 		signals := header.HeaderSignals{
 			Auth:       header.ExtractAuth(&msg),
-			Reputation: rep.Extract(nil, &msg),
+			Reputation: rep.Extract(context.TODO(), &msg),
 			Structural: header.ExtractStructural(&msg, header.StructuralExtractorConfig{
 				HopCountThreshold:       hopThresh,
 				TimeDriftHoursThreshold: driftThresh,

@@ -37,11 +37,6 @@ func NewCalibratedORBlender() *CalibratedORBlender {
 	return &CalibratedORBlender{cal: loadEmbeddedCalibration()}
 }
 
-// newCalibratedORBlenderFrom is the test seam: build from an explicit Calibration.
-func newCalibratedORBlenderFrom(c Calibration) *CalibratedORBlender {
-	return &CalibratedORBlender{cal: c}
-}
-
 // channelProb maps a present component score to its calibrated probability, clamped
 // to [0, cap]. A channel absent from the artifact uses identity (score/100).
 func (b *CalibratedORBlender) channelProb(name string, score int) float64 {
