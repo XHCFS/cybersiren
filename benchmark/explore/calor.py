@@ -10,7 +10,7 @@ svc-06->07->08 and add one more (x,y) calibration channel to calibrated_blender.
 import numpy as np
 from sklearn.isotonic import IsotonicRegression
 
-THREAT = ("phishing", "spam")
+from combiner_lib import THREAT  # View-A by default: pos=phishing (see combiner_lib)
 
 
 def _ext_channel(key, scale=1.0):

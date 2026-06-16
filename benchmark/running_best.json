@@ -1,0 +1,42 @@
+{
+  "metric": "View-A (pos=phishing, neg=legitimate+spam); model is 3-class, legit-vs-phishing is the product framing",
+  "adjudicator": "mechanism-grouped pooled-OOF pAUC[0,.05] + train-synthetic/test-real PROVENANCE holdout",
+  "source_capture": "big/raw_rich_fp32_3k_v2.json (MY fresh corrected-fp32 3k; NLP signals reproduce committed exactly, url channel degraded-but-consistent)",
+  "status": "GOAL REACHED on 3k (matches PR#216 model numbers); pending adversarial verify + FULL corpus headline",
+  "goal_pr216": {"target": "95.2% 3-class acc + 100% recall on every text-phishing family",
+    "achieved_3k": "reweighted 3-class acc 0.9514; whole-system grouped-OOF recall=1.000 on ALL 7 text families (homoglyph/leet/zerowidth/BEC/obvious/Nazario/Nigerian) at every operating point"},
+  "headline_FULL_heldout_band26": {"recall": 0.881, "FPR_legit_spam": 0.005, "F1": 0.914, "precision": 0.949, "spam_flag": 0.004,
+    "recall_CI": [0.846, 0.912], "FPR_CI": [0.003, 0.007], "real_seen_FPR": 0.0046, "real_ood_recall": 0.979,
+    "vs_PlanA": {"recall": 0.898, "FPR": 0.044, "F1": 0.774, "precision": 0.680, "spam_flag": 0.58},
+    "vs_phish": {"recall": 0.844, "FPR": 0.001, "F1": 0.912, "precision": 0.991, "spam_flag": 0.004}},
+  "clean_evidence_FULL_grouped_oof_realspam_FP": {"PlanA": 0.939, "+phish": 0.545, "noContent": 0.036, "boot_diff_phish_minus_noContent": [0.455, 0.567]},
+  "model_3class_acc_FULL": 0.9518,
+  "text_family_recall_FULL_grouped_oof": {"synthetic_homoglyph_leet_zerowidth_bec_obvious": 1.0, "real_Nazario": 0.976, "real_Nigerian": 0.996},
+  "ceilings": {"hard_soft": "0.76 = model's own classification ceiling (model_cls 0.762)", "url_only": "0.04 — degraded url channel (CPU-contention aggregation-window drops; non-target, non-reproducible). Tried raising svc-03 L2 budget -> made it WORSE (slower svc-03 misses svc-07 window); reverted."},
+  "best_fusion": {
+    "name": "noContent[u,h,p] / calor",
+    "description": "calibrated-OR (noisy-OR of per-channel calibrated P(phishing)) over [url_risk, header_risk, phishing_probability]. DROP content_risk_score: it = 1-P(legit) = P(spam)+P(phishing) and false-positives on (real) spam. Use the dedicated phishing_probability head as the NLP channel. svc-08 = a 3-channel calibrated blender.",
+    "channels": ["url_risk_score", "header_risk_score", "phishing_probability*100"],
+    "calibration": "isotonic vs beta (TBD on full; both close: iso grouped-OOF 0.877, beta 0.873; beta lower spam-flag)",
+    "fresh3k_grouped_oof_pAUC": 0.877,
+    "fresh3k_grouped_oof_R046": 0.895,
+    "fresh3k_provenance_pAUC": 0.963,
+    "fresh3k_band26": {"recall": 0.878, "FPR_legit_spam": 0.014, "F1": 0.906, "precision": 0.935, "spam_flag": 0.03}
+  },
+  "why_it_wins": "CLEAN evidence (leakage-independent, per adversarial skeptic): grouped-OOF held-out REAL-SPAM false-positive rate is +phish ~37% vs noContent ~3-5% (bootstrap diff +0.33 [0.25,0.42]). content_risk = P(spam)+P(phishing) fires on real spam (median 87); phish_p scores spam~0. 0/574 phish are content-only-rescuable, so dropping content costs no recall.",
+  "skeptic_corrections": {
+    "pAUC_provenance_demoted": "The pAUC 0.34->0.96 provenance gap is an isotonic-extrapolation artifact, NOT clean content-vs-nocontent: +phish/beta (WITH content) tops prov pAUC at 0.984. Lead with operating-point real-spam FP rate, not pAUC.",
+    "real_phish_recall_contaminated": "Nazario/Nigerian are public corpora likely in NLP training; phish_p memorized-high (100%>thr). Degrading real-phish phish_p to synthetic dist drops prov pAUC 0.963->0.758, band-26 real recall 1.0->0.875. Do NOT claim 100% real recall as generalization. Synthetic text families (homoglyph/leet/zerowidth/BEC/obvious) hold out-of-family legitimately.",
+    "noContent_vs_phish_incorpus": "In-corpus it's a TIE: 20-seed band-26 F1 noContent 0.927+-0.014 vs +phish 0.931+-0.018 (noContent wins 6/20). noContent's advantage is PURELY OOD robustness to real spam. Reframe: not an in-corpus win.",
+    "header_domain_shift": "band-26 (P>0.255) gives ~21% FPR on synth->real for ALL fusions (synth-trained header maps baseline 10->P=0.227; 99.9% real-legit have header=10). The 0.255 threshold needs real-traffic re-calibration. Whole-pipeline caveat, not content-specific.",
+    "int8_crosscheck": "PASSED: on broken-INT8 phish_p is dead -> noContent collapses, content better. Finding is genuinely a corrected-fp32 property."
+  },
+  "prev_best_rejected": {
+    "calor_+phish[u,h,c,p]": "grouped-OOF 0.856 but PROVENANCE-holdout pAUC 0.339 (R@.046=0) — content channel collapses on real spam",
+    "PlanA[u,h,c]": "grouped-OOF 0.611, provenance 0.337",
+    "histgb_mono+conf / logistic_mono / histgb_MONO": "learned combiners: best in-corpus, collapse OOD (memorize synthetic families) — do not ship"
+  },
+  "url_caveat": "live DNS/WHOIS/TLS/HTTP enrichment times out on historical/synthetic URLs -> url_risk degraded ~half vs committed. Quantified impact: grouped-OOF pAUC UNCHANGED (0.856 both), only ~3pt in-corpus band-26 recall (the ~13 phish_url_only). Documented as methodology caveat; not fixed (non-reproducible channel).",
+  "artifact_path": "explore/sweep_va.py CANDS['noContent[u,h,p]'] = calor([U,H,P]); svc-08 = 3-channel calibrated blender",
+  "last_updated": "2026-06-16"
+}

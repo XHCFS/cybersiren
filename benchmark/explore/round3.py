@@ -71,7 +71,7 @@ def build_calor4(trows):
 
 
 def fpr_for_recall(rows, scores, rtarget=0.785):
-    y = np.array([1 if r["label"] in ("phishing", "spam") else (0 if r["label"] == "legitimate" else -1) for r in rows])
+    y = np.array([1 if r["label"] in L.THREAT else (0 if r["label"] in L.NEG else -1) for r in rows])
     s = np.array(scores)
     order = np.argsort(-s)
     best = 1.0

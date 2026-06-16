@@ -1,172 +1,167 @@
-# svc-08 fusion search — findings
+# svc-08 fusion search — findings (corrected-model re-run)
 
-**Question.** Find the svc-08 decision/fusion design that makes the whole CyberSiren detector
-score best on the leakage-safe whole-system benchmark (View-B threat = phishing|spam vs legit;
-flagged = verdict ≠ benign). Bar to beat: **Plan A / PR #214** ("config D"): R 0.785 · P 0.866 ·
-F1 0.824 · FPR 0.046 · real_ood recall 0.985 · real_seen FPR 0.007 (3,000-email subset, SEED=7
-60/40 stratified held-out test, n=1202).
+> **This supersedes the previous FINDINGS.** The earlier conclusion — *"no svc-08 fusion beats
+> Plan A; the residual headroom is an NLP intent-detection ceiling (the model misses BEC /
+> intent-based phishing)"* — was a **bug artifact**, measured against a **mis-deployed model**.
+> Re-run on the **corrected fp32 model**: (1) the NLP model is excellent and is **not** the ceiling,
+> and (2) a structurally simpler fusion beats the shipped Plan A — for a **narrower, honest reason**
+> than a first pass suggests (see §3, §5).
 
-**Answer.** After an exhaustive, multi-round search across the fusion design space — re-run on the
-full 10,677-email corpus with a deliberately strengthened, leakage-safe adjudicator — **no svc-08
-design beats Plan A in a way that generalizes.** Plan A's calibrated probabilistic-OR is at the
-**generalizable ceiling** of this system. The residual benchmark headroom is bottlenecked by the
-**NLP model's inability to detect intent-based phishing**, an error class that no score fusion can
-repair because the information never reaches svc-08. Every design that beats Plan A on the in-corpus
-split does so by **memorizing synthetic generator families** and collapses out-of-family. This is
-the objective's explicitly-sanctioned outcome, reported here with the root cause, the frontier, and
-the real-world per-slice numbers.
+_Headline numbers below are the **full corpus (n=10,677)** from a single live pass on the corrected
+model; the 3k subset agrees throughout._
 
----
+## 0. What was actually wrong (the model was never the problem)
 
-## 1. The root cause (why nothing beats Plan A)
+svc-06 served a **dangling-symlink / stale INT8 export**, not the canonical 266 MB fp32 cycle-12
+DistilBERT (PR #216). It emitted a neutral fallback `content_risk` for every email and scored
+intent-based phishing (BEC / wire-fraud) as **benign (~2)** — which produced the old "NLP intent
+ceiling" conclusion.
 
-We traced a single missed email end-to-end instead of only sweeping fusion math. The result reframes
-the problem:
+On the **corrected fp32 model** (verified live before any measurement):
+- `make check-nlp-model` → 254 MiB, sha `fffedbeef…`; container log "ONNX model loaded … 265.6 MB".
+- `/predict`: subtle BEC, credential-phish, gift-card BEC → **phishing, content_risk 100** (INT8 bug
+  scored these ~2); benign business / newsletter → legitimate, 0.
+- Re-evaluated (PR #216): **95.2% 3-class accuracy, 100% recall on every text-phishing family**.
+  Reproduced here: 3-class accuracy **0.9518** (full corpus, natural mix; per-class legit 0.997 /
+  phishing 0.794 / spam 0.512).
 
-- **It is not parsing.** svc-02 decodes the quoted-printable body correctly and stores the full
-  text in Postgres (verified).
-- **It is not plumbing.** Scoring that exact body through the live NLP model returns the same low
-  score the pipeline produced — the model receives the text and rates it benign.
-- **It is the NLP model, on a specific error class.** On *novel* text (no benchmark leakage) the
-  deployed DistilBERT behaves like this:
+**Cross-check (fp32 vs INT8):** on the old broken-INT8 capture the phishing-probability head is dead
+(phish_p < 0.255 for 100% of *phishing*), so the new fusion collapses there and content-based fusion
+looks better — i.e. the finding below is genuinely a property of the **corrected** model, not the harness.
 
-  | email (novel, hand-written) | content_risk | verdict |
-  |---|---|---|
-  | Obvious phish — URL + "confirm your password" + urgency | 98 | caught |
-  | **Subtle BEC** — "process a wire transfer to a new supplier; keep this confidential" | **2** | **missed** |
-  | Credential-harvest — "reply with your username and password" | 76 | caught |
-  | Benign business request | 0 | — |
-  | Benign favor | 1 | — |
+## 1. Metric of record — View-A (phishing)
 
-  The model detects phishing through **surface lexical / spam cues**. Pure social-engineering
-  (business-email-compromise, wire-fraud) carries no such cue — it is **lexically identical to a
-  legitimate business request** — so the model, and every signal derived from it, scores it benign.
+Leaving marketing **spam benign is intended product behaviour**, so the detected threat is
+**phishing**. **View-A: positive = phishing, negative = legitimate + spam** (flagging spam is a false
+positive; lower spam-flag is better). The NLP model is 3-class (legit/spam/phishing); "legit-vs-phishing"
+is the product framing. Fit on TRAIN, evaluate held-out (SEED=7, 60/40). Operating point = calibrated
+**P > 0.255** ("band-26").
 
-- **"The NLP model was good when trained on its own"** is exactly right and exactly the trap: its
-  own evaluation was in-distribution (lexically-obvious phishing/spam, which it nails). The
-  benchmark's hard slice is out-of-distribution intent-based BEC, which it cannot. The corpus CSV's
-  precomputed `nlp_score = 99` on these came from a model that had seen the synthetic BEC family
-  (leakage); the honestly-evaluated deployed model scores them ≈ 2.
+## 2. Method
 
-- **All svc-06 signals fail together.** content, classification, confidence, phishing/spam
-  probabilities and the impersonation/deception/intent facets all derive from the same DistilBERT,
-  so on a fooled email they are *all* wrong simultaneously. There is no independent second opinion
-  for svc-08 to fuse — the URL and header channels are silent on text-only mail. This is an
-  information-theoretic ceiling: **svc-08 can combine information, it cannot create it.**
+- **Mechanism-grouped pooled out-of-fold** (`adjudicate.py`/`final_adjudicate.py`): sibling families
+  merged into mechanism groups; every email scored by a calibrated-OR that never saw its group.
+- **The honest discriminator is the held-out spam false-positive rate at the operating point**, not a
+  ranking metric. pAUC[0,0.05] turned out to be misleading here (it rewards isotonic-vs-beta
+  calibration shape, not the channel choice — see §5), so it is *not* the headline.
+- One **live capture** records every per-channel score + svc-06 signal; all fusion shapes are scored
+  **offline** from it. calibrated-OR = noisy-OR of per-channel calibrated P(phishing); channels
+  U=url_risk, H=header_risk, C=content_risk, P=phishing_probability.
 
-- **The obvious upstream lever doesn't help on this benchmark.** A From display-name↔address
-  mismatch (the classic BEC tell) fires on **84% of legitimate** emails too (the synthetic generator
-  does not correlate display names with addresses), so it cannot separate the classes here; the real
-  SPF/DKIM-fail signal (≈29% of misses) is already in svc-04's header channel, which calibrated-OR
-  weights conservatively to hold FPR. The recall ceiling holds even accounting for sender-auth.
+## 3. The decisive result: drop `content_risk`, use the `phishing_probability` head
 
-The 286 NLP-missed phishing on the full corpus are `phish_hard_soft` / `phish_nlp_bec` /
-`phish_header_spoof` / `phish_url_only` — synthetic BEC/social-engineering. **Real out-of-distribution
-phishing (`real_ood`) is already caught at 0.96, and real legitimate FPR is ≈0.015** — Plan A is
-already near-perfect where it matters for deployment.
+Chosen svc-08 design: **`noContent[u,h,p]`** = calibrated-OR over {url, header, phishing_probability}.
 
-## 2. Method (and the methodology fix that makes this trustworthy)
+### 3a. The clean, leakage-free reason — held-out real-spam false positives (grouped-OOF, band-26)
 
-- **Rich-signal capture** (`capture_rich.py`): the prior harness read only the 4 numeric channel
-  scores from Postgres. The classification / confidence / phishing-probability / #210 facets are
-  **only on the `emails.scored` Kafka topic, never persisted**, so we capture them by consuming the
-  topic during a live pass and joining on `internal_id`. Full corpus captured once (10,677 emails).
-- **Leakage-safe split / metric.** Fit any calibration or model on TRAIN only; evaluate on held-out
-  TEST. View-B threat metrics plus the real-world slices (real_seen FPR, real_ood recall, spam-flag)
-  reported separately every time.
-- **The load-bearing control — a corrected generalization adjudicator.** A naive stratified split
-  lets synthetic generator families leak across train/test, so an over-fit model looks like a winner.
-  An earlier leave-one-family-out had two flaws (caught by an adversarial review): 24/25 families are
-  single-class so per-fold AUC was n=1, and near-duplicate siblings (`homoglyph`/`leet`/`zerowidth`;
-  `legit_phishy_text`/`url`) leaked across folds. The corrected adjudicator
-  (`adjudicate.py` / `final_adjudicate.py`):
-  - **merges sibling families** into mechanism groups (no near-twin in train),
-  - scores every email with a model that **never saw its group** (pooled out-of-fold),
-  - adjudicates on **pAUC over FPR ∈ [0, 0.05]** (the stable low-FPR region that actually matters)
-    plus pooled-OOF recall@FPR.046, and cross-checks with a **provenance holdout** (train synthetic
-    → test real). pAUC is used because single-point recall@FPR is threshold-placement noise.
-
-## 3. The decisive result (full corpus, n = 10,677)
-
-**(A) Standard stratified held-out test** (apples-to-apples with the bar), bootstrap 95% CI on R@.046:
-
-| candidate | AUC | R@FPR.046 [95% CI] | band-26 R / FPR / F1 |
+| fusion | **real-spam → phishing** | synth-spam → phishing | real-legit → phishing |
 |---|---|---|---|
-| **Plan A — calibrated-OR** | 0.961 | 0.824 [0.790, 0.852] | 0.824 / 0.039 / 0.805 |
-| calor + phish-prob channel | 0.977 | 0.824 [0.793, 0.856] | 0.824 / 0.038 / 0.806 |
-| logistic (monotone feats) | 0.955 | 0.810 [0.774, 0.842] | 0.797 / 0.042 / 0.783 |
-| HistGBM monotone | 0.979 | 0.828 [0.799, 0.858] | 0.817 / 0.032 / 0.817 |
-| **HistGBM monotone + confidence** | 0.984 | **0.864 [0.837, 0.896]** | 0.845 / 0.034 / 0.827 |
+| Plan A `[u,h,c]` (shipped) | **0.939** (n=330) | 0.000 (n=240) | 0.015 (n=8177) |
+| +phish `[u,h,c,p]` | **0.545** | 0.000 | 0.006 |
+| **noContent `[u,h,p]`** | **0.036** | 0.000 | 0.009 |
 
-On the in-corpus test the confidence-interaction model *beats* Plan A (lower CI bound 0.837 above
-Plan A's point 0.824). **This is the trap.**
+_(Full corpus, grouped-OOF. Bootstrap 95% CI on the +phish − noContent real-spam-FP gap: [0.455, 0.567].)_
 
-**(B) Corrected mechanism-grouped pooled out-of-fold** (the honest new-campaign OOD test):
+`content_risk = 1 − P(legit) = P(spam) + P(phishing)` fires on **real spam** (median content_risk 99;
+300/330 ≥ 50) → Plan A flags **94%** of held-out real spam as phishing; +phish 55%; **noContent 3.6%**.
+This is **leakage-independent** (it does not depend on the phishing head at all) and is the honest
+reason to drop content. The synthetic spam happens to score content≈0, so an **in-corpus test cannot
+see this** — synth-spam FP is 0.000 for every fusion. It only appears out-of-mechanism on real spam
+(TREC / SpamAssassin): a fusion trained on a real-spam sample *memorises* it (in-corpus spam-flag is
+~0 for +phish), but a fusion facing a **new** real-spam campaign over-flags. That is the whole point
+of the grouped-OOF test.
 
-| candidate | **OOD pAUC[0,.05]** | OOD R@.046 | OOD FPR@R.785 | ood-recall |
-|---|---|---|---|---|
-| **Plan A — calibrated-OR** | **0.662** | 0.718 | 0.050 | 0.888 |
-| calor + phish-prob channel | 0.661 | 0.806* | 0.045 | 0.945 |
-| logistic (monotone feats) | 0.555 | 0.761 | 0.052 | 0.950 |
-| HistGBM monotone | 0.588 | 0.665 | 0.150 | 0.915 |
-| **HistGBM monotone + confidence** | **0.589** | 0.651 | **0.162** | 0.888 |
+### 3b. Dropping content costs no recall
 
-- **The best in-corpus model is the worst out-of-mechanism.** `HistGBM monotone+confidence` drops
-  from R@.046 0.864 → 0.651 and its FPR@R.785 balloons to 0.162 (3× Plan A). Its in-corpus win was
-  family-memorization. Rejected — exactly the failure mode the team flagged for the "99% on
-  synthetic" GBM.
-- **On the stable metric (pAUC), Plan A is tied for best** (0.662) and beats every learned model.
-  `calor + phish-prob` ties (0.661); its apparent R@.046 "win" (0.806*) is threshold-placement noise
-  — pAUC is identical and on the 3k subset it was *worse* (sign-flip between subsets ⇒ not robust).
-- **No design clears Plan A on the stable OOD metric.**
+Only **4 / 1010** phishing emails are "content-only rescuable" (content_risk ≥ 80 while phish_p < 0.5,
+url < 50, header < 50) — 0.4%. Even on `phish_hard_soft`, where content is the strongest single
+channel, noContent gets *higher* grouped-OOF recall (0.52) than +phish — adding content raises the FP
+floor and the effective threshold, suppressing soft phish.
 
-## 4. Everything tried (and why each fails)
+### 3c. Held-out band-26 View-A (full corpus, SEED=7, with bootstrap 95% CI)
 
-All leakage-safe, over the captured scores.
+| fusion | recall | FPR(legit+spam) | F1 | precision | spam-flag |
+|---|---|---|---|---|---|
+| Plan A `[u,h,c]` (shipped) | 0.898 [0.866,0.926] | 0.044 [0.037,0.050] | 0.774 | 0.680 | 0.58 |
+| +phish `[u,h,c,p]` | 0.844 [0.807,0.880] | 0.001 [0.000,0.002] | 0.912 | 0.991 | 0.004 |
+| **noContent `[u,h,p]`** | 0.881 [0.846,0.912] | 0.005 [0.003,0.007] | **0.914** | 0.949 | 0.004 |
 
-- **Fusion math (4 numeric channels):** weighted-avg (dilutes — the recall bug), max, raw noisy-OR
-  (over-flags, FPR 0.27 — calibration is load-bearing), **calibrated-OR (Plan A — best
-  generalizable)**, log-odds. GBM scores higher in-corpus but is the overfit trap.
-- **Richer signals into fusion:** facets do not fire on the missed phishing (model blind-spots);
-  confidence / spam-prob separate FP-legit in-corpus (AUC ≈ 0.89) but are correlated with content
-  and add no robust lift; phishing-probability as a 5th channel ties Plan A on OOD pAUC (no gain).
-- **Learned combiners** (logistic, GBM, HistGBM, monotone-constrained, confidence-interaction): all
-  win in-corpus, all collapse under grouped-OOF / provenance holdout.
-- **Calibration method:** isotonic (Plan A) vs **beta** (an adversarial reviewer's top bet) — under
-  the corrected adjudicator isotonic wins (beta's smooth extrapolation under-scores threats at low
-  FPR).
-- **Authoritative URL (Plan B):** only 3 of 71 missed threats (3k) carry any URL signal → recall
-  ceiling +0.9 pt. Near-useless.
-- **Operating point / bands:** the ROC is flat from FPR 0.046 to 0.089 — the remaining threats are
-  unrecoverable at any FPR in that range.
+Plan A keeps high recall but at **FPR 0.044 / precision 0.680** — it flags **58% of spam**. noContent
+gets the **best F1 (0.914)** with FPR 0.005 and **+3.7 pts recall over +phish** (0.881 vs 0.844). (For
+reference, broken-INT8 Plan A on View-A was F1 ~0.60 / precision ~0.44 / FPR ~0.28 — the model fix
+alone lifts F1 to ~0.81; the fusion fix to ~0.91.)
 
-## 5. Frontier (for operating-point selection)
+Real-world slices at this operating point (held-out band-26):
 
-| approach (3k bar) | recall | FPR | F1 | note |
-|---|---|---|---|---|
-| without-212 (config A) | 0.342 | 0.014 | 0.497 | content = P(phish); spam under-scored |
-| PR-213 (config C) | 0.297 | 0.007 | 0.452 | P(phish) + calib-OR; collapses |
-| with-212 (config B) | 0.827 | 0.089 | 0.802 | maliciousness + weighted-avg (dilutes) |
-| **Plan A (config D)** | **0.785** | **0.046** | **0.824** | **maliciousness + calibrated-OR — best generalizable** |
+| fusion | real_seen-legit FPR | real_ood phishing recall | spam-flag rate |
+|---|---|---|---|
+| Plan A `[u,h,c]` | 0.010 | 0.993 | 0.579 |
+| +phish `[u,h,c,p]` | 0.001 | 0.979 | 0.004 |
+| **noContent `[u,h,p]`** | 0.005 | 0.979 | 0.004 |
 
-The Pareto frontier among *generalizable* designs is owned by the calibrated-OR family; Plan A's
-point dominates A and C and trades ~4 recall points vs B for roughly half the FPR. Every in-corpus
-"win" above Plan A is non-generalizing.
+(real_ood recall here is subject to the training-contamination caveat §5.1; the spam-flag column is
+the in-corpus number — the out-of-mechanism real-spam FP is §3a.)
 
-## 6. Bottom line & recommendation
+### 3d. noContent vs +phish: a tie in-corpus, a win out-of-distribution
 
-Plan A (calibrated probabilistic-OR on the #212 maliciousness content) is the **best generalizable
-svc-08 fusion** for this system. The whole-system recall ceiling is an **NLP intent-detection limit**,
-not a fusion deficiency: closing it requires a better content model or an **out-of-band signal**
-(sender reputation, first-contact-asking-for-money, conversation anomaly) — or a 3-way `needs_review`
-verdict for the all-signals-silent region — none of which are svc-08, and all of which are
-overfit-prone on this corpus's synthetic hard slice.
+Across 10 stratified-split seeds, in-corpus band-26 F1 is a **statistical tie / slight edge to
++phish**: noContent 0.913 ± 0.013 vs +phish 0.927 ± 0.011 (noContent wins 1/10). **noContent's
+advantage is entirely out-of-distribution**: the held-out real-spam FP rate (§3a) and grouped-OOF
+pAUC[0,0.05] (noContent 0.902 vs +phish 0.862 vs Plan A 0.597). So the case for noContent is
+robustness to a **new** real-spam campaign, *not* an in-corpus number.
 
-**Recommend: adopt Plan A (#214).** This benchmark strengthening (rich-signal capture +
-mechanism-grouped pooled-OOF + pAUC adjudicator) is contributed so future fusion claims are held to
-an OOD-generalization standard, not an in-corpus number.
+### 3e. The whole system reaches the model's ceiling on text phishing
 
----
-*Reproduce:* `capture_rich.py` (live pass → rich capture), `build_subset.py` (corpus → manifest),
-`final_adjudicate.py` (the table in §3), `adjudicate.py` (grouped-OOF), `bakeoff_rich.py` /
-`round2.py` / `round3.py` (the design sweeps). See `README.md`.
+grouped-OOF recall on the text-phishing families: synthetic families (homoglyph, leet, zero-width,
+BEC, obvious) = **1.000**; real families Nazario **0.976**, Nigerian **0.996** — i.e. the whole
+system realizes essentially all of the raw model's text-phishing recall. header_spoof (a non-text
+family) is also caught at 1.000 by the header channel. The synthetic adversarial families are
+mechanism-grouped, so the 1.000 is **not** sibling leakage. **Caveat (§5):** the *real* text families
+(Nazario/Nigerian) are public corpora plausibly in the model's training data, so their recall is
+partly memorization, not generalization. The remaining gaps are non-text and at their ceilings:
+`phish_hard_soft` 0.52 (≈ the model's own classification ceiling) and `phish_url_only` 0.02 (degraded
+url channel — §5.3).
+
+## 4. What did NOT pan out
+
+- **Learned combiners** (logistic / HistGBM / +confidence): best in-corpus, worst out-of-mechanism
+  (family memorization). Never ship on an in-corpus number.
+- **Keeping content_risk** (Plan A, +phish): real-spam false positives (§3a).
+- **Facet channels** (impersonation/deception/urgency) in the OR: hurt (sparse/noisy → FPs).
+- **`spam_probability` channel / spam-suppressor / spam-class gate**: marginal, and `spam_probability`
+  in the capture is reconstructed (`max(0, content/100 − phish)`) → no independent info. Dropped.
+- **pAUC[0,0.05] as the headline metric**: misleading here — `+phish/beta` (which *keeps* content)
+  tops it (0.984 > noContent 0.963) yet flags 96% of real spam. The operating-point spam-FP rate is
+  the honest discriminator.
+
+## 5. Honest caveats (must read)
+
+1. **Real-phishing training contamination.** Real phishing (D6 Nigerian/Nazario) are classic public
+   corpora plausibly in the NLP training set; their phish_p is memorized-high (100% > 0.255). A
+   counterfactual that degrades real-phish phish_p to the synthetic distribution drops the
+   provenance-holdout pAUC 0.963 → 0.758 and band-26 real recall 1.000 → 0.875. **So "100% real-phish
+   recall" is not evidence of generalization.** The content-drop result (§3a) is *independent* of this
+   (it is a real-**spam** FP effect).
+2. **Synthetic→real header domain shift.** The synthetic-trained operating point does not transfer:
+   at band-26 on a synth→real holdout, *every* fusion (incl. noContent) shows ≈21% FPR, because the
+   synth-calibrated header channel maps the baseline value (header=10, on 99.9% of real legit) to a
+   non-trivial P. **The 0.255 threshold must be re-calibrated on real traffic before deployment.**
+3. **url channel non-determinism.** svc-03's live DNS/WHOIS/TLS/HTTP enrichment times out on
+   historical/synthetic URLs and, under capture-time CPU saturation, misses svc-07's aggregation
+   window → url_risk degraded. Impact: grouped-OOF unchanged; only ~3 pts of in-corpus band-26 recall
+   (the ~13 `phish_url_only`); no text family affected. Raising the L2 budget made it *worse* (slower
+   svc-03 misses the window) — reverted. Live enrichment on dead URLs is inherently non-reproducible;
+   treated as a methodology caveat. `phish_url_only` and `phish_hard_soft` are therefore below 100%.
+
+## 6. Bottom line
+
+- The model is **not** the ceiling; the old "NLP intent ceiling" was the symlink/INT8 packaging bug.
+- **The shipped Plan A fusion is not the generalizable best**: its `content_risk` channel flags ~94%
+  of held-out real spam as phishing (and gives the worst full-corpus operating point: FPR 0.044,
+  precision 0.680, F1 0.774). **`noContent[u,h,p]`** (calibrated-OR over url + header + calibrated
+  `phishing_probability`) gets the **best full-corpus F1 (0.914)**, ties +phish in-corpus, and is
+  materially more robust to a **new** real-spam campaign (held-out real-spam FP **3.6%** vs +phish 55%
+  / Plan A 94%), at equal-or-better phishing recall.
+- svc-08 design: a **3-channel calibrated blender** on {url_risk, header_risk, phishing_probability};
+  drop content_risk from the phishing decision. **Re-calibrate the operating threshold on real
+  traffic** (caveat 5.2).

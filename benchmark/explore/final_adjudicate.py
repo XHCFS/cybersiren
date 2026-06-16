@@ -25,7 +25,8 @@ from sklearn.metrics import roc_curve, roc_auc_score
 FN = sys.argv[1] if len(sys.argv) > 1 else "big/raw_rich_full.json"
 RICH = L.load_rich(FN)
 ids = sorted(RICH)
-THREAT = ("phishing", "spam")
+THREAT = L.THREAT   # View-A by default: pos=phishing; spam is a NEGATIVE (see combiner_lib)
+NEG = L.NEG
 rng = np.random.default_rng(7)
 
 
@@ -84,7 +85,7 @@ CANDS = {
 
 
 def roc_pack(rows, scores):
-    y = np.array([1 if r["label"] in THREAT else (0 if r["label"] == "legitimate" else -1) for r in rows])
+    y = np.array([1 if r["label"] in THREAT else (0 if r["label"] in NEG else -1) for r in rows])
     s = np.array(scores); keep = y >= 0; y, s = y[keep], s[keep]
     fpr, tpr, thr = roc_curve(y, s)
     auc = roc_auc_score(y, s)
@@ -141,7 +142,7 @@ def oof_view(name, build):
     rows = [RICH[i] for i in ids]; s = [oof[i] for i in ids]
     auc, pauc, r046, fpr785 = roc_pack(rows, s)
     # slices at thr giving fpr<=.046
-    y = np.array([1 if r["label"] in THREAT else (0 if r["label"] == "legitimate" else -1) for r in rows])
+    y = np.array([1 if r["label"] in THREAT else (0 if r["label"] in NEG else -1) for r in rows])
     sa = np.array(s); keep = y >= 0
     fpr, tpr, thr = roc_curve(y[keep], sa[keep])
     thr046 = min([th for f, th in zip(fpr, thr) if f <= 0.046] or [1.0])

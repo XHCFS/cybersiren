@@ -11,6 +11,7 @@ A candidate = (feature_builder, model_factory). We:
 All randomness is seeded. None/missing handled per-feature.
 """
 import json
+import os
 import random
 from collections import defaultdict
 from pathlib import Path
@@ -20,7 +21,18 @@ from sklearn.metrics import roc_auc_score
 
 ROOT = Path(__file__).resolve().parent.parent
 SEED = 7
-THREAT = ("phishing", "spam")
+
+# Metric of record is View-A: positive = phishing, negative = legitimate + spam
+# (leaving marketing spam benign is intended product behaviour, so flagging spam is a
+# FALSE POSITIVE, not a missed threat). Set VIEW=B for the legacy phishing|spam-vs-legit
+# cross-check. THREAT = the positive labels; NEG = the negative labels.
+_VIEW = os.environ.get("VIEW", "A").upper()
+if _VIEW == "B":
+    THREAT = ("phishing", "spam")
+    NEG = ("legitimate",)
+else:
+    THREAT = ("phishing",)
+    NEG = ("legitimate", "spam")
 
 
 def _read_json(path):
@@ -129,11 +141,13 @@ def prf(tp, fp, fn, tn):
 
 
 def viewB(rows, flags):
+    """View metric: pos = THREAT, neg = NEG. Under the default View-A that is
+    pos=phishing, neg=legitimate+spam (spam flagged => false positive)."""
     tp = fp = fn = tn = 0
     for r, fl in zip(rows, flags):
         if r["label"] in THREAT:
             tp += fl; fn += not fl
-        elif r["label"] == "legitimate":
+        elif r["label"] in NEG:
             fp += fl; tn += not fl
     return prf(tp, fp, fn, tn)
 

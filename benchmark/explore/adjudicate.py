@@ -26,7 +26,8 @@ from sklearn.metrics import roc_curve, roc_auc_score
 FN = sys.argv[1] if len(sys.argv) > 1 else "big/raw_rich_3k.json"
 RICH = L.load_rich(FN)
 ids = sorted(RICH)
-THREAT = ("phishing", "spam")
+THREAT = L.THREAT   # View-A by default: pos=phishing; spam is a NEGATIVE (see combiner_lib)
+NEG = L.NEG
 
 
 def y_of(r): return 1.0 if r["label"] in THREAT else 0.0
@@ -104,7 +105,7 @@ def pooled_oof(channels, calib):
 
 def metrics(oof):
     rows = [RICH[i] for i in ids]
-    y = np.array([1 if r["label"] in THREAT else (0 if r["label"] == "legitimate" else -1) for r in rows])
+    y = np.array([1 if r["label"] in THREAT else (0 if r["label"] in NEG else -1) for r in rows])
     s = np.array([oof[i] for i in ids])
     keep = y >= 0; y, s = y[keep], s[keep]
     auc = roc_auc_score(y, s)
