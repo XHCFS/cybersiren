@@ -33,7 +33,7 @@ jobs:
         include:
           - { name: svc-01-ingestion,           file: deploy/docker/Dockerfile.ingestion }
           - { name: svc-02-parser,              file: deploy/docker/Dockerfile.parser }
-          - { name: svc-03-url-pipeline,        file: deploy/docker/Dockerfile.url_pipeline }
+          - { name: svc-03-url-pipeline,        file: deploy/docker/Dockerfile.url_pipeline, prep: "git lfs pull --include='services/svc-03-url-analysis/ml/*.joblib,fusion_export/fusion_kit/*.mmdb'" }
           - { name: svc-04-header-analysis,     file: deploy/docker/Dockerfile.header_analysis }
           - { name: svc-05-attachment-analysis, file: deploy/docker/Dockerfile.attachment_analysis }
           - { name: svc-06-nlp-pipeline,        file: deploy/docker/Dockerfile.nlp_pipeline }
@@ -43,11 +43,22 @@ jobs:
           - { name: svc-10-api,                 file: deploy/docker/Dockerfile.api_dashboard }
           - { name: svc-10-web,                 file: web/svc-10-dashboard/Dockerfile }
           - { name: portal,                     file: deploy/docker/Dockerfile.demo_dashboard }
-          - { name: fusion-sidecar,             file: deploy/docker/Dockerfile.fusion_sidecar }
-          - { name: nlp-inference,              file: deploy/docker/Dockerfile.nlp }
+          - { name: fusion-sidecar,             file: deploy/docker/Dockerfile.fusion_sidecar, prep: "git lfs pull --include='fusion_export/models/*.joblib,fusion_export/fusion_kit/*.mmdb'" }
+          - { name: nlp-inference,              file: deploy/docker/Dockerfile.nlp, prep: "make check-nlp-model" }
           - { name: svc-11-ti-sync,             file: deploy/docker/Dockerfile.ti_sync }
     steps:
       - uses: actions/checkout@v4
+
+      # ML images bundle Git LFS models (joblib/onnx/mmdb). checkout doesn't fetch
+      # LFS, so without this the image ships LFS *pointer* files and crashes at
+      # load (e.g. fusion joblib.load → KeyError, nlp serves no model). Pull only
+      # the files each image needs (bandwidth-frugal); `make check-nlp-model` also
+      # copies the onnx into the path the Dockerfile COPYs.
+      - name: Materialize LFS model files
+        if: matrix.prep
+        run: |
+          git lfs install --local
+          ${{ matrix.prep }}
 
       # The ML images (url-pipeline, nlp) are multi-GB; reclaim runner disk first.
       - name: Free disk space
