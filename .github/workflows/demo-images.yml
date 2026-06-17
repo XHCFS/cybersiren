@@ -13,6 +13,8 @@ on:
       - "demo/dashboard/**"
       - "deploy/docker/**"
       - "db/**"
+      - "fusion_export/**"
+      - "python/svc-06-nlp/**"
       - ".github/workflows/demo-images.yml"
   workflow_dispatch: {}
 
