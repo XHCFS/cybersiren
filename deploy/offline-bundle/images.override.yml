@@ -1,0 +1,29 @@
+# ── Offline / prebuilt-image override ────────────────────────────────────────
+# Pins a GHCR image name onto every built service so the stack can run from
+# prebuilt images instead of building locally. Used in two places:
+#
+#   CI (push to main):  docker compose -f deploy/compose/docker-compose.yml \
+#                         -f deploy/offline-bundle/images.override.yml \
+#                         --profile full --profile monitoring build && ... push
+#   Laptop (demo):      START.sh → the same -f stack with `pull` + `up --no-build`
+#
+# The main compose stays the single source of truth (build:, env, deps, ports);
+# this file only adds `image:`. Tag is CS_IMAGE_TAG (default "latest").
+# Owner is lowercased for GHCR: XHCFS → xhcfs.
+
+services:
+  svc-01-ingestion:           { image: "ghcr.io/xhcfs/cybersiren-svc-01-ingestion:${CS_IMAGE_TAG:-latest}" }
+  svc-02-parser:              { image: "ghcr.io/xhcfs/cybersiren-svc-02-parser:${CS_IMAGE_TAG:-latest}" }
+  svc-03-url-pipeline:        { image: "ghcr.io/xhcfs/cybersiren-svc-03-url-pipeline:${CS_IMAGE_TAG:-latest}" }
+  svc-04-header-analysis:     { image: "ghcr.io/xhcfs/cybersiren-svc-04-header-analysis:${CS_IMAGE_TAG:-latest}" }
+  svc-05-attachment-analysis: { image: "ghcr.io/xhcfs/cybersiren-svc-05-attachment-analysis:${CS_IMAGE_TAG:-latest}" }
+  svc-06-nlp-pipeline:        { image: "ghcr.io/xhcfs/cybersiren-svc-06-nlp-pipeline:${CS_IMAGE_TAG:-latest}" }
+  svc-07-aggregator:          { image: "ghcr.io/xhcfs/cybersiren-svc-07-aggregator:${CS_IMAGE_TAG:-latest}" }
+  svc-08-decision:            { image: "ghcr.io/xhcfs/cybersiren-svc-08-decision:${CS_IMAGE_TAG:-latest}" }
+  svc-09-notification:        { image: "ghcr.io/xhcfs/cybersiren-svc-09-notification:${CS_IMAGE_TAG:-latest}" }
+  svc-10-api:                 { image: "ghcr.io/xhcfs/cybersiren-svc-10-api:${CS_IMAGE_TAG:-latest}" }
+  svc-10-web:                 { image: "ghcr.io/xhcfs/cybersiren-svc-10-web:${CS_IMAGE_TAG:-latest}" }
+  portal:                     { image: "ghcr.io/xhcfs/cybersiren-portal:${CS_IMAGE_TAG:-latest}" }
+  fusion-sidecar:             { image: "ghcr.io/xhcfs/cybersiren-fusion-sidecar:${CS_IMAGE_TAG:-latest}" }
+  nlp-inference:              { image: "ghcr.io/xhcfs/cybersiren-nlp-inference:${CS_IMAGE_TAG:-latest}" }
+  svc-11-ti-sync:             { image: "ghcr.io/xhcfs/cybersiren-svc-11-ti-sync:${CS_IMAGE_TAG:-latest}" }

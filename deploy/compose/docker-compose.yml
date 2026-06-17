@@ -45,6 +45,7 @@ x-pipeline-env: &pipeline-env
   CYBERSIREN_DB__PASSWORD: ${POSTGRES_PASSWORD:-postgres}
   CYBERSIREN_DB__SSL_MODE: disable
   CYBERSIREN_VALKEY__ADDR: valkey:6379
+  CYBERSIREN_VALKEY__PASSWORD: ${VALKEY_PASSWORD:-}
   CYBERSIREN_AUTH__JWT_SECRET: demo-secret-not-for-production-use!!
   CYBERSIREN_KAFKA__BROKERS: kafka:29092
   CYBERSIREN_JAEGER_ENDPOINT: http://jaeger:4318
@@ -65,6 +66,7 @@ volumes:
   valkeydata:
   redpandadata:
   miniodata:
+  portaltokens:   # persists the portal's Gmail refresh token across restarts
 
 services:
 
@@ -79,7 +81,9 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
     ports:
-      - "${POSTGRES_PORT:-5432}:5432"
+      # Bound to loopback after 2026-06-17 cryptominer incident (was 0.0.0.0).
+      # Reach it via SSH tunnel; inter-service traffic uses the docker network.
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     networks:
@@ -97,14 +101,19 @@ services:
     image: valkey/valkey:7-alpine
     profiles: ["valkey", "demo", "full"]
     container_name: cybersiren-valkey
+    environment:
+      VALKEY_PASSWORD: ${VALKEY_PASSWORD:-}
+    # requirepass added 2026-06-17 (was unauthenticated). Empty pw => no auth (back-compat).
+    command: ["sh", "-c", "exec valkey-server --requirepass \"$$VALKEY_PASSWORD\""]
     ports:
-      - "${VALKEY_PORT:-6379}:6379"
+      # Bound to loopback 2026-06-17 — was 0.0.0.0 with NO requirepass (open RCE vector).
+      - "127.0.0.1:${VALKEY_PORT:-6379}:6379"
     volumes:
       - valkeydata:/data
     networks:
       - cybersiren
     healthcheck:
-      test: ["CMD", "valkey-cli", "ping"]
+      test: ["CMD-SHELL", "valkey-cli -a \"$$VALKEY_PASSWORD\" ping | grep -q PONG"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -137,8 +146,8 @@ services:
       - --advertise-rpc-addr=kafka:33145
       - --mode=dev-container
     ports:
-      - "${KAFKA_PORT:-9092}:9092"
-      - "9644:9644"
+      - "127.0.0.1:${KAFKA_PORT:-9092}:9092"
+      - "127.0.0.1:9644:9644"
     volumes:
       - redpandadata:/var/lib/redpanda/data
     networks:
@@ -185,8 +194,9 @@ services:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
     ports:
-      - "${MINIO_PORT:-9000}:9000"
-      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+      # Bound to loopback 2026-06-17 — was 0.0.0.0 with default minioadmin creds.
+      - "127.0.0.1:${MINIO_PORT:-9000}:9000"
+      - "127.0.0.1:${MINIO_CONSOLE_PORT:-9001}:9001"
     volumes:
       - miniodata:/data
     networks:
@@ -304,8 +314,8 @@ services:
       fusion-sidecar:
         condition: service_healthy
     ports:
-      - "8083:8083"
-      - "9091:9090"
+      - "127.0.0.1:18083:8083"
+      - "127.0.0.1:9091:9090"
     environment:
       CYBERSIREN_ENV: development
       CYBERSIREN_LOG__LEVEL: debug
@@ -318,6 +328,7 @@ services:
       CYBERSIREN_DB__PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       CYBERSIREN_DB__SSL_MODE: disable
       CYBERSIREN_VALKEY__ADDR: valkey:6379
+      CYBERSIREN_VALKEY__PASSWORD: ${VALKEY_PASSWORD:-}
       CYBERSIREN_AUTH__JWT_SECRET: demo-secret-not-for-production-use!!
       CYBERSIREN_ML__URL_MODEL_PATH: /app/ml/inference_script.py
       CYBERSIREN_PHISHING__SIDECAR_URL: http://fusion-sidecar:8765
@@ -346,7 +357,7 @@ services:
       dockerfile: deploy/docker/Dockerfile.fusion_sidecar
     profiles: ["demo", "svc-03", "full"]
     ports:
-      - "8765:8765"
+      - "127.0.0.1:8765:8765"
     environment:
       # OTEL: emit spans to Jaeger over OTLP/HTTP. The Go side uses the
       # same Jaeger; setting this to empty disables the OTEL stack.
@@ -385,7 +396,7 @@ services:
       kafka-init:
         condition: service_completed_successfully
     ports:
-      - "9094:9090"
+      - "127.0.0.1:9094:9090"
     environment:
       CYBERSIREN_ENV: development
       CYBERSIREN_LOG__LEVEL: debug
@@ -397,6 +408,7 @@ services:
       CYBERSIREN_DB__PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       CYBERSIREN_DB__SSL_MODE: disable
       CYBERSIREN_VALKEY__ADDR: valkey:6379
+      CYBERSIREN_VALKEY__PASSWORD: ${VALKEY_PASSWORD:-}
       CYBERSIREN_AUTH__JWT_SECRET: demo-secret-not-for-production-use!!
       CYBERSIREN_METRICS_PORT: "9090"
       CYBERSIREN_JAEGER_ENDPOINT: http://jaeger:4318
@@ -429,11 +441,11 @@ services:
     # reconnect when brokers appear and the UI/forwarding works regardless. This
     # also lets it come up with just `--profile demo` (kafka is a separate profile).
     ports:
-      - "8090:8090"
+      - "127.0.0.1:18090:8090"
     environment:
       DEMO_ADDR: ":8090"
       KAFKA_BROKERS: kafka:29092
-      SVC01_SCAN_URL: http://host.docker.internal:8081/api/v1/scan
+      SVC01_SCAN_URL: http://host.docker.internal:18081/api/v1/scan
       DEMO_API_KEY: cs_demokey000000000000000000000DEMO
       # Optional Gmail "Sign in with Google" — see demo/dashboard/README.md.
       GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
@@ -458,8 +470,8 @@ services:
       demo-seed:
         condition: service_completed_successfully
     ports:
-      - "8086:8086"
-      - "9096:9090"
+      - "127.0.0.1:18086:8086"
+      - "127.0.0.1:9096:9090"
     environment:
       CYBERSIREN_ENV: development
       CYBERSIREN_LOG__LEVEL: debug
@@ -498,7 +510,7 @@ services:
     environment:
       PORT: "8001"
     ports:
-      - "8001:8001"
+      - "127.0.0.1:8001:8001"
     networks:
       - cybersiren
     healthcheck:
@@ -517,14 +529,14 @@ services:
     build:
       context: ../..
       dockerfile: deploy/docker/Dockerfile.ti_sync
-    profiles: ["svc-11"]
+    profiles: ["svc-11", "full"]
     depends_on:
       demo-seed:
         condition: service_completed_successfully
       valkey:
         condition: service_healthy
     ports:
-      - "9093:9090"
+      - "127.0.0.1:9093:9090"
     environment:
       CYBERSIREN_ENV: development
       CYBERSIREN_LOG__LEVEL: debug
@@ -536,6 +548,7 @@ services:
       CYBERSIREN_DB__PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       CYBERSIREN_DB__SSL_MODE: disable
       CYBERSIREN_VALKEY__ADDR: valkey:6379
+      CYBERSIREN_VALKEY__PASSWORD: ${VALKEY_PASSWORD:-}
       CYBERSIREN_AUTH__JWT_SECRET: demo-secret-not-for-production-use!!
       CYBERSIREN_METRICS_PORT: "9090"
       CYBERSIREN_JAEGER_ENDPOINT: http://jaeger:4318
@@ -558,8 +571,8 @@ services:
     environment:
       COLLECTOR_OTLP_ENABLED: "true"
     ports:
-      - "16686:16686"   # Jaeger UI
-      - "4318:4318"     # OTLP HTTP
+      - "127.0.0.1:16686:16686"   # Jaeger UI
+      - "127.0.0.1:14318:4318"     # OTLP HTTP
     networks:
       - cybersiren
     restart: unless-stopped
@@ -573,7 +586,7 @@ services:
     profiles: ["postgres"]
     container_name: cybersiren-pgadmin
     ports:
-      - "${PGADMIN_PORT:-5050}:80"
+      - "127.0.0.1:${PGADMIN_PORT:-5050}:80"
     environment:
       PGADMIN_DEFAULT_EMAIL: admin@cybersiren.dev
       PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:-admin}
@@ -597,10 +610,10 @@ services:
   # Redpanda Kafka API — they used to collide.)
   prometheus:
     image: prom/prometheus:latest
-    profiles: ["demo", "monitoring", "smoke"]
+    profiles: ["demo", "monitoring", "smoke", "full"]
     container_name: cybersiren-prometheus
     ports:
-      - "${PROMETHEUS_PORT:-19090}:9090"
+      - "127.0.0.1:${PROMETHEUS_PORT:-19090}:9090"
     volumes:
       - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
     # `host.docker.internal` is auto-resolved on Docker Desktop (Mac/Win)
@@ -619,15 +632,19 @@ services:
   # UI at http://localhost:3001. Login: admin / admin (skip password change).
   grafana:
     image: grafana/grafana:latest
-    profiles: ["demo", "monitoring", "smoke"]
+    profiles: ["demo", "monitoring", "smoke", "full"]
     container_name: cybersiren-grafana
     ports:
-      - "3001:3000"
+      - "127.0.0.1:3001:3000"
     environment:
       GF_SECURITY_ADMIN_USER: admin
-      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
       GF_AUTH_ANONYMOUS_ENABLED: "true"
       GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      # Public subdomain behind the host Caddy (TLS terminated there). Without a
+      # correct root_url, Grafana's login/redirect/share links break behind a proxy.
+      GF_SERVER_ROOT_URL: ${GRAFANA_ROOT_URL:-https://cs-grafana.cie21grad.systems}
+      GF_SERVER_DOMAIN: ${GRAFANA_DOMAIN:-cs-grafana.cie21grad.systems}
     volumes:
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
       - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
@@ -646,7 +663,7 @@ services:
     profiles: ["kafka"]
     container_name: cybersiren-redpanda-console
     ports:
-      - "${KAFKA_UI_PORT:-8080}:8080"
+      - "127.0.0.1:${KAFKA_UI_PORT:-8080}:8080"
     environment:
       KAFKA_BROKERS: "kafka:29092"
       CONFIG_FILEPATH: ""
@@ -672,7 +689,7 @@ services:
       kafka-init: { condition: service_completed_successfully }
       valkey: { condition: service_healthy }
       postgres: { condition: service_healthy }
-    ports: ["8081:8081"]
+    ports: ["127.0.0.1:18081:8081"]
     environment:
       <<: *pipeline-env
     networks: [cybersiren]
@@ -763,6 +780,11 @@ services:
       postgres: { condition: service_healthy }
     environment:
       <<: *pipeline-env
+      # Pin the calibrated probabilistic-OR fusion. It is the code default on main,
+      # but pin it so the live demo can never silently fall back to weighted_average
+      # (which dilutes a single strong channel — e.g. NLP=100 phish → only ~44 →
+      # "suspicious"; incident 2026-06-17). calibrated_or: 83.5% recall@1%FPR.
+      CYBERSIREN_DECISION__FUSION_MODE: calibrated_or
     networks: [cybersiren]
     restart: unless-stopped
 
@@ -777,6 +799,13 @@ services:
       postgres: { condition: service_healthy }
     environment:
       <<: *pipeline-env
+      # Webhook alert channel (off by default). Point at an ntfy topic to get a
+      # live push when a phishing/malware verdict fires:
+      #   NOTIFY_WEBHOOK_ENABLED=true
+      #   NOTIFY_WEBHOOK_URL=https://ntfy.sh/<your-topic>
+      # The org must list "webhook" in organisations.notification_channels (seeded).
+      CYBERSIREN_NOTIFICATION__WEBHOOK__ENABLED: ${NOTIFY_WEBHOOK_ENABLED:-false}
+      CYBERSIREN_NOTIFICATION__WEBHOOK__URL: ${NOTIFY_WEBHOOK_URL:-}
     networks: [cybersiren]
     restart: unless-stopped
 
@@ -788,7 +817,7 @@ services:
       demo-seed: { condition: service_completed_successfully }
       postgres: { condition: service_healthy }
       svc-01-ingestion: { condition: service_started }
-    ports: ["8088:8088"]
+    ports: ["127.0.0.1:8088:8088"]
     environment:
       <<: *pipeline-env
       CYBERSIREN_SVC10__SVC01_BASE_URL: http://svc-01-ingestion:8081
@@ -802,7 +831,7 @@ services:
     profiles: ["full"]
     depends_on:
       svc-10-api: { condition: service_started }
-    ports: ["8089:80"]
+    ports: ["127.0.0.1:18089:80"]
     networks: [cybersiren]
     restart: unless-stopped
 
@@ -814,15 +843,24 @@ services:
     profiles: ["full"]
     depends_on:
       svc-01-ingestion: { condition: service_started }
-    ports: ["8090:8090"]
+    ports: ["127.0.0.1:18090:8090"]
     environment:
       DEMO_ADDR: ":8090"
       KAFKA_BROKERS: kafka:29092
       SVC01_SCAN_URL: http://svc-01-ingestion:8081/api/v1/scan
       DEMO_API_KEY: cs_demokey000000000000000000000DEMO
+      # Optional Gmail "Sign in with Google". Leave GOOGLE_CLIENT_ID empty to hide
+      # the button (the .eml / sample-phish flow needs none of this). When enabled
+      # for the PUBLIC portal, the redirect URL must be the public callback and be
+      # registered as an authorized redirect URI on the Google OAuth client.
       GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
       GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
-      GOOGLE_REDIRECT_URL: ${GOOGLE_REDIRECT_URL:-http://localhost:8090/oauth/callback}
+      GOOGLE_REDIRECT_URL: ${GOOGLE_REDIRECT_URL:-https://cs-demo.cie21grad.systems/oauth/callback}
+      # Persist the Gmail refresh token on a volume so a portal restart keeps the
+      # inbox connected (no re-auth). Loaded on startup, written on connect.
+      GMAIL_TOKEN_FILE: /data/gmail-token.json
+    volumes:
+      - portaltokens:/data
     networks: [cybersiren]
     restart: unless-stopped
 
@@ -830,9 +868,25 @@ services:
   proxy:
     image: caddy:2-alpine
     profiles: ["full"]
-    ports: ["8888:80"]
+    ports: ["127.0.0.1:8888:80"]
     volumes:
       - ../proxy/Caddyfile:/etc/caddy/Caddyfile:ro
       - ../proxy/site:/srv:ro
+    networks: [cybersiren]
+    restart: unless-stopped
+
+  # ── ntfy-adapter (prettifies svc-09 alert JSON → titled ntfy push) ───────────
+  # svc-09's webhook (NOTIFY_WEBHOOK_URL=http://ntfy-adapter:8099/alert) posts the
+  # raw Alert JSON here; this reformats it into a titled/prioritised/tagged push
+  # and reposts to NTFY_URL. Stdlib Python on a base image (mounted script, no build).
+  ntfy-adapter:
+    image: python:3.12-alpine
+    profiles: ["full"]
+    command: ["python", "/app/adapter.py"]
+    environment:
+      PORT: "8099"
+      NTFY_URL: ${NTFY_URL:-https://ntfy.sh/cybersiren-cie21-alerts}
+    volumes:
+      - ../../demo/ntfy-adapter/adapter.py:/app/adapter.py:ro
     networks: [cybersiren]
     restart: unless-stopped

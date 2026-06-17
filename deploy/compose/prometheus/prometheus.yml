@@ -63,3 +63,30 @@ scrape_configs:
         labels: { service: "svc-09-notification" }
       - targets: ["host.docker.internal:9110"]
         labels: { service: "svc-10-api-dashboard" }
+
+  # Full-profile pipeline (the live public demo). Every containerized service
+  # exposes /metrics on :9090 inside the cybersiren network (CYBERSIREN_METRICS_PORT).
+  # Reached by compose service name — these are UP whenever `--profile full` runs.
+  - job_name: "cybersiren-full"
+    scrape_timeout: 5s
+    static_configs:
+      - targets: ["svc-01-ingestion:9090"]
+        labels: { service: "svc-01-ingestion" }
+      - targets: ["svc-02-parser:9090"]
+        labels: { service: "svc-02-parser" }
+      - targets: ["svc-03-url-pipeline:9090"]
+        labels: { service: "svc-03-url-pipeline" }
+      - targets: ["svc-04-header-analysis:9090"]
+        labels: { service: "svc-04-header-analysis" }
+      - targets: ["svc-05-attachment-analysis:9090"]
+        labels: { service: "svc-05-attachment-analysis" }
+      - targets: ["svc-06-nlp-pipeline:9090"]
+        labels: { service: "svc-06-nlp-pipeline" }
+      - targets: ["svc-07-aggregator:9090"]
+        labels: { service: "svc-07-aggregator" }
+      - targets: ["svc-08-decision:9090"]
+        labels: { service: "svc-08-decision" }
+      - targets: ["svc-09-notification:9090"]
+        labels: { service: "svc-09-notification" }
+      - targets: ["svc-10-api:9090"]
+        labels: { service: "svc-10-api-dashboard" }

@@ -607,6 +607,49 @@ table.tbl td.num {
   color: var(--teal);
 }
 
+/* ── monitoring: external dashboard link tiles ─────────────────── */
+.monitoring .dash-section + .dash-section {
+  margin-top: 26px;
+}
+.link-tile {
+  display: block;
+  background: #0a1422;
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  padding: 14px 16px;
+  text-decoration: none;
+  color: var(--text);
+  transition: border-color 0.15s ease, transform 0.15s ease, background 0.15s ease;
+}
+.link-tile:hover {
+  border-color: var(--teal);
+  background: #0c1a2c;
+  transform: translateY(-2px);
+}
+.link-tile-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.link-tile-name {
+  font-weight: 600;
+  font-size: 13.5px;
+}
+.link-tile-ext {
+  margin-left: auto;
+  color: var(--faint);
+  font-size: 13px;
+}
+.link-tile:hover .link-tile-ext {
+  color: var(--teal);
+}
+.link-tile-desc {
+  color: var(--muted);
+  font-size: 12px;
+  margin-top: 8px;
+  line-height: 1.45;
+}
+
 /* ── login ────────────────────────────────────────────────────── */
 .login-wrap {
   min-height: 100vh;
