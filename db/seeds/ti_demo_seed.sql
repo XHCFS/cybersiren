@@ -86,6 +86,8 @@ INSERT INTO ti_indicators (
     ((SELECT id FROM feeds WHERE name = 'demo-seed'), 'domain', 'a4-scan-point.puroflusso.in.net',     'botnet_cc', 80, 0.78, TRUE, CURRENT_TIMESTAMP),
     ((SELECT id FROM feeds WHERE name = 'demo-seed'), 'domain', 'admin-panel.sectoralcontrol.in.net',  'botnet_cc', 88, 0.85, TRUE, CURRENT_TIMESTAMP),
     ((SELECT id FROM feeds WHERE name = 'demo-seed'), 'domain', 'agentscript.dawnspire.in.net',        'botnet_cc', 95, 0.92, TRUE, CURRENT_TIMESTAMP),
+    -- Backs the "ti" demo email (cs-demo "Load sample" → TI blocklist hit on the C2 domain).
+    ((SELECT id FROM feeds WHERE name = 'demo-seed'), 'domain', 'malware-c2-delivery.test',            'botnet_cc', 95, 0.92, TRUE, CURRENT_TIMESTAMP),
 
     -- IP indicator — Injection A's originating IP (Received-chain hop). Fires
     -- svc04.reputation.ti_ip_match for the smoke superset fixture.

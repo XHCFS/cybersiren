@@ -7,6 +7,7 @@ import ScanDetail from './components/ScanDetail.jsx';
 import ScanForm from './components/ScanForm.jsx';
 import Dashboard from './components/Dashboard.jsx';
 import RulesView from './components/RulesView.jsx';
+import Monitoring from './components/Monitoring.jsx';
 
 // Sigil — the shared CyberSiren shield mark.
 function Sigil() {
@@ -57,6 +58,9 @@ function Shell({ children }) {
           </NavLink>
           <NavLink to="/rules" className={({ isActive }) => (isActive ? 'active' : '')}>
             Rules
+          </NavLink>
+          <NavLink to="/monitoring" className={({ isActive }) => (isActive ? 'active' : '')}>
+            Monitoring
           </NavLink>
         </nav>
         <div className="session">
@@ -129,6 +133,14 @@ export default function App() {
         element={
           <Protected>
             <RulesView />
+          </Protected>
+        }
+      />
+      <Route
+        path="/monitoring"
+        element={
+          <Protected>
+            <Monitoring />
           </Protected>
         }
       />

@@ -1,0 +1,40 @@
+# ── CyberSiren public dashboards ─────────────────────────────────────────────
+# Canonical, version-controlled copy of the host Caddy site file.
+# Deploy to:  /etc/caddy/sites/cybersiren.caddy   (then `sudo systemctl reload caddy`)
+#
+# This box runs ONE shared host Caddy (systemd unit "caddy") as the single public
+# entry point; /etc/caddy/Caddyfile imports /etc/caddy/sites/*.caddy. Only ports
+# 22/80/443 are open to the internet (ufw + a DOCKER-USER lockdown rule); every
+# CyberSiren container publishes on 127.0.0.1 only and is reached solely through
+# here. See deploy/reverse-proxy/README.md.
+#
+# Wildcard DNS *.cie21grad.systems → this VPS, so Caddy auto-issues a Let's
+# Encrypt cert per hostname on first request. To add/remove a dashboard, edit
+# this file, copy it to /etc/caddy/sites/, and reload.
+
+# Inbox scanner / interactive demo (Go server; holds the demo API key
+# server-side, forwards to svc-01 over the docker network). Public, no auth —
+# this is the thing people are meant to click around.
+cs-demo.cie21grad.systems {
+	reverse_proxy 127.0.0.1:18090
+}
+
+# Analyst console (React SPA + nginx; nginx proxies /api → svc-10-api internally,
+# same-origin, no CORS). It has its OWN JWT login, so it is left open at the proxy
+# and gated by that login. Seeded demo analyst: analyst@demo.cybersiren.
+cs-analyst.cie21grad.systems {
+	reverse_proxy 127.0.0.1:18089
+}
+
+# Jaeger tracing UI — the single distributed trace across all 10 pipeline
+# services. Read-only; open.
+cs-trace.cie21grad.systems {
+	reverse_proxy 127.0.0.1:16686
+}
+
+# Grafana metrics dashboards (anonymous read-only Viewer enabled; admin login for
+# editing). GF_SERVER_ROOT_URL is set to this hostname in the compose file so
+# logins/redirects work behind the proxy.
+cs-grafana.cie21grad.systems {
+	reverse_proxy 127.0.0.1:3001
+}
