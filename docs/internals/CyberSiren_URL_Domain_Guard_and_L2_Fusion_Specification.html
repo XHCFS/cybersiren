@@ -125,7 +125,7 @@
 </div>
 
 <div class="note">
-  <strong>Quick facts:</strong> Guard top-10K size: 9,978 entries (Cisco Umbrella) &nbsp;|&nbsp; Typosquat distance: Levenshtein d=1 &nbsp;|&nbsp; Brand list: 20 hand-curated entries &nbsp;|&nbsp; Sidecar host:port: <code>http://fusion-sidecar:8765</code> (compose) / <code>127.0.0.1:8765</code> (local) &nbsp;|&nbsp; Decision threshold over <code>deploy_p</code>: 0.50 (env <code>CYBERSIREN_PHISHING__THRESHOLD</code>) &nbsp;|&nbsp; Cache: TTL 5 min, 10,000-entry LRU keyed on the full URL.
+  <strong>Quick facts:</strong> Guard top-10K size: 10,000 entries (Cisco Umbrella) &nbsp;|&nbsp; Typosquat distance: Levenshtein d=1 &nbsp;|&nbsp; Brand list: 20 hand-curated entries &nbsp;|&nbsp; Sidecar host:port: <code>http://fusion-sidecar:8765</code> (compose) / <code>127.0.0.1:8765</code> (local) &nbsp;|&nbsp; Decision threshold over <code>deploy_p</code>: 0.50 (env <code>CYBERSIREN_PHISHING__THRESHOLD</code>) &nbsp;|&nbsp; Cache: TTL 5 min, 10,000-entry LRU keyed on the full URL.
 </div>
 
 
@@ -158,7 +158,7 @@
   <tr>
     <td>[D]</td>
     <td>Platt, J. C. (1999). <em>Probabilistic outputs for support vector machines and comparisons to regularized likelihood methods.</em> In Advances in Large Margin Classifiers.</td>
-    <td>Theoretical underpinning for calibrating <code>url_p</code> as a probability (rather than a margin) so it can be linearly combined with <code>op_p</code> at fusion time (&sect;6).</td>
+    <td>Motivation for requiring that <code>url_p</code> be a calibrated probability (rather than an uncalibrated score) so it can be linearly combined with <code>op_p</code> at fusion time (&sect;6). In practice <code>url_p</code> is produced by <code>LogisticRegression</code>, which outputs a sigmoid probability natively; no separate Platt-scaling step is applied.</td>
   </tr>
   <tr>
     <td>[E]</td>
@@ -237,7 +237,7 @@
 <table class="compact-table" style="width:700px;">
   <tr><th>Aspect</th><th>Value</th></tr>
   <tr><td>Data source</td><td>Cisco Umbrella Popularity List, top 10,000 apex domains</td></tr>
-  <tr><td>Embedded file</td><td><code>services/svc-03-url-analysis/internal/url/data/top10k_domains.txt</code> (9,978 entries; the gap is due to deduplication and IDN normalization during the regen step)</td></tr>
+  <tr><td>Embedded file</td><td><code>services/svc-03-url-analysis/internal/url/data/top10k_domains.txt</code> (10,000 entries; <code>scripts/update_allowlist.py</code> emits <code>--n 10000</code> by default)</td></tr>
   <tr><td>Load mechanism</td><td><code>//go:embed</code> at build time &mdash; zero runtime I/O. Stored as <code>map[string]struct{}</code> for O(1) lookup.</td></tr>
   <tr><td>Regeneration</td><td><code>services/svc-03-url-analysis/scripts/update_allowlist.py</code>. Should be re-run periodically (~monthly) to track Cisco's ranking updates.</td></tr>
   <tr><td>Latency (i7-10750H)</td><td>Allowlist hit: ~43 ns. Miss: ~13 ns plus the cost of subsequent guard stages.</td></tr>
@@ -283,10 +283,9 @@
   <tr><th>Aspect</th><th>Value</th></tr>
   <tr><td>Tokenizer</td><td>Char n-grams over normalized URL string (scheme + host + path + query), n in [2, 4]. HashingVectorizer with 2<sup>18</sup> buckets &mdash; no fitted vocabulary, so the model is stateless across data drift.</td></tr>
   <tr><td>Normalization</td><td>ASCII lowercase; percent-decoded path; punycode-decoded host. Implementation: <code>fusion_export/fusion_kit/url_normalize.py</code>.</td></tr>
-  <tr><td>Classifier</td><td><code>sklearn.linear_model.LogisticRegression</code> with L2 regularization. Calibrated via cross-validated Platt scaling [D] so <code>url_p</code> behaves as a probability.</td></tr>
+  <tr><td>Classifier</td><td><code>sklearn.linear_model.LogisticRegression</code> with L2 regularization (C=2.0, <code>class_weight='balanced'</code>, <code>solver='liblinear'</code>, <code>max_iter=3000</code>). Outputs a sigmoid probability directly — no separate calibration step is applied. The probability is well-behaved for linear fusion with <code>op_p</code> by virtue of LR's native probability estimation.</td></tr>
   <tr><td>Artifact</td><td><code>fusion_export/models/url_char_lr.joblib</code>. Compressed joblib; load on sidecar start.</td></tr>
-  <tr><td>Metrics file</td><td><code>fusion_export/models/url_char_lr.metrics.json</code> (per-class FPR/FNR, AUC, PR-AUC).</td></tr>
-  <tr><td>Calibration check</td><td>Reliability diagram in <code>fusion_export/benchmark/</code>. Model is well-calibrated on phishing-keyword paths (login, verify, account, mfa) regardless of hosting reputation &mdash; this is exploited in &sect;6 by the &quot;normal-zone&quot; blend.</td></tr>
+  <tr><td>Metrics file</td><td><code>fusion_export/models/url_char_lr.metrics.json</code>. Stores: <code>train_rows</code> (304,181), <code>augment_benign_rows</code>, <code>augment_benign_unique</code>, <code>augment_phish_rows</code>, <code>augment_phish_unique</code>, <code>train_roc_auc</code> (0.9762, computed on training data), <code>train_accuracy_at_0_5</code>, <code>n_features_bits</code>, <code>ngram_range</code>, <code>C</code>. Does not store per-class FPR/FNR or PR-AUC.</td></tr>
   <tr><td>Inputs</td><td>Single string per URL.</td></tr>
   <tr><td>Outputs</td><td>One float in [0, 1] per URL: <code>P(phishing | URL string)</code>.</td></tr>
 </table>
@@ -299,17 +298,28 @@
 
 <h3>5.1 Feature catalogue</h3>
 
-<p style="margin-bottom:4px;">~30 columns (exact count fixed by the training script). Grouped by enrichment source:</p>
+<p style="margin-bottom:4px;">44 columns total (fixed by <code>OPERATIONAL_FEATURE_COLUMNS</code> in <code>fusion_kit/operational.py</code>): 28 raw enrichment fields + 16 derived features computed at scoring time. Exact list from <code>hgb_operational.metrics.json</code> (<code>feature_names</code>):</p>
 
 <table class="compact-table">
-  <tr><th>Group</th><th>Example columns</th><th>Source</th></tr>
-  <tr><td>DNS</td><td><code>has_a</code>, <code>has_aaaa</code>, <code>has_mx</code>, <code>num_ns</code>, <code>ns_diversity</code>, <code>cname_depth</code></td><td><code>fusion_kit/enrich.py</code></td></tr>
-  <tr><td>WHOIS</td><td><code>domain_age_days</code>, <code>registrar</code>, <code>registrar_known</code>, <code>has_privacy_proxy</code></td><td><code>python-whois</code></td></tr>
-  <tr><td>TLS</td><td><code>ssl_enabled</code>, <code>cert_issuer</code>, <code>cert_lifetime_days</code>, <code>cert_self_signed</code>, <code>cert_san_count</code></td><td><code>fusion_kit/enrich.py</code> (TLS handshake)</td></tr>
-  <tr><td>HTTP</td><td><code>http_status</code>, <code>redirect_count</code>, <code>final_url_changes_apex</code>, <code>page_language</code>, <code>page_title_present</code></td><td>HTTP probe (with SSRF guard, see &sect;8)</td></tr>
-  <tr><td>ASN / GeoIP</td><td><code>asn</code>, <code>asn_name</code>, <code>country</code>, <code>is_cdn</code>, <code>is_hoster</code></td><td>MaxMind <code>.mmdb</code> + bundled ASN classifier</td></tr>
-  <tr><td>Shortener / ephemeral</td><td><code>is_shortener</code>, <code>is_ephemeral_platform</code></td><td>See &sect;5.3</td></tr>
+  <tr><th>Group</th><th>Columns (all exact names)</th><th>Type</th></tr>
+  <tr><td>Identity</td><td><code>url</code>, <code>hostname</code>, <code>domain</code>, <code>tld</code></td><td>raw string</td></tr>
+  <tr><td>Network</td><td><code>ip_address</code>, <code>cidr_block</code>, <code>asn</code>, <code>asn_name</code>, <code>isp</code></td><td>raw (asn numeric; rest string)</td></tr>
+  <tr><td>GeoIP</td><td><code>country</code>, <code>country_name</code>, <code>region</code>, <code>city</code>, <code>latitude</code>, <code>longitude</code></td><td>raw; CDN rows geo-nulled during training</td></tr>
+  <tr><td>TLS</td><td><code>ssl_enabled</code>, <code>cert_issuer</code>, <code>cert_subject</code>, <code>cert_valid_from</code>, <code>cert_valid_to</code></td><td>raw string</td></tr>
+  <tr><td>HTTP / content</td><td><code>http_status_code</code>, <code>page_title</code>, <code>page_language</code></td><td>raw</td></tr>
+  <tr><td>WHOIS</td><td><code>registrar</code>, <code>creation_date</code>, <code>expiry_date</code>, <code>updated_date</code>, <code>name_servers</code></td><td>raw string</td></tr>
+  <tr><td>Derived — temporal</td><td><code>domain_age_days</code>, <code>cert_age_days</code>, <code>cert_validity_span_days</code></td><td>float (days since / between dates)</td></tr>
+  <tr><td>Derived — content signals</td><td><code>title_brand_mismatch</code>, <code>title_has_login_kw</code></td><td>binary float</td></tr>
+  <tr><td>Derived — hostname structure</td><td><code>subdomain_depth</code>, <code>subdomain_brand_count</code>, <code>apex_is_numeric</code></td><td>float</td></tr>
+  <tr><td>Derived — redirect / form</td><td><code>form_action_mismatch</code></td><td>binary float</td></tr>
+  <tr><td>Derived — URL structure</td><td><code>ip_in_url</code>, <code>non_std_port</code>, <code>url_domain_char_ratio</code></td><td>binary / float</td></tr>
+  <tr><td>Derived — DOM (stub)</td><td><code>favicon_domain_mismatch</code>, <code>password_field_count</code>, <code>has_hidden_redirect</code></td><td>NaN in current model — see note below</td></tr>
+  <tr><td>Derived — hosting</td><td><code>is_ephemeral_platform</code></td><td>binary float</td></tr>
 </table>
+
+<div class="note">
+  <strong>DOM features trained as NaN.</strong> <code>favicon_domain_mismatch</code>, <code>password_field_count</code>, and <code>has_hidden_redirect</code> are present in the feature schema for forward compatibility but were set to <code>NaN</code> throughout training (the training CSV pre-dates Playwright-based page extraction). <code>HistGradientBoostingClassifier</code> handles NaN natively by learning no split on a fully-missing column — these three features contribute zero discriminative signal in the current model. They will become active once live page-extraction enrichment is integrated.
+</div>
 
 <h3>5.2 Categorical handling for HGB</h3>
 
@@ -317,10 +327,20 @@
 
 <ul style="margin: 4px 0 8px 18px;">
   <li>Columns with &le; 255 distinct values in the training set are cast to pandas <code>category</code> dtype directly.</li>
-  <li>Columns over the limit (e.g. <code>cert_issuer</code>, <code>registrar</code>) are passed through a deterministic hash-bucket layer down to 255 buckets before the cast.</li>
+  <li>Columns over the limit (19 columns including <code>asn_name</code>, <code>isp</code>, <code>cidr_block</code>, <code>cert_subject</code>, <code>registrar</code>, etc.) are hashed via <code>pd.util.hash_pandas_object</code> and bucketed as <code>abs(hash) % 4096</code>, stored as <code>float64</code>. This produces 4,096 numeric buckets — not 255. The threshold of 255 governs which path is taken, not the size of the output bucket space.</li>
 </ul>
 
-<h3>5.3 The <code>is_ephemeral_platform</code> feature</h3>
+<h3>5.3 Synthetic training injections</h3>
+
+<div class="note">
+  <strong>hgb_operational training includes two synthetic datasets</strong> injected by <code>retrain_operational.py</code> before fitting. These are load-bearing &mdash; without them the model produces incorrect results on common legitimate patterns.
+  <ul style="margin: 6px 0 2px 18px;">
+    <li><strong>1,500 platform rows</strong> (500 benign brand-auth pages such as <code>accounts.google.com</code>; 500 benign developer deployments on <code>vercel.app</code> / <code>github.io</code> etc.; 500 phishing platform pages with <code>subdomain_brand_count&ge;1</code> and fresh domains). Without these, <code>is_ephemeral_platform=1</code> is treated as near-certain phishing and every legitimate Vercel/Netlify/GitHub Pages deployment is flagged. The synthetic rows teach the model to discriminate via <code>subdomain_brand_count</code> + <code>title_brand_mismatch</code> + <code>domain_age_days</code>.</li>
+    <li><strong>400 shortener rows</strong> (all benign: <code>bit.ly</code>, <code>t.co</code>, <code>tinyurl.com</code>, <code>ow.ly</code>, <code>buff.ly</code>). Real shortener URLs are absent from phishing feeds, so the model has no prior for them. The synthetic rows anchor the model on: old domain age + low cert age (90-day renewal) + trusted ASN + no login keyword = benign.</li>
+  </ul>
+</div>
+
+<h3>5.4 The <code>is_ephemeral_platform</code> feature</h3>
 
 <div class="note">
   <strong>Operational hazard &mdash; duplicated suffix list.</strong> The set of ephemeral-platform suffixes is duplicated between <code>fusion_export/fusion_kit/operational.py:_EPHEMERAL_PLATFORM_SUFFIXES</code> (Python, used at training time and during sidecar re-enrichment) and <code>internal/phishing/enricher/features.go:ephemeralPlatformSuffixes</code> (Go, used by the <code>/score-features</code> fast path). The two lists <strong>must</strong> stay in sync &mdash; otherwise <code>/score-features</code> and <code>/score</code> can produce different verdicts for the same URL. Commit <code>aa5dafd</code> added 10 platforms (Wasmer, Replit <code>.app</code> / <code>.co</code>, <code>repl.co</code>, <code>zya.me</code>, <code>dweb.link</code>, <code>ipfs.io</code>, StackBlitz, CodeSandbox, CodePen). Whenever a suffix is added on one side, it must be added on the other.
@@ -394,7 +414,7 @@
     <td><code>POST /score-features</code></td>
     <td><code>{"requests": [{"normalized_url": "...", "is_shortener": &lt;bool&gt;, "features": {&lt;flat dict of Go FeatureVector columns&gt;}}, ...]}</code> (max 500)</td>
     <td>Same shape as <code>/score</code>.</td>
-    <td><strong>Bypasses sidecar re-enrichment.</strong> Use when the Go enricher has already computed the operational features. Added in <code>aa5dafd</code>. <em>No Go caller wires this up as of <code>4c8b112</code></em> &mdash; <code>internal/phishing/client/client.go</code> still calls <code>/score</code>. The endpoint is reachable but not on the live request path. See &sect;11 for the wiring opportunity.</td>
+    <td><strong>Bypasses sidecar re-enrichment.</strong> Use when the Go enricher has already computed the operational features. Added in <code>aa5dafd</code>. <em>Wired on the Go side:</em> <code>internal/phishing/client/client.go</code> exposes <code>ScoreFeaturesBatch</code>/<code>CachedScoreFeatures</code> (POST <code>/score-features</code>), and <code>internal/phishing/detector.go</code> selects this path whenever a Go enricher is loaded (else it falls back to <code>/score</code>).</td>
   </tr>
 </table>
 
@@ -419,11 +439,11 @@
   <tr><td>HTTP handler binary</td><td><code>services/svc-03-url-analysis/cmd/url-analysis/main.go</code></td><td>Calls the guard, then conditionally L1 and the L2 client. Owns the score-envelope marshaling.</td></tr>
   <tr><td>Kafka worker binary</td><td><code>services/svc-03-url-analysis/cmd/url-pipeline/main.go</code></td><td>Same pipeline shape; consumes <code>analysis.urls</code> and emits <code>scores.url</code>.</td></tr>
   <tr><td>Detector</td><td><code>internal/phishing/detector.go</code></td><td>Public <code>Score(ctx, url)</code> method. <code>DefaultThreshold = 0.50</code>.</td></tr>
-  <tr><td>HTTP client + cache</td><td><code>internal/phishing/client/client.go</code></td><td>Calls <code>/score</code>. <strong>TTL 5 min, 10,000-entry LRU keyed on the full URL</strong> (not the apex). The full-URL keying was a post-PR-#140 fix &mdash; apex keying caused cache collisions between distinct paths on the same domain.</td></tr>
+  <tr><td>HTTP client + cache</td><td><code>internal/phishing/client/client.go</code></td><td>Calls <code>/score</code> (and <code>/score-features</code> when the Go enricher is loaded). <strong>TTL 5 min, 10,000-entry LRU keyed on the full URL</strong> (not the apex). The full-URL keying was a post-PR-#140 fix &mdash; apex keying caused cache collisions between distinct paths on the same domain.</td></tr>
   <tr><td>Domain guard</td><td><code>services/svc-03-url-analysis/internal/url/domainguard.go</code></td><td><code>CheckDomain</code>, <code>CheckSubdomainBrand</code>, <code>ApexFromURL</code>.</td></tr>
-  <tr><td>Enricher (Go-side)</td><td><code>internal/phishing/enricher/</code></td><td>Computes the Go-side equivalent of the operational feature vector. Currently exposed for future <code>/score-features</code> wiring (see &sect;7.1, &sect;11).</td></tr>
+  <tr><td>Enricher (Go-side)</td><td><code>internal/phishing/enricher/</code></td><td>Computes the Go-side equivalent of the operational feature vector, feeding the <code>/score-features</code> fast path when loaded (see &sect;7.1).</td></tr>
   <tr><td>SSRF guard</td><td><code>internal/phishing/enricher/http.go:safeDialContext</code></td><td>Rejects connections to non-public IPs (RFC 1918, loopback, link-local). Covered by <code>http_test.go</code>.</td></tr>
-  <tr><td>Config</td><td><code>shared/config/config.go:PhishingConfig</code></td><td>Reads <code>CYBERSIREN_PHISHING__SIDECAR_URL</code>, <code>CYBERSIREN_PHISHING__THRESHOLD</code>, <code>CYBERSIREN_PHISHING__GEO_IP_DIR</code>.</td></tr>
+  <tr><td>Config</td><td><code>shared/config/config.go:PhishingConfig</code></td><td>Reads <code>CYBERSIREN_PHISHING__SIDECAR_URL</code>, <code>CYBERSIREN_PHISHING__THRESHOLD</code>, <code>CYBERSIREN_PHISHING__GEOIP_DIR</code> (koanf tag <code>geoip_dir</code>).</td></tr>
 </table>
 
 <h3>8.2 TI / L2 gate</h3>
@@ -455,7 +475,7 @@
 <h3>9.2 End-to-end sidecar benchmark — v3 model (2026-05-18)</h3>
 
 <div class="note">
-  <strong>v3 model:</strong> <code>url_char_lr.joblib</code> retrained on 304,181 rows (299K LegitPhish+PhiUSIIL base + 3,000 fresh OpenPhish ×10 + 1,875 hard-benign ×3), C=2.0. Val AUC 0.974, benign FPR@0.50 0.6%. Previous v1 model had AUC 0.757 (overfit: 625 benign ×200 + 317 phishing ×150 augmentation) and data leakage (phishing augmentation = benchmark test set). All numbers below are <strong>sidecar-only</strong> — the production Domain Guard allowlist (top-10K) is not applied.
+  <strong>v3 model:</strong> <code>url_char_lr.joblib</code> retrained on 304,181 rows (299,181 LegitPhish+PhiUSIIL base + 3,000 fresh OpenPhish ×10 + 1,875 hard-benign ×3), C=2.0, ngram [2,4], 2<sup>18</sup> hash buckets. Held-out AUC 0.974 (balanced 5K sample, measured in a separate evaluation; training-data AUC stored in metrics.json is 0.9762). Benign FPR@0.50 0.6% (same held-out set). Previous v1 model had AUC 0.757 (overfit: 625 benign ×200 + 317 phishing ×150 augmentation) and data leakage (phishing augmentation = benchmark test set). All numbers below are <strong>sidecar-only</strong> — the production Domain Guard allowlist (top-10K) is not applied.
 </div>
 
 <div class="metric-block">
@@ -480,21 +500,23 @@
     <tr><td><code>live_benign_urls.txt</code> (repo ground truth)</td><td>46</td><td>12</td><td>26.1%</td><td>Mostly top-10K; allowlisted in prod</td></tr>
     <tr><td>Error-analysis FPs</td><td>19</td><td>6</td><td>31.6%</td><td>Mostly top-10K; allowlisted in prod</td></tr>
   </table>
-  <p style="margin-top:4px;font-size:10px;"><strong>Note on hard-benign FPR:</strong> The elevated FPR on the last three rows reflects the sidecar in isolation. In production the Domain Guard allowlist (9,978 Cisco Umbrella top-10K entries) short-circuits these before the sidecar is ever called — the majority of these URLs are well-known domains. The LegitPhish benign split (1.3% FPR) is a better estimate of sidecar FPR on unknown traffic.</p>
+  <p style="margin-top:4px;font-size:10px;"><strong>Note on hard-benign FPR:</strong> The elevated FPR on the last three rows reflects the sidecar in isolation. In production the Domain Guard allowlist (10,000 Cisco Umbrella top-10K entries) short-circuits these before the sidecar is ever called — the majority of these URLs are well-known domains. The LegitPhish benign split (1.3% FPR) is a better estimate of sidecar FPR on unknown traffic.</p>
 </div>
 
 <h3>9.3 Per-model component metrics</h3>
 
 <table class="compact-table" style="width:700px;">
   <tr><th>Model</th><th>Metric</th><th>Value</th><th>Evaluation set</th></tr>
-  <tr><td rowspan="3"><code>url_char_lr</code> v3</td><td>AUC</td><td><strong>0.974</strong></td><td>Held-out balanced 5K (2.5K each class)</td></tr>
-  <tr><td>Benign FPR @ 0.50</td><td><strong>0.6%</strong></td><td>Same held-out set</td></tr>
-  <tr><td>Training rows</td><td>304,181</td><td>Base 299K + 3K phish aug + 1.9K benign aug</td></tr>
-  <tr><td rowspan="2"><code>hgb_operational</code></td><td>Validation AUC</td><td><strong>0.99985</strong></td><td>Held-out operational split</td></tr>
-  <tr><td>Features</td><td>44</td><td>28 raw enrichment + 16 derived</td></tr>
+  <tr><td rowspan="4"><code>url_char_lr</code> v3</td><td>Held-out AUC</td><td><strong>0.974</strong></td><td>Balanced 5K held-out set (2,500 phishing / 2,500 benign); separate from training</td></tr>
+  <tr><td>Training AUC</td><td>0.9762</td><td>Computed on full 304,181 training rows (stored in <code>url_char_lr.metrics.json</code>)</td></tr>
+  <tr><td>Benign FPR @ 0.50</td><td><strong>0.6%</strong></td><td>Same held-out 5K set</td></tr>
+  <tr><td>Training rows</td><td>304,181</td><td>299,181 base + 3,000 phish aug (300 unique ×10) + 1,875 benign aug (625 unique ×3)</td></tr>
+  <tr><td rowspan="3"><code>hgb_operational</code></td><td>Validation AUC</td><td><strong>0.99985</strong></td><td>Held-out val split from <code>ready_operational/val/</code> (stored in <code>hgb_operational.metrics.json</code>)</td></tr>
+  <tr><td>Test AUC</td><td>0.99968</td><td>Held-out test split from <code>ready_operational/test/</code> (stored in <code>hgb_operational.metrics.json</code>)</td></tr>
+  <tr><td>Features</td><td>44</td><td>28 raw enrichment + 16 derived (3 DOM features currently NaN — see §5.1 note)</td></tr>
 </table>
 
-<p style="margin-top:4px;font-size:10px;">Full per-class FPR/FNR and PR-AUC for each model are stored in <code>fusion_export/models/url_char_lr.metrics.json</code> and <code>fusion_export/models/hgb_operational.metrics.json</code> (shipped via Git LFS — run <code>make check-fusion-models</code>).</p>
+<p style="margin-top:4px;font-size:10px;">Per-model metrics are stored in <code>fusion_export/models/url_char_lr.metrics.json</code> (train ROC-AUC, accuracy, augmentation/feature config) and <code>fusion_export/models/hgb_operational.metrics.json</code> (<code>n_features</code>, validation accuracy + ROC-AUC, derived-feature list), shipped via Git LFS — run <code>make check-fusion-models</code>. Note: these files do not include per-class FPR/FNR or PR-AUC; the AUC/FPR figures in the tables above are from separate held-out evaluations not committed to the repo.</p>
 
 
 <!-- ============================================================ -->
@@ -553,9 +575,9 @@
   </tr>
   <tr>
     <td>6</td>
-    <td><code>/score-features</code> has no Go caller</td>
-    <td>The endpoint is reachable but the existing client at <code>internal/phishing/client/client.go</code> only hits <code>/score</code>. The &quot;Go enricher computes features, sidecar just scores&quot; optimization is documented but not on the live request path.</td>
-    <td>A short follow-up PR can switch the client to <code>/score-features</code> once the Go-side enricher is feature-complete. Saves the per-request HTTP / DNS / WHOIS round-trips inside the sidecar.</td>
+    <td><code>/score-features</code> Go wiring (resolved)</td>
+    <td><code>internal/phishing/client/client.go</code> exposes <code>ScoreFeaturesBatch</code>/<code>CachedScoreFeatures</code> and <code>internal/phishing/detector.go</code> routes through <code>/score-features</code> whenever the Go enricher is loaded, saving the per-request HTTP / DNS / WHOIS round-trips inside the sidecar; it falls back to <code>/score</code> otherwise.</td>
+    <td>No action — the "Go enricher computes features, sidecar just scores" optimization is now on the live request path.</td>
   </tr>
   <tr>
     <td>7</td>

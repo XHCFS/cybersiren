@@ -180,7 +180,7 @@
       <tr><td>Framework</td><td>Gin</td></tr>
       <tr><td>Port</td><td>8086 (configurable)</td></tr>
       <tr><td>Entry point</td><td><code>cmd/nlp/main.go</code></td></tr>
-      <tr><td>Core files</td><td><code>internal/nlp/client.go</code><br><code>internal/nlp/handler.go</code></td></tr>
+      <tr><td>Core files</td><td><code>internal/nlp/client.go</code> (HTTP client)<br><code>cmd/nlp/main.go</code> (predict/health/status handlers)</td></tr>
       <tr><td>Responsibilities</td><td>Route handling, request validation, config loading, Prometheus metrics, OTel tracing, graceful shutdown, static file serving (demo)</td></tr>
       <tr><td>Startup time</td><td>&lt;1 s (immediate)</td></tr>
     </table>
@@ -279,7 +279,7 @@
 <!-- ============================================================ -->
 <h2 class="page-break">3. Text Preprocessing Pipeline</h2>
 
-<p>All raw email input passes through the preprocessing pipeline before tokenization. Preprocessing is implemented in <code>nlp/inference.py</code> <code>_preprocess()</code> and its helpers.</p>
+<p>All raw email input passes through the preprocessing pipeline before tokenization. Preprocessing is canonical in <code>nlp/text_preprocess.py</code> (<code>preprocess_email</code> and its helpers); <code>inference.py</code> <code>_preprocess()</code> simply delegates to it (avoiding train/serve skew).</p>
 
 <h3>3.1 HTML Stripping</h3>
 <table class="compact-table">
@@ -359,7 +359,7 @@
   <tr><th>File</th><th>Purpose</th></tr>
   <tr><td><code>nlp/tokenizer/tokenizer.json</code></td><td>Rust-native HuggingFace fast tokenizer binary (WordPiece rules, vocabulary)</td></tr>
   <tr><td><code>nlp/tokenizer/tokenizer_config.json</code></td><td>Config: <code>do_lower_case: true</code>, <code>model_max_length: 512</code></td></tr>
-  <tr><td><code>nlp/tokenizer/special_tokens_map.json</code></td><td>PAD=0, UNK=100, CLS=101, SEP=102, MASK=103</td></tr>
+  <tr><td><code>nlp/tokenizer/special_tokens_map.json</code></td><td>Token names only: [CLS], [SEP], [PAD], [UNK], [MASK]. Numeric IDs are resolved at runtime via <code>tokenizer.cls_token_id</code>/<code>sep_token_id</code> (no IDs stored in this file).</td></tr>
   <tr><td><code>nlp/tokenizer/vocab.txt</code></td><td>30,522 WordPiece vocabulary entries (BERT uncased English)</td></tr>
 </table>
 <div class="note">
@@ -469,7 +469,7 @@ else:
 <h2 class="page-break">7. Intent Detection (Rule-Based)</h2>
 
 <div class="note">
-  <strong>Implementation note:</strong> The intent head described in <code>NLP-SPEC-v1.0</code> (multi-task auxiliary head, annotated training data) is not yet implemented. The deployed service uses a keyword regex pattern matcher. This is documented in the spec as a known limitation (#2). The rule-based classifier correctly handles the common phishing patterns in the demo corpus.
+  <strong>Implementation note:</strong> The intent head described in <code>NLP-SPEC-v2.0</code> &sect;3.3 (multi-task auxiliary head, annotated training data) is not yet implemented. The deployed service uses a keyword regex pattern matcher. This is documented in the spec as a known limitation (#2). The rule-based classifier correctly handles the common phishing patterns in the demo corpus.
 </div>
 
 <h3>7.1 Intent Taxonomy (11 Labels)</h3>
@@ -670,9 +670,11 @@ type Client struct {
 <h3>10.2 Request/Response Types</h3>
 <pre>
 type PredictRequest struct {
-    Subject   string `json:"subject"`
-    BodyPlain string `json:"body_plain"`
-    BodyHTML  string `json:"body_html,omitempty"`
+    Subject      string `json:"subject"`
+    BodyPlain    string `json:"body_plain"`
+    BodyHTML     string `json:"body_html,omitempty"`
+    SenderName   string `json:"sender_name,omitempty"`   // feeds the brand-impersonation facet
+    SenderDomain string `json:"sender_domain,omitempty"` // optional; facet degrades gracefully when empty
 }
 
 // API output — 3-class (legitimate / spam / phishing); see §6
@@ -685,6 +687,9 @@ type PredictResponse struct {
     IntentLabels        []string     `json:"intent_labels"`
     UrgencyScore        float64      `json:"urgency_score"`
     ObfuscationDetected bool         `json:"obfuscation_detected"`
+    ImpersonationScore  float64      `json:"impersonation_score"`   // P4.2 heuristic facet
+    ImpersonatedBrand   *string      `json:"impersonated_brand"`    // nullable
+    DeceptionScore      float64      `json:"deception_score"`
     TopTokens           []TokenScore `json:"top_tokens"`            // always []
 }
 
@@ -695,7 +700,7 @@ type StatusResponse struct {
 }
 </pre>
 
-<h3>10.3 Handler Behavior (<code>internal/nlp/handler.go</code>)</h3>
+<h3>10.3 Handler Behavior (<code>cmd/nlp/main.go</code>)</h3>
 <table class="compact-table">
   <tr><th>Handler</th><th>Validation</th><th>Success path</th><th>Error paths</th></tr>
   <tr><td class="svc">predictHandler</td><td>JSON bind; subject OR body_plain must be non-empty.</td><td>Call client.Predict(); return 200 + unwrapped data envelope.</td><td>400 on validation fail; 502 on upstream non-2xx; 503 on Python 503 (model not loaded).</td></tr>
@@ -945,11 +950,11 @@ exec /bin/service
 <h2>15. Test Coverage</h2>
 
 <h3>15.1 Python Unit Tests (<code>nlp/test_inference.py</code>)</h3>
-<p>66 tests, all passing. Tests run with <code>pytest test_inference.py -v</code> from <code>services/svc-06-nlp/nlp/</code>. No ONNX model or network required — the engine is initialized with mocked ONNX session and stub tokenizer.</p>
+<p>108 tests, all passing. Tests run with <code>pytest test_inference.py -v</code> from <code>services/svc-06-nlp/nlp/</code>. No ONNX model or network required — the engine is initialized with mocked ONNX session and stub tokenizer.</p>
 
 <table class="compact-table">
   <tr><th>Test Group</th><th>Count</th><th>Coverage</th></tr>
-  <tr><td class="svc">Schema and response keys</td><td>3</td><td>Verifies PredictResponse contains exactly {classification, confidence, phishing_probability, content_risk_score, intent_labels, urgency_score, obfuscation_detected, top_tokens}. No spam_probability key.</td></tr>
+  <tr><td class="svc">Schema and response keys</td><td>3</td><td>Verifies PredictResponse contains {classification, confidence, phishing_probability, spam_probability, content_risk_score, intent_labels, urgency_score, obfuscation_detected, impersonation_score, impersonated_brand, deception_score, top_tokens} (see <code>test_inference.py</code> expected_keys).</td></tr>
   <tr><td class="svc">Phishing classification</td><td>5</td><td>High-logit phishing inputs return classification="phishing", confidence &gt; 0.5, content_risk_score &gt; 50.</td></tr>
   <tr><td class="svc">Legitimate classification</td><td>5</td><td>High-logit legitimate inputs return classification="legitimate", intent_labels=["benign_notification"].</td></tr>
   <tr><td class="svc">Spam is a distinct class</td><td>1</td><td><code>test_spam_is_distinct_and_not_a_threat</code>: when class-1 (spam) logit dominates, result is "spam" (not "phishing"), <code>spam_probability</code> is high, and <code>content_risk_score</code> stays low (§6).</td></tr>
@@ -1030,7 +1035,7 @@ exec /bin/service
     <td>2</td>
     <td>Intent detection is rule-based (keyword regex). No learned intent head.</td>
     <td>Novel phishing intent patterns not covered by the keyword dictionary will be undetected or misclassified.</td>
-    <td>Annotate training data with intent labels. Train auxiliary intent classification head as specified in NLP-SPEC-v1.0 §3.3.</td>
+    <td>Annotate training data with intent labels. Train auxiliary intent classification head as specified in NLP-SPEC-v2.0 §3.3.</td>
   </tr>
   <tr>
     <td>3</td>
@@ -1081,7 +1086,7 @@ exec /bin/service
 </ol>
 
 <hr>
-<p style="font-size:9px; color:#777; text-align:right;">NLP-SVC-SPEC-v1.0 — SVC-06 NLP Email Classification Service — Graduation Project (Internal) — Complete</p>
+<p style="font-size:9px; color:#777; text-align:right;">NLP-SVC-SPEC-v2.0 — SVC-06 NLP Email Classification Service — Graduation Project (Internal) — Complete</p>
 
 </body>
 </html>

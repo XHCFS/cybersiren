@@ -255,7 +255,7 @@
   <code>fetched_at</code> = partition key for the <code>emails</code> table. Part of composite PK. Not part of logical identity.<br/>
   <code>message_id</code> (RFC 5322) = deduplication key scoped per org <code>(org_id, message_id)</code>. Not globally unique.<br/>
   <strong>Mapping:</strong> <code>emails.scored</code> message includes both <code>email_id</code> and <code>(internal_id, fetched_at)</code> so SVC-08 can write to DB without an extra lookup.<br/>
-  <span class="delta-tag">v0&nbsp;delta</span> <strong>Interim int64 emitter:</strong> the two-id model above is the target. Today SVC-01 emits <code>email_id</code> as an int64 (<code>time.Now().UnixNano()/1000</code>) instead of a UUIDv7 string; the swap to <code>uuid.NewV7()</code> — widening <code>email_id</code> to a string while <code>internal_id</code> stays BIGINT — is tracked by issue #142. Treat <code>email_id</code> as an opaque identifier downstream so that swap lands cleanly. See <a href="#changelog">§16 D11</a>.
+  <strong>UUIDv7 emitter (landed):</strong> SVC-01 now assigns <code>email_id</code> as a UUIDv7 string via <code>uuid.NewV7()</code> (<code>internal/ingest/ingest.go</code>); <code>internal_id</code> stays BIGINT. The earlier interim <code>time.Now().UnixNano()/1000</code> int64 emitter (issue #142) has been replaced. Treat <code>email_id</code> as an opaque identifier downstream. See <a href="#changelog">§16 D11</a>.
 </div>
 
 <div class="note">
@@ -354,7 +354,7 @@
     <div class="step-content">
       <strong>URL ANALYSIS SERVICE</strong> (Go handler + Python L2 fusion sidecar) — <em>SVC-03</em><br/>
       Consumes <code>analysis.urls</code> (Kafka worker <code>cmd/url-pipeline</code>) and exposes <code>POST /scan</code> (HTTP handler <code>cmd/url-analysis</code>). For each URL, four stages run in order — earlier stages short-circuit later ones:<br/>
-      <strong>(0) Domain Guard</strong> (Go, <code>internal/url/domainguard.go</code>): Cisco Umbrella top-10K allowlist (<code>go:embed</code>'d, 9,978 entries), Levenshtein-d=1 typosquat detection, and 20-brand brand-in-subdomain scan. Allowlist hit → verdict <code>legitimate</code>; typosquat or brand-in-subdomain hit → verdict <code>phishing</code>; both short-circuit the remaining stages. Latency: ~43 ns allowlist hit, ~51 µs typosquat worst case, ~157 ns brand scan.<br/>
+      <strong>(0) Domain Guard</strong> (Go, <code>internal/url/domainguard.go</code>): Cisco Umbrella top-10K allowlist (<code>go:embed</code>'d, 10,000 entries), Levenshtein-d=1 typosquat detection, and 20-brand brand-in-subdomain scan. Allowlist hit → verdict <code>legitimate</code>; typosquat or brand-in-subdomain hit → verdict <code>phishing</code>; both short-circuit the remaining stages. Latency: ~43 ns allowlist hit, ~51 µs typosquat worst case, ~157 ns brand scan.<br/>
       <strong>(1) L1 XGBoost</strong> (Python subprocess, <code>ml/inference_script.py</code>): 28-feature URL char/n-gram model. Used today for routing/degraded-mode signalling on user-submitted scans; not used in the L2 fusion path.<br/>
       <strong>(2) TI feed match</strong>: lookup URL apex against <code>ti_indicators</code> (Valkey-cached). If <code>risk_score ≥ 80</code> → verdict <code>phishing</code>, skip L2. Also reads <code>enriched_threats</code> for prior-email URL lookups.<br/>
       <strong>(3) L2 Fusion Sidecar</strong> (Python, <code>fusion_export/scripts/serve.py</code> on port 8765): runs when TI did not match, or matched with <code>risk_score &lt; 80</code>. Sidecar performs its own DNS / WHOIS / TLS / HTTP / GeoIP / shortener enrichment, computes <code>url_p</code> (char-LR) and <code>op_p</code> (HGB over operational features), and returns a fused <code>deploy_p</code> with asymmetric zone-based weighting. Go side applies <code>DefaultThreshold = 0.50</code> (env <code>CYBERSIREN_PHISHING__THRESHOLD</code>) to <code>deploy_p</code>. Fail-open: if the sidecar is unreachable, the L1 + TI verdict stands. Go client at <code>internal/phishing/client/client.go</code> has a TTL-5min LRU cache keyed on the full URL.<br/>
@@ -519,7 +519,7 @@
     <div class="step-content">
       <strong>DECISION ENGINE / VERDICT SERVICE</strong> (Go) — <em>SVC-08</em><br/>
       Consumes <code>emails.scored</code>. Terminal processing block — responsible for final scoring, verdict, campaign management, and persistence:<br/>
-      <strong>(i) Final score computation:</strong> Receives individual component scores (url, header, attachment, nlp) from Aggregator. Combines into a single <code>risk_score</code> (0–100) via a configurable, explainable blender (<code>CYBERSIREN_DECISION__FUSION_MODE</code>): default <code>weighted_average</code> (weighted mean over present components); opt-in <code>noisy_or</code> (probabilistic OR — no dilution of a confirmed single-channel signal), shipped in shadow pending verdict-band recalibration. Individual component scores always preserved. See design brief §3.4.<br/>
+      <strong>(i) Final score computation:</strong> Receives individual component scores (url, header, attachment, nlp) from Aggregator. Combines into a single <code>risk_score</code> (0–100) via a configurable, explainable blender (<code>CYBERSIREN_DECISION__FUSION_MODE</code>): default <code>calibrated_or</code> (a learned, calibrated probabilistic-OR — the production blender); <code>weighted_average</code> (weighted mean over present components) and <code>noisy_or</code> (hand-set probabilistic OR) are selectable rollbacks. Individual component scores always preserved. See design brief §3.4.<br/>
       <strong>(ii) Rule engine:</strong> Load active rules from <code>rules</code> table (60s cache). Each firing rule adjusts score by <code>score_impact</code> (-100 to +100).<br/>
       <strong>(iii) Verdict:</strong> Map final score to label. Preliminary thresholds (subject to calibration): 0–25 → benign | 26–50 → suspicious | 51–75 → phishing | 76–100 → phishing (high) or malware. Confidence computed separately from risk score — reflects label certainty, not severity.<br/>
       <strong>(iv) Campaign management:</strong> <code>fingerprint = SHA256(sender_domain|url_domain|subject_template|intent)</code>. UPSERT into campaigns. SimHash near-duplicate detection (per-org scoped via Redis).<br/>
@@ -576,8 +576,8 @@
   <div class="step-header">
     <div class="step-num">6b</div>
     <div class="step-content">
-      <strong>API / DASHBOARD SERVICE</strong> (Go REST + React SPA + WebSocket) — <em>SVC-10</em><br/>
-      Consumes <code>emails.verdict</code> internally for WebSocket live feed.<br/>
+      <strong>API / DASHBOARD SERVICE</strong> (Go REST, HTTP-only) — <em>SVC-10</em><br/>
+      HTTP-only read API + scan-submission proxy to SVC-01. <strong>No Kafka consumer and no WebSocket</strong> — the <code>emails.verdict</code> live feed (P6.2) was dropped for the MVP (<code>services/svc-10-api-dashboard/cmd/api/main.go</code>).<br/>
       REST API: /api/v1/emails, /campaigns, /rules (CRUD), /api-keys (CRUD), /stats (MVs), /feeds, /verdicts (analyst POST).<br/>
       Auth: JWT + API keys. Scoped per org via <code>org_id</code>.
     </div>
@@ -767,7 +767,7 @@
 
 <!-- ============================================================ -->
 <h2>5. Redis Key Registry <span class="delta-tag">v0&nbsp;delta</span></h2>
-<p style="font-size:10px; color:#555; margin:-4px 0 8px 0;">v0 note: three keys differ from the patterns below (org-scoping / namespacing) and <code>ti_hash</code> TTL is 2h — see §16 D14. TTLs otherwise match.</p>
+<p style="font-size:10px; color:#555; margin:-4px 0 8px 0;">v0 note: three keys differ from the patterns below (org-scoping / namespacing), the planned <code>ti_hash:</code> cache was never implemented, and <code>ti_domain:</code> TTL is configurable (default 7200s) — see §16 D14. TTLs otherwise match.</p>
 
 <table>
   <tr>
@@ -780,8 +780,8 @@
   </tr>
   <tr><td><code>dedup:{org_id}:{message_id}</code></td><td>STRING (1)</td><td>7 days</td><td>SVC-01</td><td>SVC-01</td><td>Email ingestion deduplication. Value: "1". Existence check only.</td></tr>
   <tr><td><code>url_score:{sha256(url)}</code></td><td>HASH</td><td>6 hours</td><td>SVC-03</td><td>SVC-03</td><td>URL score cache. Fields: score, ti_matched, domain, cached_at. Avoids re-enrichment.</td></tr>
-  <tr><td><code>ti_domain:{domain}</code></td><td>HASH</td><td>1 hour</td><td>SVC-11</td><td>SVC-03, SVC-04</td><td>TI domain cache. Fields: ti_indicator_id, risk_score, threat_type. Sourced from <code>ti_indicators</code>. Avoids DB query per URL.</td></tr>
-  <tr><td><code>ti_hash:{sha256}</code></td><td>HASH</td><td>2 hours <span class="delta-tag">v0&nbsp;delta</span></td><td>SVC-11</td><td>SVC-05</td><td>TI attachment hash cache. Fields: type, risk_score, tags, updated_at. (Impl TTL 7200s, not 1h — see §16 D14.)</td></tr>
+  <tr><td><code>ti_domain:{domain}</code></td><td>HASH</td><td>configurable, default 2 h (7200 s)</td><td>SVC-11</td><td>SVC-03, SVC-04</td><td>TI domain cache. Fields: ti_indicator_id, risk_score, threat_type. Sourced from <code>ti_indicators</code>. Avoids DB query per URL. TTL via <code>CYBERSIREN_TI_DOMAIN_CACHE_TTL_SECONDS</code>.</td></tr>
+  <tr><td><em>(no <code>ti_hash:</code> cache)</em></td><td>—</td><td>—</td><td>—</td><td>—</td><td>An earlier design specified a <code>ti_hash:{sha256}</code> Valkey cache for SVC-05; it was never implemented. Malware hashes are persisted in PostgreSQL <code>attachment_library</code> and read from there (no Valkey hash cache exists).</td></tr>
   <tr><td><code>aggregator:{org_id}:{email_id}</code> <span class="delta-tag">v0&nbsp;delta</span></td><td>HASH</td><td>120 seconds</td><td>SVC-07</td><td>SVC-07</td><td>Score aggregation state. Fields: expected (JSON), received (JSON), created_at. (Impl is org-scoped — see §16 D14.)</td></tr>
   <tr><td><code>simhash_meta:{org_id}:{campaign_id}</code> <span class="delta-tag">v0&nbsp;delta</span></td><td>STRING</td><td>30 days</td><td>SVC-08</td><td>SVC-08</td><td>64-bit SimHash for campaign near-duplicate detection. Per-org scoped. (Impl key is <code>simhash_meta:</code> + a <code>simhash:idx:{org_id}</code> set — see §16 D14.)</td></tr>
   <tr><td><code>notif:{org_id}:{campaign_id}</code></td><td>STRING (counter)</td><td>3600 seconds</td><td>SVC-09</td><td>SVC-09</td><td>Notification rate limiter. INCR on each alert. Block if &gt; 1.</td></tr>
@@ -1068,8 +1068,9 @@ INPUT: email plain_text body
     </ul>
   </div>
   <div class="svc-block">
-    <h3>Redis 7+</h3>
+    <h3>Valkey 7 (Redis-compatible)</h3>
     <ul class="field-list">
+      <li>Deployed image <code>valkey/valkey:7-alpine</code> (Redis API drop-in)</li>
       <li>8 key patterns (see §5 for full registry)</li>
       <li>Persistence: AOF with 1s fsync</li>
       <li>Max memory: 2 GB (LRU eviction on TI cache keys)</li>
@@ -1412,7 +1413,7 @@ INPUT: email plain_text body
     <td><code>attachment_library</code> (001+008)</td>
     <td><code>sha256</code>, <code>is_malicious</code>, <code>risk_score</code>, <code>threat_tags</code></td>
     <td>READ</td>
-    <td>Lookup by <code>sha256</code> (unique index). Cached in Redis <code>ti_hash:{sha256}</code>.</td>
+    <td>Lookup by <code>sha256</code> (unique index) directly in <code>attachment_library</code> (Postgres). No Valkey hash cache is built (the planned <code>ti_hash:{sha256}</code> cache was not implemented).</td>
   </tr>
   <tr>
     <td>VT enrichment cache</td>
@@ -1654,9 +1655,9 @@ INPUT: email plain_text body
     <td>Calls <code>refresh_all_materialized_views()</code> (function defined in 004). CONCURRENTLY mode, no read blocking.</td>
   </tr>
   <tr>
-    <td>Update Redis caches</td>
-    <td>Redis</td>
-    <td><code>ti_domain:{domain}</code>, <code>ti_hash:{sha256}</code></td>
+    <td>Update Valkey cache</td>
+    <td>Valkey</td>
+    <td><code>ti_domain:{domain}</code> (domain cache only; no <code>ti_hash:</code> cache)</td>
     <td>WRITE</td>
     <td>Bulk-load recently-updated ti_indicators domains and attachment_library hashes into Redis for fast lookup by SVC-03/04/05.</td>
   </tr>
@@ -1727,8 +1728,8 @@ INPUT: email plain_text body
       <td><strong>D11</strong></td>
       <td>§1 Canonical Identifier Strategy</td>
       <td><code>email_id</code> (UUIDv7, logical) and <code>internal_id</code> (BIGSERIAL, physical) are two independent identifiers.</td>
-      <td><strong>Confirmed as the target — two-id UUIDv7 model.</strong> <code>email_id</code> is a UUIDv7 string (logical, partition key, opaque); <code>internal_id</code> is the DB-assigned BIGSERIAL surrogate key. SVC-02 lets the DB generate <code>internal_id</code> on INSERT, captures it, and carries <strong>both</strong> ids downstream (<code>emails.scored</code> carries <code>email_id</code> + <code>(internal_id, fetched_at)</code> so SVC-08 writes without a lookup); the <code>email_identities</code> table (migration 015) maps UUID↔<code>internal_id</code> and backs the dedup fallback. <strong>Interim state:</strong> SVC-01 currently emits <code>email_id</code> as an int64 (<code>time.Now().UnixNano()/1000</code>); the swap to <code>uuid.NewV7()</code> — widening the field to a UUIDv7 string — is tracked by <strong>issue #142</strong> (SVC-01 hardening). Until then, treat <code>email_id</code> as opaque; do not depend on its numeric shape.</td>
-      <td>UUIDv7 is collision-free under concurrent / multi-instance ingestion — the interim <code>UnixNano()/1000</code> emitter collides if SVC-01 scales (§11: 1→4) — keeps the logical id decoupled from the DB surrogate key, and matches §1 with no architectural deviation (the schema already provides <code>email_identities</code> for the mapping).</td>
+      <td><strong>Confirmed as the target — two-id UUIDv7 model.</strong> <code>email_id</code> is a UUIDv7 string (logical, partition key, opaque); <code>internal_id</code> is the DB-assigned BIGSERIAL surrogate key. SVC-02 lets the DB generate <code>internal_id</code> on INSERT, captures it, and carries <strong>both</strong> ids downstream (<code>emails.scored</code> carries <code>email_id</code> + <code>(internal_id, fetched_at)</code> so SVC-08 writes without a lookup); the <code>email_identities</code> table (migration 015) maps UUID↔<code>internal_id</code> and backs the dedup fallback. <strong>Status — resolved:</strong> SVC-01 now emits <code>email_id</code> as a UUIDv7 string via <code>uuid.NewV7()</code> (<code>internal/ingest/ingest.go</code>); the earlier interim <code>time.Now().UnixNano()/1000</code> int64 emitter (<strong>issue #142</strong>, SVC-01 hardening) has landed. Treat <code>email_id</code> as opaque; do not depend on its shape.</td>
+      <td>UUIDv7 is collision-free under concurrent / multi-instance ingestion — an int64 <code>UnixNano()/1000</code> emitter would have collided once SVC-01 scales (§11: 1→4) — keeps the logical id decoupled from the DB surrogate key, and matches §1 with no architectural deviation (the schema already provides <code>email_identities</code> for the mapping).</td>
     </tr>
     <tr>
       <td><strong>D12</strong></td>
@@ -1748,7 +1749,7 @@ INPUT: email plain_text body
       <td><strong>D14</strong></td>
       <td>§5 Redis Key Registry</td>
       <td><code>aggregator:{email_id}</code>; <code>simhash:{org_id}:{campaign_id}</code>; <code>rules_cache:{org_id}</code>; <code>ti_hash:{sha256}</code> TTL 1h.</td>
-      <td><strong>As implemented:</strong> <code>aggregator:{org_id}:{email_id}</code> (org-scoped for tenant isolation); <code>simhash_meta:{org_id}:{campaign_id}</code> (+ a <code>simhash:idx:{org_id}</code> index set); <code>rules_cache:header:{org_id}</code> / <code>rules_cache:decision:{org_id}</code> (per-service namespaced); <code>ti_hash:{sha256}</code> <strong>TTL 2h (7200s)</strong>, not 1h. All other key TTLs match §5. The org-scoping / namespacing is intentional; the 2h ti_hash TTL is an ops tuning choice.</td>
+      <td><strong>As implemented:</strong> <code>aggregator:{org_id}:{email_id}</code> (org-scoped for tenant isolation); <code>simhash_meta:{org_id}:{campaign_id}</code> (+ a <code>simhash:idx:{org_id}</code> index set); <code>rules_cache:header:{org_id}</code> / <code>rules_cache:decision:{org_id}</code> (per-service namespaced); the planned <code>ti_hash:{sha256}</code> cache was <strong>never implemented</strong> (malware hashes live in <code>attachment_library</code>); and <code>ti_domain:{domain}</code> TTL is configurable (default 7200s). All other key TTLs match §5. The org-scoping / namespacing is intentional.</td>
       <td>Per-org scoping prevents cross-tenant cache bleed (consistent with the §4/§16-D12 RLS posture); per-service rule-cache namespacing avoids svc-04/svc-08 collisions.</td>
     </tr>
     <tr>
