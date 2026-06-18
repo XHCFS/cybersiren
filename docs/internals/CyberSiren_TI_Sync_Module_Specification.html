@@ -190,7 +190,7 @@
 <div class="pipeline-step">
   <div class="step-header">
     <div class="step-num">9</div>
-    <div class="step-content"><strong>Feed discovery</strong> — queries <code>feeds</code> table for enabled rows (<code>WHERE enabled = TRUE</code>; the <code>feeds</code> table has no <code>deleted_at</code> column). Builds feed implementations via name switch. Skips unknown names with a warning.</div>
+    <div class="step-content"><strong>Feed discovery</strong> — queries <code>feeds</code> table for enabled rows via <code>GetEnabledFeeds</code> (<code>SELECT * FROM feeds WHERE enabled = TRUE</code> — the query does <em>not</em> filter on <code>deleted_at</code>; the column exists, added in migration 019, but is not used for feed discovery). Builds feed implementations via name switch. Skips unknown names with a warning.</div>
   </div>
 </div>
 <div class="pipeline-step">

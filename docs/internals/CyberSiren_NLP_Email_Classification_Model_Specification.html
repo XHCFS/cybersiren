@@ -285,7 +285,7 @@
 
 <h3>2.3 Label Unification</h3>
 <div class="note">
-  All datasets mapped to the CyberSiren 3-class model schema defined in the model's <code>config.json</code> (<code>id2label</code>): <strong>{0: "legitimate", 1: "spam", 2: "phishing"}</strong>. (This integer head schema is distinct from the platform-level string enum <code>VerdictLabel</code> in <code>shared/models/verdict.go</code> &mdash; {benign, suspicious, phishing, malware, spam, unknown} &mdash; which has no "legitimate" member or 0/1/2 mapping.) [8] PhishFuzzer demonstrates that 3-class distinction (phishing/spam/valid) is the correct formulation — binary conflates spam and phishing which have different risk profiles. [8] found Gemini achieves F1<sub>phish</sub>=0.958 but F1<sub>spam</sub>=0.383, confirming the spam class requires dedicated modeling.
+  All datasets mapped to the CyberSiren 3-class model schema defined in the model's <code>config.json</code> (<code>label_map</code>): <strong>{0: "legitimate", 1: "spam", 2: "phishing"}</strong>. (This integer head schema is distinct from the platform-level string enum <code>VerdictLabel</code> in <code>shared/models/verdict.go</code> &mdash; {benign, suspicious, phishing, malware, spam, unknown} &mdash; which has no "legitimate" member or 0/1/2 mapping.) [8] PhishFuzzer demonstrates that 3-class distinction (phishing/spam/valid) is the correct formulation — binary conflates spam and phishing which have different risk profiles. [8] found Gemini achieves F1<sub>phish</sub>=0.958 but F1<sub>spam</sub>=0.383, confirming the spam class requires dedicated modeling.
 </div>
 
 <table class="compact-table">
