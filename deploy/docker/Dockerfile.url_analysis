@@ -17,7 +17,7 @@ FROM python:3.12-slim
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates tzdata libgomp1 \
     && rm -rf /var/lib/apt/lists/*
-RUN pip install --no-cache-dir joblib numpy lightgbm xgboost scikit-learn tldextract
+RUN pip install --no-cache-dir joblib numpy lightgbm "xgboost==3.2.0" "scikit-learn==1.8.0" tldextract
 
 WORKDIR /app
 COPY --from=builder /bin/service /bin/service

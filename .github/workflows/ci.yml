@@ -92,6 +92,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          lfs: true   # svc-03 model.joblib / scaler.joblib are git-LFS tracked
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -143,6 +145,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          lfs: true   # svc-03 model.joblib / scaler.joblib are git-LFS tracked
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -162,7 +166,7 @@ jobs:
         # svc-03 spawns the L1 inference subprocess on startup; mirrors
         # deploy/docker/Dockerfile.url_analysis line 20. Without these the
         # service fatals before the e2e runner can hit /healthz.
-        run: pip install --no-cache-dir joblib numpy scikit-learn xgboost lightgbm tldextract
+        run: pip install --no-cache-dir joblib numpy "scikit-learn==1.8.0" "xgboost==3.2.0" lightgbm tldextract
 
       - name: Install migrate
         run: |
