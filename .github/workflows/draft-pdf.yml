@@ -1,0 +1,37 @@
+name: Draft PDF
+# Compiles paper.md into the JOSS draft PDF (openjournals/inara), exactly as JOSS does at
+# review time. This is the "check that your paper compiles" gate
+# (https://joss.readthedocs.io/en/latest/paper.html). The PDF appears as a build artifact.
+on:
+  push:
+    paths:
+      - paper.md
+      - paper.bib
+      - .github/workflows/draft-pdf.yml
+  pull_request:
+    paths:
+      - paper.md
+      - paper.bib
+      - .github/workflows/draft-pdf.yml
+  workflow_dispatch:
+
+jobs:
+  paper:
+    runs-on: ubuntu-latest
+    name: Paper Draft
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build draft PDF
+        uses: openjournals/openjournals-draft-action@master
+        with:
+          journal: joss
+          # paper.md lives at the repository root
+          paper-path: paper.md
+
+      - name: Upload draft PDF
+        uses: actions/upload-artifact@v4
+        with:
+          name: paper
+          path: paper.pdf
