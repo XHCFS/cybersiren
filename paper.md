@@ -29,7 +29,7 @@ bibliography: paper.bib
 
 `CyberSiren` is an open, end-to-end pipeline for detecting phishing in email. It
 ingests raw messages and scores each modality of a message — the URLs it carries, its
-text, its sender/header metadata, and its attachments — with a dedicated engine, then
+text, its sender and header metadata, and its attachments — with a dedicated engine, then
 recombines those signals into a single verdict at a decision-fusion stage. The system is
 implemented as eleven event-driven Go and Python microservices over a Kafka-API broker,
 and it is instrumented end to end with Prometheus metrics, OpenTelemetry traces exported
@@ -42,8 +42,8 @@ DistilBERT [@sanh2019distilbert] email-text classifier served through ONNX Runti
 scheduled threat-intelligence synchronizer that ingests public feeds. The repository ships
 the trained models, the supervised corpora used to build them, a leakage-controlled
 whole-system benchmark, a Docker Compose demonstration stack with auto-provisioned
-dashboards, and a test suite (over one hundred Go and Python tests) run in continuous
-integration.
+dashboards, versioned container images, and a test suite (over one hundred Go and Python
+tests) run in continuous integration.
 
 # Statement of need
 
@@ -59,32 +59,58 @@ the message bus, and the data plumbing to exist together.
 implementation rather than a single model. Researchers and practitioners can run the
 individual engines, reproduce the released benchmarks, swap in their own models behind the
 same service interfaces, and observe behaviour through the built-in tracing and metrics.
-The project also makes common evaluation pitfalls concrete and reproducible: it ships a
-**campaign-aware** dataset-splitting procedure (splitting at the level of message campaigns
-rather than individual messages, to prevent template leakage across train and test) and a
-held-out real-phishing evaluation slice, which together expose how strongly reported
-generalization depends on the splitting and slicing choices. Making these artifacts and
-procedures openly available lowers the barrier to deployment-realistic, reproducible
-phishing-detection research.
 
-The software has been used as the basis of a graduation research project and an associated
-preprint [@cybersiren2026preprint], and is released so that its engines, datasets, and
-benchmarks can be reused and scrutinized.
+# State of the field
 
-# Functionality
+Recent phishing-detection research is dominated by two largely separate lines: lexical and
+structural URL classifiers built on public corpora [@prasad2024phiusiil], and
+transformer-based email-text classifiers [@altan2025dualpath]. Most are released as
+standalone models evaluated on a single static corpus, and the difficulty of distinguishing
+phishing from ordinary spam is itself an active concern [@toth2025phish]. Tooling that
+integrates several modalities behind a deployable, observable service — and that ships the
+data and harness needed to study decision-level fusion or evaluation methodology — is scarce.
+`CyberSiren` complements these point solutions with an integrated, reproducible platform that
+exposes the full pipeline rather than a single scoring function.
 
-- **Modality engines.** Independently runnable URL, email-text, and threat-intelligence
-  services, each with a documented score envelope, plus designed stubs for header and
-  attachment analysis.
-- **Decision fusion.** A configurable aggregator and decision engine that combine channel
-  scores (calibrated probabilistic-OR, weighted average, or hand-set noisy-OR) into a
-  verdict with campaign fingerprinting.
-- **Reproducible data and benchmarks.** Released supervised corpora, a campaign-aware
-  splitter, a held-out real-phishing slice, and a whole-system benchmark.
-- **Observability.** Prometheus, OpenTelemetry/Jaeger, and structured logging across all
-  services, with auto-provisioned Grafana dashboards.
-- **Deployment.** A Docker Compose demonstration profile and Kubernetes manifests; trained
-  models exported to ONNX for CPU serving.
+# Software design
+
+The pipeline is organized as independent services that communicate over Kafka topics keyed
+by a message identifier, so each stage scales and fails independently. A parser extracts the
+URLs, text, headers, and attachments of a message and emits an analysis plan; the modality
+engines score their channel in parallel and publish a well-defined score envelope; an
+aggregator collects the channels behind a synchronization barrier; and a decision engine
+combines them with a configurable blender (calibrated probabilistic-OR, weighted average, or
+hand-set noisy-OR), maps the result to a verdict, and fingerprints the campaign. Each engine
+is a replaceable unit behind a stable interface: the URL engine calls a Python inference
+sidecar over HTTP, and the email engine runs a Go wrapper in front of an ONNX Runtime
+process, so models can be retrained and swapped without touching the surrounding services.
+Persistence uses PostgreSQL with materialized views and a Valkey cache, and every service
+emits Prometheus metrics and OpenTelemetry traces. The repository includes Dockerfiles,
+a Docker Compose demonstration profile, Kubernetes manifests, and continuous integration that
+builds versioned container images and runs the Go and Python test suites.
+
+# Research impact statement
+
+`CyberSiren` lowers the barrier to reproducible, deployment-realistic phishing-detection
+research. Its released corpora, a campaign-aware dataset splitter (splitting at the level of
+message campaigns rather than individual messages, to prevent template leakage across train
+and test), a held-out real-phishing evaluation slice, and a whole-system benchmark let others
+reproduce results and benchmark new methods behind stable service interfaces; its
+instrumentation exposes runtime behaviour that model-only releases hide. The platform also
+makes common evaluation pitfalls concrete and reproducible — for example, how strongly a
+reported held-out result depends on the train/test splitting procedure and on the particular
+slice of "real" phishing chosen for evaluation — which supports more careful measurement
+practice in the subfield. The software underpins a graduation research project and an
+associated preprint [@cybersiren2026preprint], and is released so that its engines, datasets,
+and benchmarks can be reused and scrutinized by others.
+
+# AI usage disclosure
+
+The authors used Claude (Anthropic) for code and test scaffolding, documentation drafting,
+and copy-editing. All architectural decisions, the system design, the machine-learning
+methodology, and the experimental work were made and carried out by the human authors, who
+reviewed and take full responsibility for all outputs. No generative AI was used in the
+author–reviewer review conversation.
 
 # Acknowledgements
 
