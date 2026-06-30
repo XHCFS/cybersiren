@@ -285,7 +285,7 @@
 
 <h3>2.3 Label Unification</h3>
 <div class="note">
-  All datasets mapped to the CyberSiren 3-class schema matching <code>VerdictLabel</code> in <code>shared/models/verdict.go</code>: <strong>{0: "legitimate", 1: "spam", 2: "phishing"}</strong>. [8] PhishFuzzer demonstrates that 3-class distinction (phishing/spam/valid) is the correct formulation — binary conflates spam and phishing which have different risk profiles. [8] found Gemini achieves F1<sub>phish</sub>=0.958 but F1<sub>spam</sub>=0.383, confirming the spam class requires dedicated modeling.
+  All datasets mapped to the CyberSiren 3-class model schema defined in the model's <code>config.json</code> (<code>label_map</code>): <strong>{0: "legitimate", 1: "spam", 2: "phishing"}</strong>. (This integer head schema is distinct from the platform-level string enum <code>VerdictLabel</code> in <code>shared/models/verdict.go</code> &mdash; {benign, suspicious, phishing, malware, spam, unknown} &mdash; which has no "legitimate" member or 0/1/2 mapping.) [8] PhishFuzzer demonstrates that 3-class distinction (phishing/spam/valid) is the correct formulation — binary conflates spam and phishing which have different risk profiles. [8] found Gemini achieves F1<sub>phish</sub>=0.958 but F1<sub>spam</sub>=0.383, confirming the spam class requires dedicated modeling.
 </div>
 
 <table class="compact-table">
@@ -467,8 +467,8 @@ also <em>why</em> the residual errors land on a text-only Pareto frontier (§11.
   <tr><th>Parameter</th><th>Value</th><th>Evidence</th></tr>
   <tr><td>Input format</td><td><code>"Subject: {subject}\n\nBody: {body_visible}"</code></td><td>[6]: concatenates subject + body.</td></tr>
   <tr><td>Tokenizer</td><td><code>DistilBertTokenizerFast</code></td><td>[3] &sect;3.1.3: "tokenized using DistilBertTokenizerFast."</td></tr>
-  <tr><td>Max tokens</td><td>512</td><td>[6]: max_len=512. [3]: 256 (conservative). [5]: 128 (minimal). We use 512 for full DistilBERT capacity.</td></tr>
-  <tr><td>Truncation</td><td><strong>Head-Tail:</strong> first 128 + last 384 tokens</td><td>Hook/lure in opening. CTA/obfuscation in footer. [3] Table 6: FN occurs when "neutral service-notification tone" with "attachment-based delivery" — footer signals critical.</td></tr>
+  <tr><td>Max tokens</td><td>256</td><td>[6]: max_len=512. [3]: 256 (conservative). [5]: 128 (minimal). We ship 256 (<code>config.json max_length</code>) to fit the latency budget.</td></tr>
+  <tr><td>Truncation</td><td><strong>Head-Tail:</strong> first 64 + last 190 tokens</td><td>Hook/lure in opening. CTA/obfuscation in footer. [3] Table 6: FN occurs when "neutral service-notification tone" with "attachment-based delivery" — footer signals critical. (<code>config.json head_tokens=64, tail_tokens=190</code>.)</td></tr>
   <tr><td>Obfuscation flag</td><td>Compare raw vs NFKC-normalized text</td><td>[3] &sect;3.2.2: adversarial character defense.</td></tr>
 </table>
 
@@ -483,15 +483,15 @@ also <em>why</em> the residual errors land on a text-only Pareto frontier (§11.
   <tr><td class="svc">Learning rate</td><td>2e-5</td><td>[6]: 2e-5. [1]: 2e-5. [3]: 3e-5. Consensus range 1e-5 to 3e-5. 2e-5 is empirical median.</td></tr>
   <tr><td class="svc">LR schedule</td><td>Linear with warmup</td><td>[4]: cosine annealing + warmup=10%. We use simpler linear (validated in [6]).</td></tr>
   <tr><td class="svc">Warmup ratio</td><td>0.1 (10% of total steps)</td><td>[4]: warmup=10%. Prevents early gradient explosions in task-specific heads.</td></tr>
-  <tr><td class="svc">Batch size</td><td>16 (effective 32 via grad accumulation)</td><td>[3]: batch=32. [6]: batch=32. [1]: batch=8. We use 16 + 2-step accumulation for P100 VRAM fit.</td></tr>
-  <tr><td class="svc">Gradient accumulation</td><td>2 steps</td><td>Effective batch=32 matches [3][6].</td></tr>
-  <tr><td class="svc">Epochs</td><td>5 with early stopping (patience=2)</td><td>[6]: 5 epochs. [1]: 3 epochs. [3]: 3–6 epochs. [5]: 5 epochs. Early stop on validation MCC.</td></tr>
+  <tr><td class="svc">Batch size</td><td>32</td><td>[3]: batch=32. [6]: batch=32. [1]: batch=8. We use 32 directly (fits a single 16&nbsp;GB T4; <code>nn.DataParallel</code> splits across 2 GPUs).</td></tr>
+  <tr><td class="svc">Gradient accumulation</td><td>None (batch=32 fits directly)</td><td>Notebook uses a plain per-batch optimizer step; no accumulation.</td></tr>
+  <tr><td class="svc">Epochs</td><td>3</td><td>[6]: 5 epochs. [1]: 3 epochs. [3]: 3–6 epochs. [5]: 5 epochs. We train 3 epochs (<code>OneCycleLR</code> over all steps; no early stopping).</td></tr>
   <tr><td class="svc">Weight decay</td><td>0.01</td><td>[4]: gradient clipping + dropout + weight decay standard. AdamW default.</td></tr>
   <tr><td class="svc">Dropout (heads)</td><td>0.3</td><td>[4]: dropout 0.1–0.5 by depth. Higher dropout for small task-specific heads.</td></tr>
   <tr><td class="svc">Focal Loss &gamma;</td><td>2.0</td><td>Standard value (Lin et al., ICCV 2017). Higher &gamma; = more focus on hard examples (spam&harr;phishing boundary per [8]).</td></tr>
   <tr><td class="svc">Class weights &alpha;</td><td>Inverse class frequency</td><td>[3] &sect;3.1.4: "class-weighted cross-entropy loss, with weights computed from training data using balanced weighting."</td></tr>
   <tr><td class="svc">FGM &epsilon;</td><td>0.01</td><td>[3] &sect;3.2.3: "&epsilon;=0.01 based on preliminary tuning." [3] adversarial weight &lambda;=0.5.</td></tr>
-  <tr><td class="svc">Max sequence length</td><td>512</td><td>[6]: 512. Reduce to 384 if latency exceeds target.</td></tr>
+  <tr><td class="svc">Max sequence length</td><td>256</td><td>[6]: 512; we ship 256 (64 head + 190 tail) for the latency budget. See &sect;3.6.</td></tr>
   <tr><td class="svc">Seed</td><td>42 (primary); 123, 456 (significance)</td><td>[3] &sect;3.3: "random seed fixed at 42 across all runs." [4]: seeds for bootstrap CIs.</td></tr>
 </table>
 
@@ -802,6 +802,9 @@ real phishing and its INT8 export was unfaithful (max|logit-diff| ≈ 82). v2 sh
   "intent_labels": ["credential_harvest"],
   "urgency_score": 0.0-1.0,
   "obfuscation_detected": false,
+  "impersonation_score": 0.0-1.0,
+  "impersonated_brand": null,
+  "deception_score": 0.0-1.0,
   "top_tokens": [{"token":"verify","score":0.42}]
 }</pre>
   </div>
@@ -903,7 +906,7 @@ reproducible option (a one-line <code>quantize_dynamic</code> on the fp32 artifa
     <td>[4]: MCC 0.998 (URL-domain few-shot; not directly comparable to email fine-tuning). URL-SPEC &sect;6.1 uses MCC. [1][15]: report accuracy + F1 + AUC but not MCC — we add it.</td>
   </tr>
   <tr>
-    <td class="svc">Head-Tail truncation (128+384)</td>
+    <td class="svc">Head-Tail truncation (64+190)</td>
     <td>Hook/lure in opening (subject + first paragraph). CTA/link/obfuscation in footer. Pure head-truncation misses footer.</td>
     <td>[3] Table 6 Email 6: FN uses "attachment-based delivery" — footer-region signal. [6]: subject+body concatenation.</td>
   </tr>
@@ -948,7 +951,7 @@ reproducible option (a one-line <code>quantize_dynamic</code> on the fp32 artifa
   </tr>
   <tr>
     <td>4</td>
-    <td>512 token limit loses long email content</td>
+    <td>256 token limit loses long email content</td>
     <td>Long marketing/phishing emails truncated</td>
     <td>Head-Tail truncation. ModernBERT (8K context) as stretch goal.</td>
     <td>[4]: ModernBERT 8K context. [3]: 256 tokens sufficient for most emails.</td>

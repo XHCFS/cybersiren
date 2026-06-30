@@ -11,7 +11,7 @@
 The database uses a **shared PostgreSQL instance with service-owned tables**.
 Each microservice has clear read/write boundaries documented below.
 
-Total tables: 18 + 5 materialized views + 1 view
+Total tables: 23 base tables (non-partition) + 5 materialized views + 1 view
 
 ### Identifier Convention
 
@@ -67,8 +67,8 @@ The central entity. One row per ingested email.
 | `deleted_at` | TIMESTAMPTZ | API/Dashboard | Soft delete |
 
 **PK:** `(internal_id, fetched_at)` — composite required by PostgreSQL partitioning
-**Unique:** `(org_id, message_id, fetched_at)` — deduplication constraint
-**Partition strategy:** Monthly ranges, pre-created 2025-01 through 2026-12 + default
+**Dedup:** the original `UNIQUE(org_id, message_id, fetched_at)` on `emails` was **dropped in migration 015** (including `fetched_at` defeated cross-partition dedup). Dedup now lives in the unpartitioned `email_identities` table — `PRIMARY KEY (org_id, message_id)` (migration 015; `email_id` added in 035).
+**Partition strategy:** Monthly ranges, pre-created 2025-01 onward (2027 partitions now exist) + default
 
 ---
 
@@ -81,7 +81,7 @@ Email-observed threat entities. Stores URLs, domains, and IPs extracted from ema
 | Column | Type | Service That Writes | Purpose |
 |--------|------|-------------------|---------|
 | `id` | BIGSERIAL PK | URL Analysis | Auto-generated |
-| `url` | TEXT UNIQUE | URL Analysis | The indicator URL (email-observed) |
+| `url` | TEXT; UNIQUE `(org_id, url)` NULLS NOT DISTINCT | URL Analysis | The indicator URL (email-observed). The global `UNIQUE(url)` was replaced by a per-org unique in migration 032 (for RLS / per-org UPSERT). |
 | `domain` | TEXT | URL Analysis | Extracted domain |
 | `online` | BOOLEAN | URL Analysis (enrichment) | Availability status |
 | `http_status_code` | INT | URL Analysis (enrichment) | HTTP response code |
@@ -201,7 +201,7 @@ Immutable verdict history. Current verdict = latest by `created_at` per entity.
 | Column | Type | Service That Writes | Purpose |
 |--------|------|-------------------|---------|
 | `id` | BIGSERIAL PK | Decision Engine / Analyst | Auto-generated |
-| `entity_type` | TEXT (enum check) | Decision Engine / Analyst | 'email', 'threat', 'attachment', 'campaign' |
+| `entity_type` | `entity_type_enum` | Decision Engine / Analyst | 'email', 'threat', 'attachment', 'campaign' — shared PostgreSQL enum since migration 010 (not a TEXT+CHECK) |
 | `entity_id` | BIGINT | Decision Engine / Analyst | FK to the entity |
 | `label` | verdict_label ENUM | Decision Engine / Analyst | benign/suspicious/phishing/malware/spam/unknown |
 | `confidence` | DOUBLE PRECISION 0–1 | Decision Engine | Label certainty (NOT risk score / 100). Based on distance from nearest threshold boundary, with penalties for partial analysis and rule-only verdicts |
@@ -210,7 +210,9 @@ Immutable verdict history. Current verdict = latest by `created_at` per entity.
 | `notes` | TEXT | Analyst via API | Human notes |
 | `created_by` | BIGINT FK → users | Analyst via API | Analyst identity (NULL for automated) |
 | `created_at` | TIMESTAMPTZ | auto | Verdict timestamp |
+| `kafka_verdict_wire` | JSONB | Decision Engine | Byte-stable `emails.verdict` wire payload, added in migration 029 (for idempotent replay) |
 
+**Uniqueness:** migration 029 adds a partial unique index `uq_verdicts_pipeline_email_partition` enforcing at most one automated (`model`/`rule`) verdict per partitioned email row — so the table is append-only for analyst verdicts but deduplicated for automated ones.
 **View:** `current_verdicts` — `DISTINCT ON (entity_type, entity_id) ORDER BY created_at DESC`
 
 ---
@@ -386,4 +388,4 @@ All indexes are defined in the migration files. Key patterns:
 - **Partial indexes** for active records (`WHERE deleted_at IS NULL`, `WHERE status = 'active'`, `WHERE is_active = TRUE`)
 - **GIN indexes** on JSONB and array columns (`headers_json`, `threat_tags`)
 - **Covering indexes** on verdict lookups (`entity_type, entity_id, created_at DESC`)
-- **Composite unique** for dedup (`org_id, message_id, fetched_at` on emails; `feed_id, indicator_type, indicator_value` on ti_indicators)
+- **Composite unique** for dedup (`(org_id, message_id)` on `email_identities` — the emails-table `(org_id, message_id, fetched_at)` unique was dropped in migration 015; `(feed_id, indicator_type, indicator_value)` on ti_indicators)

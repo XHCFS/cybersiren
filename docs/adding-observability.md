@@ -6,12 +6,12 @@ Every CyberSiren service ships with three observability pillars:
 
 | Tool | Purpose | Port/URL |
 |------|---------|----------|
-| **Prometheus** | Scrapes service metrics; query UI on host | `http://localhost:9092` |
+| **Prometheus** | Scrapes service metrics; query UI on host | `http://localhost:19090` |
 | **Grafana** | Dashboards | `http://localhost:3001` |
 | **Jaeger** | Distributed tracing (OpenTelemetry) | `http://localhost:16686` |
 | **zerolog** | Structured JSON logging | stderr |
 
-> **Note:** Each Go service exposes its own `/metrics` endpoint on port 9090 *inside* the container. The host-side Prometheus UI at `localhost:9092` scrapes all of them.
+> **Note:** Each Go service exposes its own `/metrics` endpoint on port 9090 *inside* the container. The host-side Prometheus UI is at `localhost:19090` (host port 9092 is the Redpanda/Kafka broker, so the compose file maps Prometheus to 19090).
 
 The shared packages in `shared/observability/` handle all boilerplate. You just need to make three calls in `main.go` and register your custom metrics.
 
@@ -193,11 +193,11 @@ Add your service to `deploy/compose/docker-compose.yml`. Follow the existing pat
 
 ## Step 3: Prometheus Scrape Config
 
-Add a scrape target in `deploy/compose/prometheus/prometheus.yml`:
+Add a scrape target in `deploy/compose/prometheus/prometheus.yml`. The real jobs defined there are `cybersiren-demos` (svc-03, svc-06, svc-11), `cybersiren-fusion-sidecar`, `cybersiren-pipeline`, and `cybersiren-full` — add your target under the appropriate one (example uses `cybersiren-demos`):
 
 ```yaml
 scrape_configs:
-  - job_name: "cybersiren-services"
+  - job_name: "cybersiren-demos"
     scrape_timeout: 5s
     static_configs:
       - targets: ["svc-03-url-analysis:9090"]
@@ -285,7 +285,7 @@ This starts: Postgres, Valkey, Prometheus, Grafana, Jaeger, and your service con
 ```
   Service:     svc-XX-myservice
   Grafana:     http://localhost:3001
-  Prometheus:  http://localhost:9092
+  Prometheus:  http://localhost:19090
   Jaeger:      http://localhost:16686
 ```
 
@@ -307,7 +307,7 @@ Files to create or modify when adding observability to a new service:
 
 | Variable | Purpose | Default |
 |----------|---------|---------|
-| `CYBERSIREN_METRICS_PORT` | Port for `/metrics` + `/healthz` | (none — must set) |
+| `CYBERSIREN_METRICS_PORT` | Port for `/metrics` + `/healthz` | `9090` (set in `shared/config/config.go`) |
 | `CYBERSIREN_JAEGER_ENDPOINT` | OTLP HTTP endpoint (e.g., `http://jaeger:4318`) | empty = tracing disabled |
 | `CYBERSIREN_LOG__LEVEL` | Log level (`debug`, `info`, `warn`, `error`) | `info` |
 | `CYBERSIREN_LOG__PRETTY` | Human-readable console logs | `false` |

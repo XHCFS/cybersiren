@@ -209,7 +209,7 @@
   <table class="compact-table">
     <tr><th>Metric</th><th>Value</th></tr>
     <tr><td>Features extracted</td><td>30</td></tr>
-    <tr><td>Features used in model</td><td>28 (2 pruned — zero importance)</td></tr>
+    <tr><td>Features used in model</td><td>30 (28 structural + 2 legitimacy anchors: <code>min_brand_levenshtein</code>, <code>registered_domain_top1m</code>). <code>has_ip_address</code> / <code>double_slash_in_path</code> were pruned from the historical lexical set; the deployed <code>config.json</code> feature vector is 30-wide.</td></tr>
     <tr><td>Null cells</td><td>0</td></tr>
     <tr><td>Infinite values</td><td>0</td></tr>
     <tr><td>Output file</td><td><code>cybersiren_lowlatency_dataset.csv</code> (43.8 MB)</td></tr>
@@ -425,7 +425,7 @@ The deployed artifact in <code>services/svc-03-url-analysis/ml/config.json</code
 <h3>8.1 Upstream Domain Guard (fast-path, runs before this model)</h3>
 <table class="compact-table" style="width:700px;">
   <tr><th>Stage</th><th>Source</th><th>Latency (i7-10750H)</th><th>Outcome</th></tr>
-  <tr><td>Cisco top-10K allowlist hit</td><td><code>services/svc-03-url-analysis/internal/url/data/top10k_domains.txt</code> (<code>go:embed</code>'d, 9,978 lines)</td><td>~43 ns</td><td>Short-circuit verdict <span class="svc">legitimate</span>; this model is skipped.</td></tr>
+  <tr><td>Cisco top-10K allowlist hit</td><td><code>services/svc-03-url-analysis/internal/url/data/top10k_domains.txt</code> (<code>go:embed</code>'d, 10,000 lines)</td><td>~43 ns</td><td>Short-circuit verdict <span class="svc">legitimate</span>; this model is skipped.</td></tr>
   <tr><td>Levenshtein d=1 typosquat</td><td><code>CheckDomain</code> in <code>internal/url/domainguard.go</code> (length-gap short-circuit)</td><td>~51 µs worst case</td><td>Short-circuit verdict <span class="svc">phishing</span> (<code>guard_hit = "typosquat:&lt;brand&gt;"</code>); this model is skipped.</td></tr>
   <tr><td>Brand-in-subdomain scan</td><td><code>CheckSubdomainBrand</code> in <code>internal/url/domainguard.go</code> (20-entry curated brand list, <code>len(label) ≥ 4</code> gate)</td><td>~157 ns</td><td>Short-circuit verdict <span class="svc">phishing</span> (<code>guard_hit = "brand-in-subdomain:&lt;brand&gt;"</code>); this model is skipped.</td></tr>
   <tr><td>No guard hit</td><td>—</td><td>—</td><td>Fall through to <strong>§8.2 Inference Flow</strong> below.</td></tr>
@@ -467,22 +467,25 @@ The deployed artifact in <code>services/svc-03-url-analysis/ml/config.json</code
 
 <h3>8.3 Classification Logic (<code>/scan</code> endpoint)</h3>
 <div class="note">
-  The Python subprocess (<code>inference_script.py</code>) returns <code>score</code> (0–100) and <code>probability</code> (0.0–1.0). The Go <code>/scan</code> handler in <code>main.go</code> combines the ML score with a TI (threat-intelligence) lookup via <code>classifyLabel(mlScore, tiResult)</code>. Out-of-process enrichment is live: when TI does not match (or matches with low confidence, <code>risk_score &lt; 80</code>), the handler calls the Python L2 fusion sidecar at <code>fusion_export/scripts/serve.py</code> via the Go client in <code>internal/phishing/</code>. The sidecar performs DNS / WHOIS / TLS / HTTP / GeoIP / shortener enrichment, computes <code>url_p</code> + <code>op_p</code>, and returns a fused <code>deploy_p</code>. It is fail-open — if the sidecar is unreachable, the L1 + TI verdict stands. See <code>docs/internals/CyberSiren_URL_Domain_Guard_and_L2_Fusion_Specification.html</code> for the full pipeline.
+  The Python subprocess (<code>inference_script.py</code>) returns <code>score</code> (0–100) and <code>probability</code> (0.0–1.0). The Go <code>/scan</code> handler in <code>main.go</code> then runs a TI lookup and — when TI did not match or matched with low confidence (<code>risk_score &lt; 80</code>) — calls the Python L2 fusion sidecar at <code>fusion_export/scripts/serve.py</code> via the Go client in <code>internal/phishing/</code>. The sidecar performs DNS / WHOIS / TLS / HTTP / GeoIP / shortener enrichment, computes <code>url_p</code> + <code>op_p</code>, and returns a fused <code>deploy_p</code> and a <code>mlVerdict</code> ("phishing" | "benign"). The sidecar is fail-open — if unreachable, TI + L1 verdict stands.
+  <br><br>
+  <strong>Important:</strong> The final label is produced by <code>classifyLabel(0, tiResult, false, resp.MLVerdict)</code>. The Go handler always passes <code>mlScore=0</code> for user-submitted scans. The Go code comment reads: <em>"L1 score overridden to 0 for user-submitted scans — label is driven by TI match and L2 fusion verdict only."</em> Consequently, the <code>ml_score &gt;= 70</code> and <code>ml_score &gt;= 40</code> branches of <code>classifyLabel</code> are never reached in the <code>/scan</code> endpoint; they apply only in the batch pipeline (<code>cmd/url-pipeline</code>). The L1 score is still computed and returned in the response for observability and routing transparency. See <code>docs/internals/CyberSiren_URL_Domain_Guard_and_L2_Fusion_Specification.html</code> for the full L2 fusion pipeline.
 </div>
 <table style="width:700px;">
-  <tr><th>Condition</th><th>Label</th><th>Source</th></tr>
-  <tr><td>TI matched &amp; <code>ti_risk_score &gt;= 80</code></td><td class="svc">phishing</td><td>Threat-intelligence feed match (checked first)</td></tr>
-  <tr><td><code>ml_score &gt;= 70</code></td><td class="svc">phishing</td><td>ML probability × 100, rounded</td></tr>
-  <tr><td><code>ml_score &gt;= 40</code></td><td class="svc">suspicious</td><td>ML probability × 100, rounded</td></tr>
-  <tr><td><code>ml_score &lt; 40</code></td><td class="svc">legitimate</td><td>Default when no other condition triggers</td></tr>
+  <tr><th>Priority</th><th>Condition</th><th>Label</th><th>Source</th></tr>
+  <tr><td>1</td><td>TI matched &amp; <code>ti_risk_score &gt;= 80</code></td><td class="svc">phishing</td><td>Threat-intelligence feed match (checked first)</td></tr>
+  <tr><td>2</td><td>L2 fusion <code>mlVerdict == "phishing"</code></td><td class="svc">phishing</td><td>L2 fusion sidecar verdict (primary classification path in /scan)</td></tr>
+  <tr><td>3</td><td><code>ml_score &gt;= 70</code></td><td class="svc">phishing</td><td>L1 score — never reached in /scan (mlScore=0 always passed); active in batch pipeline only</td></tr>
+  <tr><td>4</td><td><code>ml_score &gt;= 40</code></td><td class="svc">suspicious</td><td>L1 score — never reached in /scan; active in batch pipeline only</td></tr>
+  <tr><td>5</td><td>Default</td><td class="svc">legitimate</td><td>TI miss + L2 returned benign or did not run</td></tr>
 </table>
 
 <h3>8.4 Exported Artifacts</h3>
-<table class="compact-table" style="width:500px;">
+<table class="compact-table" style="width:700px;">
   <tr><th>File</th><th>Size</th><th>Contents</th></tr>
   <tr><td><code>model.joblib</code></td><td>~1.1 MB</td><td>Trained XGBoost classifier (compress=3)</td></tr>
-  <tr><td><code>config.json</code></td><td>~50 KB</td><td>feature_names, char_prob_table, tld_legit_prob, sensitive_words</td></tr>
-  <tr><td><code>metrics.json</code></td><td>&lt;1 KB</td><td>Test set performance metrics</td></tr>
+  <tr><td><code>config.json</code></td><td>~33 MB</td><td>champion_name, feature_names (30), feature_count, classification_threshold (0.85), char_prob_table (36 entries), tld_legit_prob (1,319 entries), sensitive_words (16), suspicious_exts (16), brand_domains (118 entries), top1m_full_domains (1,000,000 entries — the primary size contributor, used for min_brand_levenshtein and registered_domain_top1m features), export_metrics {accuracy, f1, mcc}</td></tr>
+  <tr><td colspan="3" style="font-size:9px; color:#555;"><strong>Note:</strong> There is no separate <code>metrics.json</code> file. Deployment metrics are embedded in <code>config.json</code> under the <code>export_metrics</code> key: <code>{"accuracy": 0.9658, "f1": 0.9683, "mcc": 0.9333}</code>. These are XGBoost performance values measured at the deployed threshold of 0.85 — they differ from the §7 figures, which report LightGBM at default threshold (0.50) on the held-out test set. The difference arises because threshold 0.85 substantially increases false-negatives relative to 0.50.</td></tr>
 </table>
 
 
@@ -511,7 +514,7 @@ The deployed artifact in <code>services/svc-03-url-analysis/ml/config.json</code
   <tr><td>1</td><td>Training data from 2015–2023. Phishing tactics evolve.</td><td>Concept drift over time.</td><td>Periodic retraining. [5] incremental learning approach.</td></tr>
   <tr><td>2</td><td>URL structure only. No page content analysis.</td><td>Sophisticated mimicry URLs evade detection.</td><td>Two-tier architecture. Enrichment path handles ambiguous cases.</td></tr>
   <tr><td>3</td><td>English/Latin-script URL bias.</td><td>Non-Latin IDN URLs underrepresented.</td><td>Future dataset expansion. [4] acknowledges this.</td></tr>
-  <tr><td>4</td><td>has_ip_address and double_slash_in_path contributed 0 splits in the champion model.</td><td>Two features consumed memory and inference time without contributing signal.</td><td>Both pruned from active feature set in Phase 0 of the benchmark pipeline. 28 features now used at inference.</td></tr>
+  <tr><td>4</td><td>has_ip_address and double_slash_in_path contributed 0 splits in the champion model.</td><td>Two features consumed memory and inference time without contributing signal.</td><td>Both pruned from the structural feature set in Phase 0 of the benchmark pipeline. The deployed model uses 30 features at inference (28 structural + <code>min_brand_levenshtein</code> + <code>registered_domain_top1m</code>; see <code>ml/config.json</code>).</td></tr>
   <tr><td>5</td><td>45.2/54.8 class split does not reflect real-world traffic.</td><td>Production prevalence is ~1% phishing. Threshold calibration needed.</td><td>Adjust decision threshold post-deployment using production data.</td></tr>
 </table>
 

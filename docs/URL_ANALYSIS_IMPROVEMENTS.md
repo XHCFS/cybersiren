@@ -1,7 +1,7 @@
 # URL Analysis — Known Issues & Improvement Roadmap
 
 CyberSiren's URL analysis pipeline has three detection layers: **ML scoring**
-(deployed XGBoost lexical model), **TI lookup** (Valkey domain cache fed by 4 threat
+(deployed XGBoost 30-feature model), **TI lookup** (Valkey domain cache fed by 4 threat
 feeds), and **enrichment** (operational model via sidecar — see §Current Architecture).
 This document covers known gaps in all three layers and a prioritised roadmap to
 address them.
@@ -31,12 +31,12 @@ POST /scan { url }
   ├─► Domain Guard  ✅ IMPLEMENTED (Go handler — fires first)
   │     ├─► Cisco Umbrella top-10K allowlist (embedded go:embed)
   │     │     └─► known-good apex → "legitimate" fast path (ML skipped)
-  │     ├─► Levenshtein d=1 typosquat scan (12 major brands)
+  │     ├─► Levenshtein d=1 typosquat scan (against the full 10,000-entry allowlist)
   │     │     └─► match → "phishing" fast path, guard_hit="typosquat:<brand>"
-  │     └─► Brand keyword in subdomain scan
+  │     └─► Brand keyword in subdomain scan (20-brand hand-curated list)
   │           └─► match → "phishing" fast path, guard_hit="brand-in-subdomain:<brand>"
   │
-  ├─► ML Model  (XGBoost, 28 lexical features, `ml/config.json`)
+  ├─► ML Model  (XGBoost, 30 features = 28 structural + 2 anchors, `ml/config.json`)
   │     └─► score: 0–100, probability: 0.0–1.0
   │         (skipped if domain guard fired)
   │
@@ -97,17 +97,20 @@ and `avg_subdomain_length=0`.
 `{service}.{legit-brand}.com` and `{lure}.{fake-brand}.com` as structurally
 identical — same subdomain count, similar hostname length.
 
-### Issue 3: No Domain Reputation Feature
+### Issue 3: No Domain Reputation Feature ✅ RESOLVED
 
-The 28-feature vector is entirely lexical. The **Cisco Umbrella top-1M CSV
-exists in the repo** (`ml/data/top-1m.csv`) and was used during training to
-build the `charProbTable` and `tldLegitProb` lookup tables — but it is **never
-consulted at inference time** as a direct "is this domain popular?" signal.
+_Originally:_ the feature vector was entirely lexical with no direct "is this
+domain popular?" signal at inference. **This is now shipped:** the deployed
+30-feature vector includes `registered_domain_top1m` (top-1M membership, the
+direct popularity signal) and `min_brand_levenshtein` (brand-similarity anchor)
+— see `ml/config.json` feature indices 28–29 and `inference_script.py`. The
+Cisco Umbrella top-1M CSV (`ml/data/top-1m.csv`) still also backs the
+`charProbTable` / `tldLegitProb` lookup tables built at training time.
 
 ### Issue 4: Overconfident Probabilities
 
 The model outputs 0.90 probability for `google.com` — clearly miscalibrated.
-Raw LightGBM outputs are not calibrated to reflect true posterior probabilities.
+Raw XGBoost outputs are not calibrated to reflect true posterior probabilities.
 
 ---
 
@@ -173,7 +176,8 @@ Only 4 URL-focused feeds are ingested. Missing:
 `services/svc-03-url-analysis/internal/url/enricher.go` is still a stub in the
 Go service. However, live enrichment **is implemented** in the Layer 2 Python
 sidecar (`fusion_export/scripts/serve.py`) as the **operational model** (HGB
-classifier on ~50 live-enrichment features). It runs per-request and covers:
+classifier on 44 features = 28 raw enrichment + 16 derived; see
+`hgb_operational.metrics.json`). It runs per-request and covers:
 
 | Signal | Status |
 |--------|--------|
@@ -265,8 +269,8 @@ top-1M CSV via `scripts/update_allowlist.py`) and embedded at compile time via
 
 Three layers implemented:
 1. **Apex allowlist** — exact match against 10K domains → `guard_hit: "allowlisted"`
-2. **Typosquat detection** — Levenshtein d=1 against 12 major brands → `guard_hit: "typosquat:<brand>"`
-3. **Brand-in-subdomain** — keyword scan on subdomain labels → `guard_hit: "brand-in-subdomain:<brand>"`
+2. **Typosquat detection** — Levenshtein d=1 against the full 10,000-entry allowlist → `guard_hit: "typosquat:<brand>"`
+3. **Brand-in-subdomain** — keyword scan on subdomain labels against a 20-brand list → `guard_hit: "brand-in-subdomain:<brand>"`
 
 **Impact achieved:** Eliminates all FPs for known top-10K domains and their subdomains.
 The domain guard is the reason the 60/40 fusion weights can be aggressive (high url_p
@@ -353,19 +357,18 @@ type ScoringConfig struct {
 
 ### Tier 2 — Feature Engineering (Requires Model Retraining)
 
-#### 2A. Add `domain_in_top_1m` Feature (F31) ⭐ P1
+#### 2A. Add `domain_in_top_1m` Feature ✅ SHIPPED
 
-Binary feature: is the registered domain in Cisco Umbrella top-1M?
+Binary feature: is the registered domain in Cisco Umbrella top-1M? **This shipped
+as `registered_domain_top1m`** (feature index 29 in the deployed 30-feature
+`ml/config.json`; computed in `inference_script.py`). A second legitimacy anchor,
+`min_brand_levenshtein` (index 28), shipped alongside it.
 
 ```python
 top1m = set(pd.read_csv("top-1m.csv", header=None)[1])
 def domain_in_top_1m(url):
     return 1 if tldextract.extract(url).registered_domain in top1m else 0
 ```
-
-Would likely become the #1 most important feature by gain. The Go feature
-extractor already parses eTLD+1, so inference-time implementation is
-straightforward: load set, add one boolean → 29 features.
 
 #### 2B. Add `domain_rank_log` Feature (F32) — P1
 
@@ -527,7 +530,7 @@ verdicts that reflect confidence from multiple sources.
 
 #### 6B. Two-Stage Model — P3
 
-- **Stage 1 (current):** Fast LightGBM on lexical features (~5 ms).
+- **Stage 1 (current):** Fast XGBoost on structural features (~5 ms).
 - **Stage 2 (new):** If score is 30–70 (uncertain), fetch live signals (WHOIS,
   SSL, DNS) and run a second model (~500 ms). Keeps latency low for obvious
   cases.
@@ -556,10 +559,10 @@ Extract the `publicsuffix.EffectiveTLDPlusOne()` logic from
 | Priority | Fix | Layer | Effort | Retrain? |
 |----------|-----|-------|--------|----------|
 | ✅ **Done** | 1A — Top-domain allowlist (Cisco top-10K, go:embed) | ML | shipped | No |
-| ✅ **Done** | Layer 2 signal fusion (60/40 asymmetric, 93.6% detection) | Verdict | shipped | No |
+| ✅ **Done** | Layer 2 signal fusion (zone-based: 65/35, 60/40, 25/75, 10/90 — see L2 spec §6) | Verdict | shipped | No |
 | **P0** | 1B — TI domain walking | TI | ~3 hours | No |
 | **P0** | 4A — Balance www-prefix training data | ML | ~1 day | Yes |
-| **P1** | 2A — `domain_in_top_1m` feature | ML | ~2 hours + retrain | Yes |
+| ✅ **Done** | 2A — `domain_in_top_1m` (shipped as `registered_domain_top1m`) | ML | shipped | — |
 | **P1** | 3A — Path-level TI matching | TI | ~4 hours | No |
 | **P1** | 3B — Expand ThreatFox IOC types | TI | ~1 hour | No |
 | **P1** | 5A — WHOIS domain age | Enrichment | ~1 day | No |
@@ -595,7 +598,7 @@ Extract the `publicsuffix.EffectiveTLDPlusOne()` logic from
 | TI indicators table | `db/migrations/026_*` | ✅ Stores URL, domain, IP, hash types |
 | 4 feed parsers | `svc-11-ti-sync/internal/ti/feeds/` | ✅ PhishTank, OpenPhish, URLhaus, ThreatFox |
 | Training notebook | `ml/cybersiren-url-model.ipynb` | ✅ Full pipeline, ready to re-run |
-| LightGBM model binary | `ml/model/url_model.txt` | ✅ Current 28-feature model |
+| XGBoost model binary | `ml/model.joblib` | ✅ Current 30-feature model (champion = XGBoost, `ml/config.json`) |
 | Enricher stub | `internal/url/enricher.go` | ❌ Package exists, no implementation |
 | TLD legit probabilities | `feature_extractor.go` `tldLegitProb` | ✅ Derived from top-1M |
 | Char probabilities | `feature_extractor.go` `charProbTable` | ✅ Derived from top-1M |

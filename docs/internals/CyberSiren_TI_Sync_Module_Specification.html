@@ -121,17 +121,17 @@
 <div class="doc-meta">
   <span><strong>Document:</strong> TI-SPEC-v1.1</span>
   <span><strong>Date:</strong> 2026-04-10</span>
-  <span><strong>Revised:</strong> MalwareBazaar feed (GAP-1/2/3), hash routing separation, ThreatFox multi-type IOC, hash cache TTL config</span>
+  <span><strong>Revised:</strong> MalwareBazaar feed (GAP-1/2/3), hash routing separation (hashes → <code>attachment_library</code>), ThreatFox multi-type IOC</span>
   <span><strong>Scope:</strong> SVC-11 TI Sync — Feed ingestion, repository layer, Valkey cache, runner lifecycle</span>
   <span><strong>Classification:</strong> Internal / Graduation Project</span>
 </div>
 
 <div class="note">
-  <strong>Context:</strong> SVC-11 (ti-sync) is a standalone Go service that periodically fetches threat-intelligence indicators from external feeds, upserts them into PostgreSQL, refreshes materialized views, and rebuilds two Valkey caches: a domain blocklist cache (for URL analysis) and a malware hash cache (for attachment analysis). The service exposes Prometheus metrics and OpenTelemetry traces. It does not participate in the Kafka pipeline — it is a scheduled background synchronizer.
+  <strong>Context:</strong> SVC-11 (ti-sync) is a standalone Go service that periodically fetches threat-intelligence indicators from external feeds, upserts them into PostgreSQL, refreshes materialized views, and rebuilds one Valkey cache: the domain blocklist cache (for URL analysis). Malware hashes are persisted to the PostgreSQL <code>attachment_library</code> table (read by SVC-05); they are <em>not</em> cached in Valkey. The service exposes Prometheus metrics and OpenTelemetry traces. It does not participate in the Kafka pipeline — it is a scheduled background synchronizer.
 </div>
 
 <div class="note">
-  <strong>Live run results (2026-04-10, post-PR):</strong> 2,678 active indicators across 4 feeds — OpenPhish (300 URLs), URLhaus (1,946 URLs), ThreatFox (432 mixed: URLs + domains + IPs), MalwareBazaar (30 malicious hashes in <code>attachment_library</code>; 0 rows in <code>ti_indicators</code> by design). 38 <code>ti_hash:*</code> keys and ~400 domain keys cached in Valkey.
+  <strong>Live run results (2026-04-10, post-PR):</strong> 2,678 active indicators across 4 feeds — OpenPhish (300 URLs), URLhaus (1,946 URLs), ThreatFox (432 mixed: URLs + domains + IPs), MalwareBazaar (30 malicious hashes in <code>attachment_library</code>; 0 rows in <code>ti_indicators</code> by design). ~400 <code>ti_domain:*</code> keys cached in Valkey (there is no hash cache; the 30 malware hashes live only in <code>attachment_library</code>).
 </div>
 
 
@@ -190,7 +190,7 @@
 <div class="pipeline-step">
   <div class="step-header">
     <div class="step-num">9</div>
-    <div class="step-content"><strong>Feed discovery</strong> — queries <code>feeds</code> table for enabled rows (<code>enabled=true</code>, <code>deleted_at IS NULL</code>). Builds feed implementations via name switch. Skips unknown names with a warning.</div>
+    <div class="step-content"><strong>Feed discovery</strong> — queries <code>feeds</code> table for enabled rows via <code>GetEnabledFeeds</code> (<code>SELECT * FROM feeds WHERE enabled = TRUE</code> — the query does <em>not</em> filter on <code>deleted_at</code>; the column exists, added in migration 019, but is not used for feed discovery). Builds feed implementations via name switch. Skips unknown names with a warning.</div>
   </div>
 </div>
 <div class="pipeline-step">
@@ -212,7 +212,7 @@
   <tr><td><code>CYBERSIREN_FEED_THREATFOX_API_KEY</code></td><td><code>feed_threatfox_api_key</code></td><td>""</td><td>ThreatFox Auth-Key header (optional, improves rate limits)</td></tr>
   <tr><td><code>CYBERSIREN_FEED_OPENPHISH_API_KEY</code></td><td><code>feed_openphish_api_key</code></td><td>""</td><td>OpenPhish API key (free tier does not require one)</td></tr>
   <tr><td><code>CYBERSIREN_FEED_MALWAREBAZAAR_API_KEY</code></td><td><code>feed_malwarebazaar_api_key</code></td><td>""</td><td>MalwareBazaar Auth-Key (required as of 2025)</td></tr>
-  <tr><td><code>CYBERSIREN_TI_HASH_CACHE_TTL_SECONDS</code></td><td><code>ti_hash_cache_ttl_seconds</code></td><td>7200</td><td>Hash cache TTL in seconds. Must be &gt; 0 and ≥ <code>sync_interval_seconds</code> to prevent cache expiry between syncs.</td></tr>
+  <tr><td><code>CYBERSIREN_TI_DOMAIN_CACHE_TTL_SECONDS</code></td><td><code>ti_domain_cache_ttl_seconds</code></td><td>7200</td><td>Domain blocklist cache TTL in seconds. Must be &gt; 0 and ≥ <code>sync_interval_seconds</code> to prevent cache expiry between syncs. (Note: <code>CYBERSIREN_TI_HASH_CACHE_TTL_SECONDS</code> appears in deploy configs but is read by no config field — there is no hash cache.)</td></tr>
 </table>
 
 
@@ -261,11 +261,11 @@
       <tr><td>Protocol</td><td>HTTP GET. API key substituted into URL path.</td></tr>
       <tr><td>Response format</td><td>JSON array of phishing entries.</td></tr>
       <tr><td>Indicator types</td><td>URL only</td></tr>
-      <tr><td>Risk score</td><td>95</td></tr>
+      <tr><td>Risk score</td><td>90</td></tr>
       <tr><td>Confidence</td><td>0.95</td></tr>
       <tr><td>Auth</td><td>API key required. <code>CYBERSIREN_FEED_PHISHTANK_API_KEY</code>. Feed skipped silently if key absent.</td></tr>
       <tr><td>Normalization</td><td><code>normalization.NormalizeURL()</code> on each entry URL.</td></tr>
-      <tr><td>Tags</td><td><code>["phishtank"]</code></td></tr>
+      <tr><td>Tags</td><td><code>["phishtank", "verified"]</code></td></tr>
     </table>
   </div>
 </div>
@@ -366,7 +366,7 @@
       <tr><td>Auth</td><td>Required since 2025. <code>CYBERSIREN_FEED_MALWAREBAZAAR_API_KEY</code>. Free key from <code>https://auth.abuse.ch/</code>. Warning logged if absent; request will return HTTP 401.</td></tr>
       <tr><td>ThreatType</td><td>From <code>signature</code> field. Falls back to <code>"malware"</code> if empty.</td></tr>
       <tr><td>Tags</td><td>JSON array from <code>tags</code> field + <code>"malwarebazaar"</code> + <code>file_type</code> value (if non-empty).</td></tr>
-      <tr><td>Routing</td><td>Hash indicators bypass <code>ti_indicators</code> and are written to <code>attachment_library</code> via <code>BulkUpsertMalwareHashes()</code>. Also appear in Valkey as <code>ti_hash:{sha256}</code> keys.</td></tr>
+      <tr><td>Routing</td><td>Hash indicators bypass <code>ti_indicators</code> and are written to <code>attachment_library</code> via <code>BulkUpsertMalwareHashes()</code>. They are not cached in Valkey (no <code>ti_hash:</code> keys).</td></tr>
     </table>
   </div>
 </div>
@@ -417,13 +417,7 @@
 <div class="pipeline-step">
   <div class="step-header">
     <div class="step-num">6</div>
-    <div class="step-content"><strong>RefreshHashCache()</strong> — Rebuilds <code>ti_hash:{sha256}</code> Valkey keys from all malicious attachment_library rows. Best-effort.</div>
-  </div>
-</div>
-<div class="pipeline-step">
-  <div class="step-header">
-    <div class="step-num">7</div>
-    <div class="step-content"><strong>RefreshAllMaterializedViews()</strong> — Runs <code>REFRESH MATERIALIZED VIEW CONCURRENTLY</code> on all TI-related views. Fatal error if this fails (only failure that returns an error from SyncAll).</div>
+    <div class="step-content"><strong>RefreshAllMaterializedViews()</strong> — Runs <code>REFRESH MATERIALIZED VIEW CONCURRENTLY</code> on all TI-related views. Fatal error if this fails (only failure that returns an error from SyncAll). (There is no hash-cache refresh step — malware hashes are upserted into <code>attachment_library</code> during each feed's upsert phase via <code>BulkUpsertMalwareHashes()</code>.)</div>
   </div>
 </div>
 
@@ -448,7 +442,7 @@
   <tr><td class="svc">BulkUpsertMalwareHashes</td><td><code>(ctx, []MalwareHash) → (UpsertResult, error)</code></td><td>Upserts SHA-256 hashes into <code>attachment_library</code>. Chunks at 500. Sets <code>is_malicious = TRUE</code>, GREATEST risk_score, merged tags.</td></tr>
   <tr><td class="svc">UpdateFeedLastFetched</td><td><code>(ctx, feedID int64) → error</code></td><td>Updates <code>feeds.last_fetched_at = NOW()</code> for a single feed row.</td></tr>
   <tr><td class="svc">ListActiveDomainIndicators</td><td><code>(ctx) → ([]DomainIndicator, error)</code></td><td>Returns all active domain indicators for domain cache rebuild. Used by <code>RefreshDomainCache</code>.</td></tr>
-  <tr><td class="svc">ListMaliciousHashes</td><td><code>(ctx) → ([]MaliciousHash, error)</code></td><td>Returns all malicious hashes from <code>attachment_library</code> for hash cache rebuild.</td></tr>
+  <tr><td class="svc">ListMaliciousHashes</td><td><code>(ctx) → ([]MaliciousHash, error)</code></td><td>Returns all malicious hashes from <code>attachment_library</code>. Present on the interface but not currently consumed by the sync runner (no hash-cache rebuild step).</td></tr>
   <tr><td class="svc">RefreshAllMaterializedViews</td><td><code>(ctx) → error</code></td><td>Runs <code>REFRESH MATERIALIZED VIEW CONCURRENTLY</code> on all TI materialized views.</td></tr>
 </table>
 
@@ -491,26 +485,16 @@
   <tr><td>Key pattern</td><td><code>ti_domain:{domain}</code> — domain in braces for Redis Cluster slot affinity</td></tr>
   <tr><td>Value type</td><td>Hash (HSET)</td></tr>
   <tr><td>Fields</td><td><code>ti_indicator_id</code> (int64), <code>risk_score</code> (int), <code>threat_type</code> (string)</td></tr>
-  <tr><td>TTL</td><td>3,600 seconds (1 hour). Set via EXPIRE after each HSET batch.</td></tr>
+  <tr><td>TTL</td><td>Configurable via <code>CYBERSIREN_TI_DOMAIN_CACHE_TTL_SECONDS</code> (koanf <code>ti_domain_cache_ttl_seconds</code>); default 7,200 s. Set via EXPIRE after each HSET batch. Must be ≥ <code>sync_interval_seconds</code>.</td></tr>
   <tr><td>Batch size</td><td>200 keys per <code>DoMulti</code> call</td></tr>
-  <tr><td>Source</td><td><code>ListActiveDomainIndicators()</code> — all <code>is_active = TRUE</code> domain indicators</td></tr>
+  <tr><td>Source</td><td><code>RefreshDomainCache()</code> over the active domain indicators (<code>is_active = TRUE</code>)</td></tr>
   <tr><td>Lookup method</td><td><code>IsBlocklisted(ctx, domain) → (hit bool, riskScore int, threatType string, err error)</code></td></tr>
   <tr><td>Normalization at lookup</td><td><code>normalization.NormalizeDomain()</code> applied before key lookup</td></tr>
-  <tr><td>Metrics</td><td><code>ti_cache_blocklist_lookups_total{hit="true"|"false"}</code>, <code>ti_cache_refresh_keys_total{cache_type="domain"|"hash"}</code> gauge, <code>ti_cache_refresh_duration_seconds{cache_type="domain"|"hash"}</code> histogram</td></tr>
+  <tr><td>Metrics</td><td><code>ti_cache_blocklist_lookups_total{hit="true"|"false"}</code>, <code>ti_cache_refresh_keys_total{cache_type="domain"}</code> gauge, <code>ti_cache_refresh_duration_seconds{cache_type="domain"}</code> histogram. (The <code>cache_type</code> label exists as a dimension but only <code>"domain"</code> is ever emitted — there is no hash cache.)</td></tr>
 </table>
 
-<h3>6.2 Hash Cache — <code>ti_hash:{sha256}</code></h3>
-<p style="margin-bottom:6px;">Used by SVC-05 (attachment analysis) to check whether an uploaded file's SHA-256 is a known malicious sample.</p>
-<table class="compact-table">
-  <tr><th>Aspect</th><th>Detail</th></tr>
-  <tr><td>Key pattern</td><td><code>ti_hash:{sha256}</code> — SHA-256 in braces</td></tr>
-  <tr><td>Value type</td><td>Hash (HSET)</td></tr>
-  <tr><td>Fields</td><td><code>type</code> ("sha256"), <code>risk_score</code> (int), <code>tags</code> (comma-joined threat_tags), <code>updated_at</code> (RFC3339 UTC timestamp)</td></tr>
-  <tr><td>TTL</td><td>Configurable via <code>CYBERSIREN_TI_HASH_CACHE_TTL_SECONDS</code>; default 7,200 s (2 h). Set via EXPIRE after each HSET batch. Must be ≥ <code>sync_interval_seconds</code>.</td></tr>
-  <tr><td>Batch size</td><td>200 keys per <code>DoMulti</code> call</td></tr>
-  <tr><td>Source</td><td><code>ListMaliciousHashes()</code> — all <code>is_malicious = TRUE</code>, <code>deleted_at IS NULL</code> rows from <code>attachment_library</code></td></tr>
-  <tr><td>Staleness note</td><td>Refresh is additive — keys for hashes removed from <code>attachment_library</code> persist until TTL expiry. No explicit deletion is performed. See Limitations §10.7.</td></tr>
-</table>
+<h3>6.2 Malware hashes — no Valkey cache (persisted in <code>attachment_library</code>)</h3>
+<p style="margin-bottom:6px;"><strong>There is no <code>ti_hash:</code> Valkey cache.</strong> Malware-hash indicators are bulk-upserted into the PostgreSQL <code>attachment_library</code> table via <code>BulkUpsertMalwareHashes()</code> (<code>sync.go</code>); SVC-05 (attachment analysis) reads malicious hashes from that table, not from Valkey. The <code>TICache</code> interface (<code>shared/valkey/ti_cache.go</code>) exposes only <code>RefreshDomainCache</code> / <code>IsBlocklisted</code> / <code>LookupDomain</code> — no hash methods, and <code>SyncAll</code> performs no hash-cache refresh. (<code>ListMaliciousHashes()</code> exists on the repository interface but is not consumed by the sync runner. The <code>CYBERSIREN_TI_HASH_CACHE_TTL_SECONDS</code> variable is present in <code>.env.example</code> and <code>docker-compose.yml</code> but is read by no config field — dead plumbing for an unimplemented cache.)</p>
 
 
 <!-- ============================================================ -->
@@ -566,7 +550,7 @@
 <table class="compact-table">
   <tr><th>Column</th><th>Type</th><th>Notes</th></tr>
   <tr><td><code>name</code></td><td>text UNIQUE NOT NULL</td><td>Matches <code>Feed.Name()</code>. Switch key in main.go.</td></tr>
-  <tr><td><code>feed_type</code></td><td>feed_type_enum NOT NULL</td><td>Values: threat_intel, reputation, blocklist, sandbox, demo</td></tr>
+  <tr><td><code>feed_type</code></td><td>feed_type_enum NOT NULL</td><td>Values: threat_intel, reputation, blocklist, sandbox</td></tr>
   <tr><td><code>url</code></td><td>text nullable</td><td>Overrides the implementation's default URL constant if non-null.</td></tr>
   <tr><td><code>enabled</code></td><td>boolean</td><td>Default true. Only enabled feeds are loaded by service.</td></tr>
   <tr><td><code>reliability_weight</code></td><td>double precision</td><td>CHECK: 0.0–10.0. Default 1.0. Reserved for future score weighting.</td></tr>
@@ -619,8 +603,8 @@
   <tr><td class="svc">Conflict: GREATEST risk_score</td><td>Risk scores should never decrease. If a feed previously reported score 90 and now reports 70 (e.g., due to API changes), the historical high is preserved. Operators can manually decrease via the admin API.</td></tr>
   <tr><td class="svc">Conflict: tag union not replacement</td><td>Tags from multiple sync cycles accumulate. A domain tagged <code>["phishing"]</code> in one cycle and <code>["malware", "botnet"]</code> in the next retains all three tags. This preserves historical context from feeds that rotate their tag classifications.</td></tr>
   <tr><td class="svc">is_active deactivation</td><td>Indicators not seen in the current sync cycle are marked <code>is_active = FALSE</code> rather than deleted. This allows downstream services to distinguish between "currently blocklisted" and "was blocklisted" without losing the historical record.</td></tr>
-  <tr><td class="svc">Valkey domain cache TTL = 1 hour</td><td>Domain cache TTL is fixed at 3,600 s. With a 1-hour default sync interval, domain cache is fully rebuilt each cycle before prior keys expire. Staleness is bounded to one sync window.</td></tr>
-  <tr><td class="svc">Valkey hash cache TTL = 2 hours (configurable)</td><td>Hash cache TTL defaults to 7,200 s (2 × the default sync interval). The validation rule <code>TIHashCacheTTLSeconds ≥ SyncIntervalSeconds</code> ensures hash keys never expire between sync runs. The 2× default gives headroom for slower hash refreshes. The cache is additive: removed hashes persist until TTL expiry (see Limitations §10.7).</td></tr>
+  <tr><td class="svc">Valkey domain cache TTL configurable (default 2 h)</td><td>Domain cache TTL is configurable via <code>ti_domain_cache_ttl_seconds</code>, default 7,200 s. The validation rule <code>TIDomainCacheTTLSeconds ≥ SyncIntervalSeconds</code> ensures domain keys never expire between sync runs. With the 1-hour default sync interval, the cache is fully rebuilt each cycle before prior keys expire; staleness is bounded to one sync window.</td></tr>
+  <tr><td class="svc">No Valkey hash cache</td><td>Malware hashes are persisted in PostgreSQL <code>attachment_library</code> and read from there by SVC-05; there is no <code>ti_hash:</code> Valkey cache. (An earlier design specified one; it was not implemented.)</td></tr>
   <tr><td class="svc">Feed URL from DB at runtime</td><td>The URL stored in the <code>feeds.url</code> column overrides the hardcoded default constant. This allows feed URLs to be updated via the admin API without a service redeployment. PhishTank uses a template URL; the API key is still injected from config, not the DB.</td></tr>
   <tr><td class="svc">Atomic overlap guard</td><td><code>atomic.Bool cycleRunning</code> prevents two sync cycles from running simultaneously if the previous cycle overruns the interval. This is safer than a mutex approach because the check is non-blocking and a skipped tick is recoverable on the next tick.</td></tr>
   <tr><td class="svc">MalwareBazaar Auth-Key requirement</td><td>As of 2025, abuse.ch requires authentication for all MalwareBazaar API calls (previously only the enhanced tier). The implementation sends the key as an <code>Auth-Key</code> HTTP header matching the pattern used by ThreatFox. A missing key logs a warning but does not prevent service startup; the feed will fail at fetch time with HTTP 401.</td></tr>
@@ -639,7 +623,7 @@
   <tr><td>4</td><td>Hash cache holds entire malicious set in memory per refresh.</td><td>If <code>attachment_library</code> grows to millions of entries, the refresh will hold a large slice in RAM. Batch streaming would be needed.</td><td>Current scale (hundreds to low thousands of entries) is well within limits.</td></tr>
   <tr><td>5</td><td>PhishTank feed disabled unless API key is provided.</td><td>PhishTank is the community-verified source with highest precision for known phishing URLs. Without it, URL coverage relies on OpenPhish + URLhaus.</td><td>Register at phishtank.org, set <code>CYBERSIREN_FEED_PHISHTANK_API_KEY</code>.</td></tr>
   <tr><td>6</td><td>Raw metadata not updated on indicator conflict.</td><td>If a feed changes the payload for an existing IOC (new confidence level, additional fields), the stored <code>raw_metadata</code> jsonb reflects the first-seen payload only.</td><td>Risk score and tags are updated on conflict. For full payload history, store in an event log (not implemented).</td></tr>
-  <tr><td>7</td><td>Hash cache (<code>ti_hash:*</code> keys) is additive — stale keys are not deleted on refresh.</td><td>If a hash is removed from <code>attachment_library</code> (e.g. false-positive correction), its Valkey key persists until TTL expiry (default 2 h). SVC-05 may still return a hit for that hash within the TTL window.</td><td>Acceptable for a security context where false positives are preferable to false negatives. TTL bounds the staleness window. A future iteration could use a generation-swap pattern (write to a new key prefix, then rename) to achieve atomic, non-stale rebuilds.</td></tr>
+  <tr><td>7</td><td>No Valkey hash cache (planned but unimplemented).</td><td>An earlier design specified a <code>ti_hash:{sha256}</code> Valkey cache for sub-millisecond SVC-05 hash lookups; it was never implemented. SVC-05 reads malicious hashes directly from <code>attachment_library</code> (Postgres), so hash staleness is governed by the table's <code>is_active</code> deactivation, not a cache TTL.</td><td>If sub-millisecond hash lookups are later required, add a hash cache with a generation-swap rebuild. <code>CYBERSIREN_TI_HASH_CACHE_TTL_SECONDS</code> is reserved in deploy configs but currently read by no code.</td></tr>
 </table>
 
 </body>
